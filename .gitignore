@@ -1,0 +1,45 @@
+# Dependencies and caches
+node_modules/
+.node_modules.lock
+.tanstack/
+.vercel/
+dist/
+build/
+.nitro/
+.output/
+
+# Secrets and local env
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Logs / OS
+*.log
+.grok/preview.log
+.grok/preview.pid
+.grok/status
+.DS_Store
+Thumbs.db
+
+# Platform runtime (not application source)
+.grok/skills/
+.grok/references/
+
+# QA / session noise
+screenshots/
+attachments/
+artifacts/browsed_files/
+artifacts/workspace-source/
+
+# SUPERSEDED Python prototype
+conversation-bot/
+
+# Python junk if any
+**/__pycache__/
+*.pyc
+.pytest_cache/
+
+# Export archives (source is the repo)
+*.zip

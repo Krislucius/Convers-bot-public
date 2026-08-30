@@ -1,0 +1,25 @@
+{
+  "project_id": "01a048b8-c1f7-7382-9dfd-fb30bff7137d",
+  "production_host": "https://swift-lake-solar-cosmic.grok.me",
+  "architecture_revision": "CB-ARCH-20260829-001",
+  "architecture_hash": "cd804a66a6b7631cc91c756797d7bdf4fa1fa51cdfb4c889ffc18df00b31e55f",
+  "module_registry_hash": "f3d23a47a4a0430c016aa8635fe0ad33206928b2336b95f18bbc97e3eb4765f6",
+  "schema_hash": "23821b304ce1653035a9e2cf8332895579128ef864bac80f6a36a5613368268a",
+  "critical_contract_hash": "5f9a370d3687aff579843ace06ebe578bc28837bcc501714a902752d69c612f0",
+  "created_at": "2026-08-29T18:45:00.000Z",
+  "build_id": "CB-BUILD-20260830-003",
+  "schema_version": "0004_project_files",
+  "source_root": "src",
+  "protected_invariants": [
+    "ONE_AUTHORITATIVE_PROJECT",
+    "TS_TANSTACK_NOT_PYTHON",
+    "AUTH_ON_PER_ACCOUNT",
+    "PROJECT_ISOLATION",
+    "CREATE_REVIEW_DECIDE",
+    "HISTORY_NOT_CANONICAL",
+    "COUNCIL_THREE_AGENTS_TWO_ROUNDS",
+    "KEYS_ACCOUNT_NOT_BROWSER",
+    "NO_PARALLEL_GROK_APP",
+    "SINGLE_CONTEXT_PACKER"
+  ]
+}

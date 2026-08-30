@@ -1,0 +1,176 @@
+{
+  "architecture_revision": "CB-ARCH-20260829-001",
+  "modules": [
+    {
+      "module_id": "app.shell",
+      "status": "ACTIVE",
+      "implementation_path": "src/routes/__root.tsx",
+      "architecture_revision": "CB-ARCH-20260829-001",
+      "responsibilities": ["document shell", "session bootstrap", "auth provider"],
+      "dependencies": ["auth.session", "account.persistence"],
+      "supersedes": []
+    },
+    {
+      "module_id": "auth.session",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/auth",
+      "architecture_revision": "CB-ARCH-20260829-001",
+      "responsibilities": ["Better Auth", "Google/X/email", "authMiddleware", "per-user isolation"],
+      "dependencies": ["persist.postgres"],
+      "supersedes": []
+    },
+    {
+      "module_id": "auth.loop-breaker",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/auth-loop.ts",
+      "architecture_revision": "CB-ARCH-20260829-001",
+      "responsibilities": ["guest-gate hop cap", "returning-session wait"],
+      "dependencies": ["auth.session"],
+      "supersedes": []
+    },
+    {
+      "module_id": "persist.postgres",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/db.ts",
+      "architecture_revision": "CB-ARCH-20260829-001",
+      "responsibilities": ["Neon when DATABASE_URL is set", "PGLite preview fallback", "migrations"],
+      "dependencies": [],
+      "supersedes": []
+    },
+    {
+      "module_id": "account.persistence",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/council/account.server.ts",
+      "architecture_revision": "CB-ARCH-20260829-001",
+      "responsibilities": ["projects", "chats", "files", "tasks", "artifacts", "settings scoped by user_id"],
+      "dependencies": ["persist.postgres", "auth.session"],
+      "supersedes": ["legacy.localStorage-v012"]
+    },
+    {
+      "module_id": "legacy.localStorage-v012",
+      "status": "LEGACY",
+      "implementation_path": "src/lib/council/store.ts",
+      "architecture_revision": "CB-ARCH-20260829-001",
+      "responsibilities": ["one-shot import of conversation-bot:v012 when account is empty"],
+      "dependencies": ["account.persistence"],
+      "supersedes": []
+    },
+    {
+      "module_id": "history.ingest",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/history",
+      "architecture_revision": "CB-ARCH-20260829-001",
+      "responsibilities": ["URL/file/paste import", "provider parse", "access preflight", "project isolation"],
+      "dependencies": ["account.persistence"],
+      "supersedes": []
+    },
+    {
+      "module_id": "files.ingest",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/council/files.ts",
+      "architecture_revision": "CB-ARCH-20260829-001",
+      "responsibilities": ["zip/pdf/md as untrusted evidence"],
+      "dependencies": ["account.persistence"],
+      "supersedes": []
+    },
+    {
+      "module_id": "council.task-mode",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/council/task-mode.ts",
+      "architecture_revision": "CB-ARCH-20260829-001",
+      "responsibilities": ["CREATE REVIEW DECIDE preflight"],
+      "dependencies": [],
+      "supersedes": []
+    },
+    {
+      "module_id": "council.protocol",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/council/protocol.ts",
+      "architecture_revision": "CB-ARCH-20260829-001",
+      "responsibilities": ["roles", "buildContext", "boundContext", "synthesis schemas", "gate"],
+      "dependencies": ["council.task-mode"],
+      "supersedes": []
+    },
+    {
+      "module_id": "council.orchestrator",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/council/orchestrate.ts",
+      "architecture_revision": "CB-ARCH-20260829-001",
+      "responsibilities": ["single Council execution path: preflight, round1, round2, synthesis"],
+      "dependencies": ["council.protocol", "council.providers", "council.manifest", "council.artifact"],
+      "supersedes": []
+    },
+    {
+      "module_id": "council.manifest",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/council/manifest.ts",
+      "architecture_revision": "CB-ARCH-20260829-001",
+      "responsibilities": ["context manifest snapshot and hash"],
+      "dependencies": ["history.ingest"],
+      "supersedes": []
+    },
+    {
+      "module_id": "council.artifact",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/council/artifact.ts",
+      "architecture_revision": "CB-ARCH-20260829-001",
+      "responsibilities": ["CREATE artifact parse", "evidence labels", "REVIEW must not replace"],
+      "dependencies": [],
+      "supersedes": []
+    },
+    {
+      "module_id": "council.providers",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/council/run-council.ts",
+      "architecture_revision": "CB-ARCH-20260829-001",
+      "responsibilities": ["OpenRouter and OpenRusRouter server functions", "key resolve from account"],
+      "dependencies": ["account.persistence"],
+      "supersedes": []
+    },
+    {
+      "module_id": "context.pipeline",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/council/protocol.ts",
+      "architecture_revision": "CB-ARCH-20260829-001",
+      "responsibilities": ["concatenate selected evidence then boundContext 24000 characters"],
+      "dependencies": ["history.ingest", "files.ingest", "council.manifest"],
+      "supersedes": []
+    },
+    {
+      "module_id": "context.evidence-ledger",
+      "status": "REMOVED",
+      "implementation_path": "",
+      "architecture_revision": "CB-ARCH-20260829-001",
+      "responsibilities": ["not present in this revision; proposed by ADR-006"],
+      "dependencies": [],
+      "supersedes": []
+    },
+    {
+      "module_id": "ui.settings",
+      "status": "ACTIVE",
+      "implementation_path": "src/routes/settings.tsx",
+      "architecture_revision": "CB-ARCH-20260829-001",
+      "responsibilities": ["provider keys", "models", "cost cap", "system identity"],
+      "dependencies": ["council.providers", "architecture.lock"],
+      "supersedes": []
+    },
+    {
+      "module_id": "architecture.lock",
+      "status": "ACTIVE",
+      "implementation_path": "docs/ARCHITECTURE_LOCK.json",
+      "architecture_revision": "CB-ARCH-20260829-001",
+      "responsibilities": ["patch preflight", "module registry", "system identity"],
+      "dependencies": [],
+      "supersedes": []
+    },
+    {
+      "module_id": "legacy.python-fastapi",
+      "status": "SUPERSEDED",
+      "implementation_path": "conversation-bot",
+      "architecture_revision": "CB-ARCH-20260829-001",
+      "responsibilities": ["prototype only; not production; do not patch"],
+      "dependencies": [],
+      "supersedes": []
+    }
+  ]
+}
