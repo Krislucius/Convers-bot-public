@@ -12,11 +12,14 @@ Source root: `src/` (TanStack Start / React 19). Python `conversation-bot/` is s
 cp .env.example .env
 # fill DATABASE_URL, BETTER_AUTH_*, GROK_AUTH_*
 npm ci
+git config core.hooksPath .githooks
 npm test
 npm run typecheck
 npm run build
 ```
 
 Preview in this Grok Build project listens on the sandbox contract port via `npm run dev`.
+
+Git: local `main`, freeze tag `CB-BUILD-20260830-003`, no remote. See [docs/GIT.md](docs/GIT.md).
 
 Do not create a second Grok app or a second `*.grok.me` host.

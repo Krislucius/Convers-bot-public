@@ -13,6 +13,18 @@ Recorded 2026-08-30. This file is an access map, not an implementation.
 
 `/workspace` exists only inside a Grok Build session of this project. Ordinary Grok chats do not mount it.
 
+## Git
+
+Local repository on `/workspace`:
+
+- Branch: `main`
+- Freeze tag: `CB-BUILD-20260830-003`
+- Hooks: `.githooks/` (`core.hooksPath`)
+- Contract: `docs/GIT.md`
+- Remote: **none** (GitHub not authorized)
+
+This is a freeze record of the same tree. It is not a second app.
+
 ## What persists across chats
 
 Grok project chats mount `/workspace/artifacts` (sometimes `/home/workdir/artifacts`).
@@ -46,5 +58,5 @@ Python tree `conversation-bot/` in the Build sandbox is SUPERSEDED and is not in
 ## Not available
 
 - SSH / SFTP into the sandbox
-- Git remote (no repo on this tree)
+- Git remote / GitHub repository (local Git only)
 - Operator shell on `/workspace`

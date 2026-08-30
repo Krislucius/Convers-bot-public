@@ -1,0 +1,9 @@
+#!/bin/sh
+# Conversation Bot — architecture lock must still match before a push.
+set -eu
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+
+if [ -f package.json ] && grep -q '"arch:preflight"' package.json; then
+  npm run arch:preflight
+fi

@@ -1,0 +1,42 @@
+#!/bin/sh
+# Conversation Bot — block secrets and env files from commits.
+# Installed via: git config core.hooksPath .githooks
+set -eu
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR || true)
+if [ -z "$staged" ]; then
+  exit 0
+fi
+
+blocked=$(printf '%s\n' "$staged" | grep -E '(^|/)\.env($|\.local$)|(^|/)\.env\.[A-Za-z0-9._-]+\.local$|\.pem$|\.key$|(^|/)id_rsa|(^|/)id_ed25519|(^|/)credentials\.json$' || true)
+if [ -n "$blocked" ]; then
+  echo "pre-commit: refused secret-like path in the index:" >&2
+  printf '%s\n' "$blocked" >&2
+  exit 1
+fi
+
+if git diff --cached --diff-filter=ACMR | grep -E 'BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY' >/dev/null 2>&1; then
+  echo "pre-commit: refused private-key material in the index" >&2
+  exit 1
+fi
+
+# Live-looking provider secrets outside known placeholder/docs files.
+secret_hits=$(git diff --cached --diff-filter=ACMR --unified=0 \
+  -- . \
+  ':(exclude)src/lib/council/api-key.test.ts' \
+  ':(exclude)src/lib/council/api-key.ts' \
+  ':(exclude)src/lib/council/providers.ts' \
+  ':(exclude).githooks/*' \
+  ':(exclude)docs/GIT.md' \
+  | grep -E '^\+' \
+  | grep -E 'sk-or-v1-[A-Za-z0-9]{20,}|orr_live_[A-Za-z0-9]{16,}|sk-live-[A-Za-z0-9]{16,}' \
+  || true)
+if [ -n "$secret_hits" ]; then
+  echo "pre-commit: refused live-looking API key in the index" >&2
+  echo "$secret_hits" >&2
+  exit 1
+fi
+
+exit 0

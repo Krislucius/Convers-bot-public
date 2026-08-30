@@ -43,3 +43,10 @@ conversation-bot/
 
 # Export archives (source is the repo)
 *.zip
+
+# Editor / patch debris
+.idea/
+.vscode/
+*.orig
+*.rej
+*~

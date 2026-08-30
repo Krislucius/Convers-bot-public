@@ -5,3 +5,4 @@
 *.webp binary
 *.wasm binary
 *.zip binary
+.githooks/** text eol=lf
