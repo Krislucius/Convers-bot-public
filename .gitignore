@@ -15,6 +15,10 @@ build/
 *.pem
 *.key
 
+# Operator-only notes (not required for build/runtime)
+.grok/project_memory.md
+artifacts/ACCESS.md
+
 # Logs / OS
 *.log
 .grok/preview.log
