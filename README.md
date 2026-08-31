@@ -20,6 +20,6 @@ npm run build
 
 Preview in this Grok Build project listens on the sandbox contract port via `npm run dev`.
 
-Git: local `main`, freeze tag `CB-BUILD-20260830-003`, no remote. See [docs/GIT.md](docs/GIT.md).
+Git: `main` → `origin` `https://github.com/Krislucius/Convers-bot-public.git`. Freeze tag `CB-BUILD-20260830-003`. See [docs/GIT.md](docs/GIT.md).
 
 Do not create a second Grok app or a second `*.grok.me` host.
