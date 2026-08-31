@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync, cpSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, cpSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -59,6 +59,7 @@ describe("architecture lock (workspace)", () => {
     ]) {
       const from = join(root, rel);
       const to = join(clone, rel);
+      if (!existsSync(from)) continue;
       mkdirSync(join(to, ".."), { recursive: true });
       cpSync(from, to, { recursive: true });
     }
