@@ -19,7 +19,7 @@
  * Vite picks the values up because `loadEnv` prefix-matches entries already in
  * `process.env`, which is why the merge has to happen before Vite starts.
  */
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { dirname, join } from "node:path";
@@ -63,6 +63,52 @@ export function readAppEnv(root) {
 /** File values under the process environment: an explicit override wins. */
 export function mergeAppEnv(appEnv, processEnv) {
   return { ...appEnv, ...processEnv };
+}
+
+const SOURCE_COMMIT_RE = /^[0-9a-f]{7,40}$/i;
+
+function gitHead(root) {
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Git SHA baked into `VITE_SOURCE_COMMIT` for the client bundle.
+ * Explicit env (including Vercel) wins; otherwise `git rev-parse HEAD`.
+ * Invalid values are left unset so identity falls back to UNKNOWN.
+ */
+export function resolveViteSourceCommit(processEnv, root = projectRoot()) {
+  const candidates = [
+    processEnv?.VITE_SOURCE_COMMIT,
+    processEnv?.VERCEL_GIT_COMMIT_SHA,
+    processEnv?.SOURCE_COMMIT,
+    gitHead(root),
+  ];
+  for (const raw of candidates) {
+    const value = String(raw ?? "").trim();
+    if (SOURCE_COMMIT_RE.test(value)) return value.toLowerCase();
+  }
+  return "";
+}
+
+/** Apply the resolved SHA onto a child env without clobbering an explicit VITE_ value. */
+export function withSourceCommitEnv(env, root = projectRoot()) {
+  const next = { ...env };
+  if (!SOURCE_COMMIT_RE.test(String(next.VITE_SOURCE_COMMIT ?? "").trim())) {
+    const sha = resolveViteSourceCommit(next, root);
+    if (sha) next.VITE_SOURCE_COMMIT = sha;
+  } else {
+    next.VITE_SOURCE_COMMIT = String(next.VITE_SOURCE_COMMIT).trim().toLowerCase();
+  }
+  return next;
 }
 
 /**
@@ -110,7 +156,7 @@ function main(argv) {
     console.error("usage: node scripts/with-app-env.mjs <command> [args…]");
     process.exit(2);
   }
-  const env = mergeAppEnv(readAppEnv(projectRoot()), process.env);
+  const env = withSourceCommitEnv(mergeAppEnv(readAppEnv(projectRoot()), process.env));
   const child = spawn(command, args, { stdio: "inherit", env });
   // The dev server is long-running and is stopped by signalling this wrapper.
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {

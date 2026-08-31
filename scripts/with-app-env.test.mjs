@@ -11,6 +11,8 @@ import {
   parseAppEnv,
   projectRoot,
   readAppEnv,
+  resolveViteSourceCommit,
+  withSourceCommitEnv,
 } from "./with-app-env.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -125,4 +127,30 @@ test("the CLI still runs when invoked through a symlinked path", async () => {
     PRINT_FLAG,
   ]);
   assert.equal(stdout, "true");
+});
+
+test("resolveViteSourceCommit prefers an explicit VITE_SOURCE_COMMIT", () => {
+  assert.equal(
+    resolveViteSourceCommit({ VITE_SOURCE_COMMIT: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }, makeWorkspace()),
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  );
+});
+
+test("resolveViteSourceCommit ignores invalid SHAs", () => {
+  assert.equal(resolveViteSourceCommit({ VITE_SOURCE_COMMIT: "main" }, makeWorkspace()), "");
+});
+
+test("withSourceCommitEnv fills VITE_SOURCE_COMMIT from git when unset", () => {
+  const env = withSourceCommitEnv({ PATH: "/usr/bin" });
+  assert.match(String(env.VITE_SOURCE_COMMIT), /^[0-9a-f]{7,40}$/);
+});
+
+test("the wrapped command receives VITE_SOURCE_COMMIT", async () => {
+  const { stdout } = await execFileAsync(process.execPath, [
+    WRAPPER,
+    process.execPath,
+    "-e",
+    "process.stdout.write(String(process.env.VITE_SOURCE_COMMIT || ''));",
+  ]);
+  assert.match(stdout, /^[0-9a-f]{7,40}$/);
 });
