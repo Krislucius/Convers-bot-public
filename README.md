@@ -6,6 +6,8 @@ Production: https://swift-lake-solar-cosmic.grok.me
 
 Source root: `src/` (TanStack Start / React 19). Python `conversation-bot/` is superseded.
 
+Status reporting: functionality vs build workflow are independent tracks. See [docs/SERVICE_STATUS.md](docs/SERVICE_STATUS.md).
+
 ## Setup
 
 ```bash

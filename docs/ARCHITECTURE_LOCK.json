@@ -2,7 +2,7 @@
   "project_id": "01a048b8-c1f7-7382-9dfd-fb30bff7137d",
   "production_host": "https://swift-lake-solar-cosmic.grok.me",
   "architecture_revision": "CB-ARCH-20260901-001",
-  "architecture_hash": "8a94b24b6087de302676e8633514a46c87de9f096763e5bc933e8212f8fa2963",
+  "architecture_hash": "20e181c1f3fb8265b185202cb5b2acd54978e04d2afde4c97654a0e6bd65a738",
   "module_registry_hash": "a4fe461ac222e46d5ab65ee875e0d746d6e1ceb75cb4da864ebb351ec9bb92e4",
   "schema_hash": "3528d75fca92a4a448b756366f49f375815ea9baba09f0a147f59e45eaed3d64",
   "critical_contract_hash": "0b83d6c2bd7d26663f84dd737b3fd56a47e3ca917ca7364a09feb94148b213de",

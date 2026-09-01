@@ -15,6 +15,8 @@ GitHub is the durable remote and preferred recovery source once `main` has been 
 
 Git tags, hashes and architecture metadata are audit aids, not development locks. Current code may be patched, refactored and deployed normally.
 
+Git, repo, preflight, tests/build, credentials, publish/deploy, and recovery belong to **BUILD WORKFLOW**. They never become FUNCTION BLOCKERS. Product defects after a successful deploy are FUNCTION BLOCKERS. Canonical split: [docs/SERVICE_STATUS.md](SERVICE_STATUS.md).
+
 ## Session start
 
 ```bash

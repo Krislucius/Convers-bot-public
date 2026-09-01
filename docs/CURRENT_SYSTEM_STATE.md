@@ -40,8 +40,17 @@ OpenRouter (`sk-or-…`) and OpenRusRouter (`orr_live_…`). Keys persist on `ac
 
 Grok Build project `01a048b8-c1f7-7382-9dfd-fb30bff7137d` → `https://swift-lake-solar-cosmic.grok.me`.
 
-## CURRENT KNOWN BLOCKERS
+## CURRENT BLOCKER TRACKS
 
-- Previously truncated files/chats without recoverable raw text are `REIMPORT_REQUIRED`.
-- Provider keys are account-scoped DB text, not application-level encryption beyond the database platform.
-- `src/lib/council/task-mode.test.ts` previously failed under `node --test` because `manifest.ts` imported `@/lib` (fixed in this revision).
+Reporting contract: `docs/SERVICE_STATUS.md`. Functionality and build workflow are independent. Do not mix the lists.
+
+### FUNCTIONALITY
+
+Standing constraints (not defects): truncated sources without recoverable raw text are `REIMPORT_REQUIRED`; extractor cache is in-memory; provider keys are account-scoped DB text.
+
+FUNCTION BLOCKERS: none.
+
+### BUILD WORKFLOW
+
+- Production Publish is a user action; git `CB-BUILD-20260901-002` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
+- Local built-output preview omits PGLite wasm/data from the Vercel function output. Production uses Neon.
