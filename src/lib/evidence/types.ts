@@ -3,6 +3,8 @@ export const EXTRACTOR_VERSION = "extract-v1-heuristic";
 export const EXTRACTOR_MODEL = "none";
 export const EXTRACTOR_PROMPT_VERSION = "heuristic-sentences-v1";
 export const PACKER_VERSION = "packer-v2";
+/** Persist at most this many omitted rows on the context manifest. Counts stay on the audit. */
+export const OMITTED_PERSIST_MAX = 40;
 
 export const COVERAGE_COMPLETE_MEANING =
   "COMPLETE means every selected chunk was processed. It does not guarantee semantic recall or that every extracted claim was packed.";

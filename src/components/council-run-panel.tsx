@@ -9,7 +9,8 @@ import { CONTEXT_TOKEN_LIMIT, estimateCouncilRun } from "@/lib/council/protocol"
 import { patchTask } from "@/lib/council/store";
 import { councilPreflight } from "@/lib/council/task-mode";
 import type { Artifact, ContextItem, Project, ProjectFile, Task } from "@/lib/council/types";
-import { coverageBlocksCouncil, runEvidencePipeline } from "@/lib/evidence/pipeline";
+import { coverageBlocksCouncil } from "@/lib/evidence/pipeline";
+import { cachedEvidencePipeline } from "@/lib/evidence/pipeline-cache";
 import { ledgerFoldLabelFromManifest } from "@/lib/evidence/preview";
 import { formatTokens, formatUsd } from "@/lib/history/format";
 import type { ChatSource, HistoryMessage } from "@/lib/history/types";
@@ -44,7 +45,7 @@ export function CouncilRunPanel({
   projectFiles?: ProjectFile[];
 }) {
   const candidate = artifacts.find((row) => row.id === task.candidateArtifactId) ?? null;
-  const pipeline = runEvidencePipeline({
+  const pipeline = cachedEvidencePipeline({
     project,
     task,
     frozen,

@@ -1,7 +1,7 @@
 # Current system state
 
 Revision: CB-ARCH-20260901-002
-Recorded: 2026-09-01T18:25:00.000Z
+Recorded: 2026-09-02T00:22:00.000Z
 
 Factual state of the authoritative tree. Not a backlog.
 
@@ -35,7 +35,7 @@ OpenRouter (`sk-or-…`) and OpenRusRouter (`orr_live_…`). Keys persist on `ac
 
 ## CURRENT CONTEXT PIPELINE
 
-`runEvidencePipeline` chunks every selected chat/file, extracts non-canonical ledger claims, then packs mandatory canonical context plus ranked evidence into 6 000 tokens via `countTokens`. No character slice. Incomplete coverage blocks Council. Truncated stored extracts require re-import. Invalid citations are demoted.
+`runEvidencePipeline` chunks every selected chat/file, extracts non-canonical ledger claims, then packs mandatory canonical context plus ranked evidence into 6 000 tokens via incremental `countTokens`. The task UI caches one pipeline result per source/task fingerprint. Incomplete coverage blocks Council. Truncated stored extracts require re-import. Invalid citations are demoted.
 
 ## CURRENT CLOSED LOOP
 
@@ -57,5 +57,5 @@ FUNCTION BLOCKERS: none.
 
 ### BUILD WORKFLOW
 
-- Production Publish is a user action; git `CB-BUILD-20260902-001` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
+- Production Publish is a user action; git `CB-BUILD-20260902-002` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
 - Local built-output preview omits PGLite wasm/data from the Vercel function output. Production uses Neon.

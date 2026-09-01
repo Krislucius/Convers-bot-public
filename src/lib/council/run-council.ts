@@ -3,6 +3,7 @@ import { authMiddleware } from "@/lib/auth/middleware";
 import { redact, sanitizeApiKey } from "./api-key";
 import { isProviderId } from "./providers";
 import type { ChatMessage, Completion, PreflightClientReport, ProviderCreds, ProviderId } from "./types";
+import type { ProviderFailure } from "./provider-error";
 
 function normalizeCreds(data: ProviderCreds): ProviderCreds {
   const provider: ProviderId = isProviderId(data.provider) ? data.provider : "openrouter";
@@ -62,7 +63,7 @@ export const completeChat = createServerFn({ method: "POST" })
     async ({
       context,
       data,
-    }): Promise<{ ok: true; completion: Completion } | { ok: false; error: string }> => {
+    }): Promise<{ ok: true; completion: Completion } | { ok: false; error: string; failure?: ProviderFailure }> => {
       const provider: ProviderId = isProviderId(data.provider) ? data.provider : "openrouter";
       const { resolveStoredKey } = await import("./account.server");
       const apiKey = await resolveStoredKey(context.userId, provider, data.apiKey ?? "");
@@ -79,7 +80,9 @@ export const completeChat = createServerFn({ method: "POST" })
           completion: await mod.complete({ ...data, apiKey }),
         };
       } catch (err) {
-        return { ok: false, error: mod.operatorError(err, apiKey) };
+        const { toProviderFailure, formatProviderFailure } = await import("./provider-error");
+        const failure = toProviderFailure(err, { provider, model: data.model, stage: "complete" }, apiKey);
+        return { ok: false, error: formatProviderFailure(failure), failure };
       }
     },
   );

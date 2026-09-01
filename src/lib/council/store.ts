@@ -283,6 +283,33 @@ export function createTask(input: CreateTaskInput): Task {
   return task;
 }
 
+export function rememberResponses(taskId: string, rows: AgentResponse[]) {
+  if (!rows.length) return;
+  persist({
+    ...memory,
+    responses: [
+      ...memory.responses.filter((row) => row.taskId !== taskId || !rows.some((next) => next.id === row.id)),
+      ...rows,
+    ],
+  });
+  const task = memory.tasks.find((row) => row.id === taskId);
+  if (task) {
+    enqueue(() =>
+      persistAccountCouncil({
+        data: {
+          task,
+          responses: memory.responses.filter((row) => row.taskId === taskId),
+          result: memory.results.find((row) => row.taskId === taskId) ?? null,
+          artifact: memory.artifacts.find((row) => row.taskId === taskId) ?? null,
+          manifest: memory.manifests.filter((row) => row.taskId === taskId).at(-1) ?? null,
+          packet: memory.packets.find((row) => row.taskId === taskId) ?? null,
+          artifacts: memory.artifacts,
+        },
+      }),
+    );
+  }
+}
+
 export function rememberManifest(taskId: string, manifest: ContextManifest) {
   persist({
     ...memory,

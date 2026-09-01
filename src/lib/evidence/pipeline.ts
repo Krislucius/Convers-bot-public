@@ -6,7 +6,7 @@ import { chunkSelectedSources } from "./chunk.ts";
 import { extractChunks, memoryCache } from "./extract.ts";
 import { cacheFingerprint, extractorFingerprint } from "./hash.ts";
 import { packEvidence } from "./pack.ts";
-import { CHUNKER_VERSION, COVERAGE_COMPLETE_MEANING, PACKER_VERSION } from "./types.ts";
+import { CHUNKER_VERSION, COVERAGE_COMPLETE_MEANING, OMITTED_PERSIST_MAX, PACKER_VERSION } from "./types.ts";
 import type {
   CacheStore,
   CoverageAudit,
@@ -239,7 +239,7 @@ export function runEvidencePipeline(input: {
     })),
     sources,
     packedCitations: pack.packed.map((row) => row.citation),
-    omitted: pack.omitted,
+    omitted: pack.omitted.slice(0, OMITTED_PERSIST_MAX),
     audit,
     evidenceCount: entries.length,
     chunkCount: chunks.length,

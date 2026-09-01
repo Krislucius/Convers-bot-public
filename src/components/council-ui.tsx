@@ -109,7 +109,8 @@ export function StatusPill({ status }: { status: TaskStatus | CouncilStatus | st
     status === "SUCCEEDED" ||
     status === "ACCESSIBLE" ||
     status === "IMPORTED" ||
-    status === "CACHE_HIT"
+    status === "CACHE_HIT" ||
+    status === "DONE"
       ? "text-ok"
       : status === "FAILED" ||
           status === "BLOCKED" ||
@@ -123,7 +124,10 @@ export function StatusPill({ status }: { status: TaskStatus | CouncilStatus | st
             status === "UNSUPPORTED" ||
             status === "PARTIAL" ||
             status === "PATCH" ||
-            status === "REVIEW_OPEN"
+            status === "REVIEW_OPEN" ||
+            status === "PREPARING" ||
+            status === "WAITING" ||
+            status === "RUNNING"
           ? "text-warn"
           : status === "ARCHIVED"
             ? "text-faint"

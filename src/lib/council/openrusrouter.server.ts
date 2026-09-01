@@ -6,6 +6,14 @@ import {
   sanitizeApiKey,
 } from "./api-key";
 import type { ChatMessage, Completion, ConnectionCheck, PreflightClientReport } from "./types";
+import {
+  COMPLETE_TIMEOUT_MS,
+  ProviderError,
+  formatProviderFailure,
+  httpClassOfStatus,
+  providerFailure,
+  toProviderFailure,
+} from "./provider-error";
 
 const BASE = "https://openrusrouter.ru/v1";
 const PROVIDER = "openrusrouter" as const;
@@ -157,30 +165,15 @@ function formatLog(opts: {
 }
 
 export function operatorError(err: unknown, apiKey = ""): string {
-  const raw = redact(err instanceof Error ? err.message : String(err), apiKey);
-  const low = raw.toLowerCase();
-  if (low.includes("budget") || low.includes("cost limit")) {
+  if (err instanceof Error && err.message.toLowerCase().includes("cost limit")) {
     return "Council stopped because the configured cost limit was reached.";
   }
-  if (low.includes("timeout") || low.includes("timed out") || low.includes("abort")) {
-    return "One AI model did not respond in time. The Council run was stopped safely.";
-  }
-  if (
-    low.includes("401") ||
-    low.includes("403") ||
-    low.includes("unauthorized") ||
-    low.includes("invalid") ||
-    low.includes("неверн")
-  ) {
-    return keyRejectedMessage(401, raw, keyFingerprint(apiKey, PROVIDER), PROVIDER);
-  }
-  if (low.includes("not currently available") || low.includes("unpublished") || low.includes("unknown model")) {
-    return raw;
-  }
-  if (low.includes("not connected") || low.includes("api key") || low.includes("ключ")) {
+  if (err instanceof Error && /not connected|save an api key|ключ/i.test(err.message)) {
     return "OpenRusRouter is not connected. Connect your API key before running the Council.";
   }
-  return "The Council run was stopped. Check API Settings and try again.";
+  return formatProviderFailure(
+    toProviderFailure(err, { provider: PROVIDER, model: "", stage: "request" }, apiKey),
+  );
 }
 
 export async function preflightWithKey(opts: {
@@ -311,57 +304,56 @@ export async function complete(opts: {
   };
   if (opts.responseFormat) body.response_format = opts.responseFormat;
   const started = Date.now();
-  const retries = 2;
-  let last = "OpenRusRouter request failed";
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
-    let res: Response;
-    try {
-      res = await fetch(`${BASE}/chat/completions`, {
-        method: "POST",
-        headers: headersFor(key, true),
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(120000),
-      });
-    } catch (err) {
-      throw new Error(operatorError(err, key));
-    }
-    if (res.status === 429 || res.status >= 500) {
-      last = `OpenRusRouter HTTP ${res.status}`;
-      await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
-      continue;
-    }
-    const textBody = redact(await res.text(), key);
-    const payload = parseBody(textBody);
-    if (res.status === 401 || res.status === 403) {
-      throw new Error(
-        keyRejectedMessage(res.status, extractErrorMessage(payload, res.status), keyFingerprint(key, PROVIDER), PROVIDER),
-      );
-    }
-    if (!res.ok) {
-      throw new Error(operatorError(extractErrorMessage(payload, res.status), key));
-    }
-    const data = (payload ?? {}) as {
-      id?: string;
-      model?: string;
-      choices?: Array<{ message?: { content?: string | Array<{ text?: string }> } }>;
-      usage?: Record<string, unknown>;
-    };
-    const content = data.choices?.[0]?.message?.content ?? "";
-    const text = Array.isArray(content) ? content.map((p) => p.text ?? "").join("") : String(content);
-    const usage = data.usage ?? {};
-    const promptDetails = (usage.prompt_tokens_details ?? {}) as Record<string, unknown>;
-    const completionDetails = (usage.completion_tokens_details ?? {}) as Record<string, unknown>;
-    return {
-      text,
-      model: String(data.model ?? opts.model),
-      inputTokens: asInt(usage.prompt_tokens),
-      cachedInputTokens: asInt(promptDetails.cached_tokens),
-      outputTokens: asInt(usage.completion_tokens),
-      reasoningTokens: asInt(completionDetails.reasoning_tokens),
-      cost: asFloat(usage.cost),
-      requestId: data.id ? String(data.id) : null,
-      latencyMs: Date.now() - started,
-    };
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/chat/completions`, {
+      method: "POST",
+      headers: headersFor(key, true),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(COMPLETE_TIMEOUT_MS),
+    });
+  } catch (err) {
+    throw new ProviderError(toProviderFailure(err, { provider: PROVIDER, model: opts.model, stage: "complete" }, key));
   }
-  throw new Error(operatorError(last, key));
+  const textBody = redact(await res.text(), key);
+  const payload = parseBody(textBody);
+  if (res.status === 401 || res.status === 403) {
+    throw new Error(
+      keyRejectedMessage(res.status, extractErrorMessage(payload, res.status), keyFingerprint(key, PROVIDER), PROVIDER),
+    );
+  }
+  if (!res.ok) {
+    throw new ProviderError(
+      providerFailure({
+        provider: PROVIDER,
+        model: opts.model,
+        stage: "complete",
+        httpStatus: res.status,
+        httpClass: httpClassOfStatus(res.status),
+        raw: extractErrorMessage(payload, res.status),
+      }),
+    );
+  }
+  const data = (payload ?? {}) as {
+    id?: string;
+    model?: string;
+    choices?: Array<{ message?: { content?: string | Array<{ text?: string }> } }>;
+    usage?: Record<string, unknown>;
+  };
+  const content = data.choices?.[0]?.message?.content ?? "";
+  const text = Array.isArray(content) ? content.map((p) => p.text ?? "").join("") : String(content);
+  const usage = data.usage ?? {};
+  const promptDetails = (usage.prompt_tokens_details ?? {}) as Record<string, unknown>;
+  const completionDetails = (usage.completion_tokens_details ?? {}) as Record<string, unknown>;
+  return {
+    text,
+    model: String(data.model ?? opts.model),
+    inputTokens: asInt(usage.prompt_tokens),
+    cachedInputTokens: asInt(promptDetails.cached_tokens),
+    outputTokens: asInt(usage.completion_tokens),
+    reasoningTokens: asInt(completionDetails.reasoning_tokens),
+    cost: asFloat(usage.cost),
+    requestId: data.id ? String(data.id) : null,
+    latencyMs: Date.now() - started,
+  };
 }

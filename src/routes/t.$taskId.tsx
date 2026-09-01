@@ -10,10 +10,10 @@ import { OpLogPanel } from "@/components/op-log";
 import { displayVerdict } from "@/lib/council/evaluate";
 import { runCouncil } from "@/lib/council/orchestrate";
 import { providerName } from "@/lib/council/providers";
-import { applyCouncilOutput, markTaskFailed, patchTask, rememberManifest, useStore } from "@/lib/council/store";
+import { applyCouncilOutput, markTaskFailed, patchTask, rememberManifest, rememberResponses, useStore } from "@/lib/council/store";
 import { councilPreflight } from "@/lib/council/task-mode";
 import { useSession } from "@/lib/council/session";
-import type { AgentKey } from "@/lib/council/types";
+import type { AgentKey, AgentProgress } from "@/lib/council/types";
 import { selectedChatsToContext } from "@/lib/history/provenance";
 import { formatCouncilOpLog, formatExceptionLog, formatOpLog } from "@/lib/op-log";
 
@@ -25,7 +25,7 @@ const AGENTS: Array<[AgentKey, string]> = [
   ["CLAUDE", "Claude analysis"],
 ];
 
-const RUNNING = new Set(["COUNCIL_ROUND_1", "COUNCIL_ROUND_2", "SYNTHESIS"]);
+const RUNNING = new Set(["PREPARING", "COUNCIL_ROUND_1", "COUNCIL_ROUND_2", "SYNTHESIS"]);
 
 function ListBlock({ title, rows }: { title: string; rows: string[] }) {
   return (
@@ -64,6 +64,8 @@ function TaskPage() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(task?.error ?? "");
   const [log, setLog] = useState("");
+  const [stage, setStage] = useState("PREPARING");
+  const [agentState, setAgentState] = useState<Partial<Record<AgentKey, AgentProgress>>>({});
 
   if (!task || !project) {
     return (
@@ -122,8 +124,17 @@ function TaskPage() {
       return;
     }
     setBusy(true);
-    setMsg("Council is running. This can take a few minutes.");
-    patchTask(currentTask.id, { status: "COUNCIL_ROUND_1", error: null });
+    setMsg("Preparing the evidence packet…");
+    setStage("PREPARING");
+    setAgentState({
+      GPT: { state: "WAITING", attempt: 0, maxAttempts: 3, error: null },
+      GROK: { state: "WAITING", attempt: 0, maxAttempts: 3, error: null },
+      CLAUDE: { state: "WAITING", attempt: 0, maxAttempts: 3, error: null },
+    });
+    patchTask(currentTask.id, { status: "PREPARING", error: null });
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 0);
+    });
     try {
       const out = await runCouncil({
         creds,
@@ -137,6 +148,9 @@ function TaskPage() {
         parentPacket,
         onProgress: (progress) => {
           if (progress.manifest) rememberManifest(currentTask.id, progress.manifest);
+          if (progress.responses?.length) rememberResponses(currentTask.id, progress.responses);
+          if (progress.agents) setAgentState(progress.agents);
+          if (progress.stage) setStage(progress.stage);
           patchTask(currentTask.id, { status: progress.status, error: null });
           setMsg(progress.message);
         },
@@ -155,7 +169,7 @@ function TaskPage() {
       const text =
         err instanceof Error
           ? err.message
-          : "The Council run was stopped. Check API Settings and try again.";
+          : "Council stopped during request: provider error.";
       markTaskFailed(currentTask.id, text);
       setMsg(text);
       setLog(
@@ -230,7 +244,29 @@ function TaskPage() {
         <Panel>
           <p className="mb-1 text-xs font-semibold tracking-widest text-muted uppercase">In progress</p>
           <h2 className="font-display mb-2 text-xl">Council is running</h2>
-          <p className="text-muted">{msg || "This can take a few minutes."}</p>
+          <p className="text-muted">{msg || "Preparing…"}</p>
+          <p className="mt-3 mb-2 text-xs font-semibold tracking-widest text-muted uppercase">{stage}</p>
+          <ul className="m-0 grid list-none gap-2 p-0 sm:grid-cols-3">
+            {AGENTS.map(([agent]) => {
+              const row = agentState[agent];
+              const state = row?.state ?? "WAITING";
+              return (
+                <li key={agent} className="rounded-md bg-subtle px-3 py-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <strong className="text-fg">{agent}</strong>
+                    <StatusPill status={state} />
+                  </div>
+                  <p className="m-0 mt-1 text-xs text-faint">
+                    {state === "RUNNING" && row
+                      ? `attempt ${row.attempt}/${row.maxAttempts}`
+                      : state === "FAILED" && row?.error
+                        ? row.error
+                        : state.toLowerCase()}
+                  </p>
+                </li>
+              );
+            })}
+          </ul>
         </Panel>
       ) : null}
 

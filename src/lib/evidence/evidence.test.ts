@@ -6,8 +6,11 @@ import { hashContent } from "../history/hash.ts";
 import type { ChatSource, HistoryMessage } from "../history/types.ts";
 import { parseCitation } from "./extract.ts";
 import { memoryCache } from "./extract.ts";
-import { packEvidence, SOURCE_CAP_RATIO, assemblePackedContext } from "./pack.ts";
+import { packEvidence, SOURCE_CAP_RATIO, assemblePackedContext, OMITTED_CLAIM_CHARS, claimLine } from "./pack.ts";
 import { coverageBlocksCouncil, runEvidencePipeline, sourceNeedsReimport } from "./pipeline.ts";
+import { cachedEvidencePipeline, clearEvidencePipelineCache } from "./pipeline-cache.ts";
+import { persistableManifest } from "../council/manifest.ts";
+import { OMITTED_PERSIST_MAX } from "./types.ts";
 import {
   PACKED_CITATION_PREVIEW,
   ledgerFoldLabel,
@@ -634,5 +637,120 @@ describe("evidence preview helpers", () => {
     assert.ok(cut.endsWith("…"));
     assert.equal(cut.length, 161);
     assert.equal(truncateClaim(long, 20).length, 21);
+  });
+});
+
+describe("packer performance and pipeline cache", () => {
+  function entry(i: number, sourceId = "file1"): import("./types.ts").LedgerEntry {
+    return {
+      id: `e${i}`,
+      chunkId: `c${i % 543}`,
+      projectId: "p1",
+      sourceKind: sourceId === "file1" ? "FILE" : "CHAT",
+      sourceId,
+      claim: `Historically asserted claim ${i} describes a frozen contract about clocks stay distinct in matching.`,
+      status: "HISTORICALLY_ASSERTED",
+      citation: sourceId === "file1" ? `[FILE:file1:${i}-${i + 40}]` : `[CHAT:chat1:${i}]`,
+      extractorFingerprint: "fp",
+      kind: "EVIDENCE",
+    };
+  }
+
+  it("packs 20k claims without a multi-second stall and keeps packed text in budget", () => {
+    const entries = Array.from({ length: 20000 }, (_, i) => entry(i, i % 3 === 0 ? "chat1" : "file1"));
+    const started = performance.now();
+    const packed = packEvidence({
+      project,
+      task: task({ selectedChatSourceIds: ["chat1"], selectedFileIds: ["file1"] }),
+      frozen: [],
+      entries,
+      selectedSourceCount: 2,
+    });
+    const ms = performance.now() - started;
+    assert.equal(packed.ok, true);
+    assert.ok(packed.packed.length > 0);
+    assert.ok(countTokens(packed.text) <= CURRENT_CONTEXT_TOKEN_LIMIT);
+    assert.equal(packed.totalTokens, countTokens(packed.text));
+    assert.ok(ms < 800, `packer took ${Math.round(ms)}ms`);
+    assert.ok(packed.omitted.every((row) => row.claim.length <= OMITTED_CLAIM_CHARS + 1));
+  });
+
+  it("matches incremental accounting against full assembled packed text", () => {
+    const entries = Array.from({ length: 400 }, (_, i) => entry(i));
+    const packed = packEvidence({
+      project,
+      task: task({ selectedFileIds: ["file1"] }),
+      frozen: [],
+      entries,
+      selectedSourceCount: 1,
+    });
+    assert.equal(packed.text, assemblePackedContext(packed.text.slice(0, packed.text.indexOf("\n## EVIDENCE LEDGER")), packed.packed));
+    const lines = packed.packed.map(claimLine).join("\n");
+    assert.ok(packed.text.includes(lines.slice(0, 80)));
+    assert.ok(packed.omitted.some((row) => row.reason === "BUDGET"));
+  });
+
+  it("caps persisted omitted payload while keeping full omission counts", () => {
+    const entries = Array.from({ length: 3000 }, (_, i) => entry(i));
+    const result = packEvidence({
+      project,
+      task: task({ selectedFileIds: ["file1"] }),
+      frozen: [],
+      entries,
+      selectedSourceCount: 1,
+    });
+    const pipeline = runEvidencePipeline({
+      project,
+      task: task({ selectedChatSourceIds: ["c1"] }),
+      frozen: [],
+      chatSources: [
+        chat(
+          "c1",
+          "huge",
+          Array.from({ length: 80 }, (_, i) => `Turn ${i} documents that clocks stay distinct under matching load.`).join("\n\n"),
+        ),
+      ],
+      historyMessages: Array.from({ length: 80 }, (_, i) =>
+        message("c1", i + 1, `Turn ${i} documents that clocks stay distinct under matching load.`),
+      ),
+      projectFiles: [],
+    });
+    assert.ok(pipeline.pack.omitted.length >= pipeline.manifest.omitted.length);
+    assert.ok(pipeline.manifest.omitted.length <= OMITTED_PERSIST_MAX);
+    assert.equal(pipeline.manifest.audit.omittedEvidence, pipeline.pack.omitted.length);
+    const persisted = persistableManifest({
+      project: { id: "p1", name: project.name, description: project.description, createdAt: "" },
+      task: task({ selectedChatSourceIds: ["c1"] }),
+      context: [],
+      chatSources: [],
+      historyMessages: [],
+      artifacts: [],
+      projectFiles: [],
+      contextText: pipeline.pack.text,
+      evidence: pipeline.manifest,
+    });
+    assert.ok(JSON.stringify(persisted.payload.evidence?.omitted ?? []).length < 200_000);
+    assert.ok(result.omitted.length > 0);
+  });
+
+  it("reuses a cached pipeline on repeated renders and Run", () => {
+    clearEvidencePipelineCache();
+    const input = {
+      project,
+      task: task({ selectedChatSourceIds: ["c1"] }),
+      frozen: [] as ContextItem[],
+      chatSources: [chat("c1", "chat", "Clocks stay distinct and inventory stays isolated.")],
+      historyMessages: [message("c1", 1, "Clocks stay distinct and inventory stays isolated.")],
+      projectFiles: [] as ProjectFile[],
+    };
+    const first = cachedEvidencePipeline(input);
+    const second = cachedEvidencePipeline(input);
+    assert.equal(first, second);
+    assert.equal(first.pack.text, second.pack.text);
+    const third = cachedEvidencePipeline({
+      ...input,
+      task: task({ selectedChatSourceIds: ["c1"], prompt: "changed prompt for clocks" }),
+    });
+    assert.notEqual(third, first);
   });
 });

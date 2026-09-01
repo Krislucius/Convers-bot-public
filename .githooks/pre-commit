@@ -27,6 +27,7 @@ secret_hits=$(git diff --cached --diff-filter=ACMR --unified=0 \
   -- . \
   ':(exclude)src/lib/council/api-key.test.ts' \
   ':(exclude)src/lib/council/api-key.ts' \
+  ':(exclude)src/lib/council/provider-error.test.ts' \
   ':(exclude)src/lib/council/providers.ts' \
   ':(exclude).githooks/*' \
   ':(exclude)docs/GIT.md' \

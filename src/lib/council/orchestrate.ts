@@ -21,14 +21,25 @@ import {
 } from "./protocol";
 import { sanitizeApiKey } from "./api-key";
 import { councilPreflight } from "./task-mode";
-import { CONTEXT_BUDGET_EXCEEDED, coverageBlocksCouncil, runEvidencePipeline } from "@/lib/evidence/pipeline";
+import { CONTEXT_BUDGET_EXCEEDED, coverageBlocksCouncil } from "@/lib/evidence/pipeline";
+import { cachedEvidencePipeline, type EvidencePipelineResult } from "@/lib/evidence/pipeline-cache";
 import { countTokens } from "@/lib/evidence/tokens";
 import { councilAgentFailure, failedResponses, survivingResponses, synthesizerAgent } from "./agents";
 import { sanitizeEvidenceLabels } from "./citations";
 import { buildImplementationPacket } from "./packet";
 import { artifactStatusForReview, reviewVerdictFromStatus } from "./review";
+import {
+  PROVIDER_ATTEMPTS,
+  formatProviderFailure,
+  isRetryableFailure,
+  providerFailure,
+  retryDelayMs,
+  toProviderFailure,
+  type ProviderFailure,
+} from "./provider-error";
 import type {
   AgentKey,
+  AgentProgress,
   AgentResponse,
   Artifact,
   ContextItem,
@@ -42,11 +53,24 @@ import type {
 import type { ChatSource, HistoryMessage } from "@/lib/history/types";
 import type { ProjectFile } from "./types";
 
+export type CouncilStage = "PREPARING" | "ROUND_1" | "ROUND_2" | "SYNTHESIS";
+
 export type CouncilProgress = {
   status: TaskStatus;
   message: string;
   manifest?: ContextManifest;
+  stage?: CouncilStage;
+  agents?: Partial<Record<AgentKey, AgentProgress>>;
+  responses?: AgentResponse[];
 };
+
+function waitingAgents(): Record<AgentKey, AgentProgress> {
+  return {
+    GPT: { state: "WAITING", attempt: 0, maxAttempts: PROVIDER_ATTEMPTS, error: null },
+    GROK: { state: "WAITING", attempt: 0, maxAttempts: PROVIDER_ATTEMPTS, error: null },
+    CLAUDE: { state: "WAITING", attempt: 0, maxAttempts: PROVIDER_ATTEMPTS, error: null },
+  };
+}
 
 export async function runCouncil(input: {
   creds: ProviderCreds;
@@ -58,6 +82,7 @@ export async function runCouncil(input: {
   projectFiles?: ProjectFile[];
   artifacts?: Artifact[];
   parentPacket?: ImplementationPacket | null;
+  pipeline?: EvidencePipelineResult;
   onProgress?: (progress: CouncilProgress) => void;
 }): Promise<RunCouncilOutput> {
   const artifacts = input.artifacts ?? [];
@@ -73,8 +98,16 @@ export async function runCouncil(input: {
   const candidate = input.task.candidateArtifactId
     ? artifacts.find((row) => row.id === input.task.candidateArtifactId) ?? null
     : null;
+  const agents = waitingAgents();
 
-  const pipeline = runEvidencePipeline({
+  input.onProgress?.({
+    status: "PREPARING",
+    stage: "PREPARING",
+    agents,
+    message: "Preparing the evidence packet…",
+  });
+
+  const pipelineInput = {
     project: input.project,
     task: input.task,
     frozen: input.context.filter((row) => row.kind !== "RAW_HISTORY"),
@@ -82,7 +115,8 @@ export async function runCouncil(input: {
     historyMessages: input.historyMessages ?? [],
     projectFiles: (input.projectFiles ?? []).filter((file) => (input.task.selectedFileIds ?? []).includes(file.id)),
     candidateText: candidate ? `# ${candidate.title} v${candidate.version}\n\n${candidate.content}` : null,
-  });
+  };
+  const pipeline = input.pipeline ?? cachedEvidencePipeline(pipelineInput);
   const coverageError = coverageBlocksCouncil(pipeline.coverage);
   if (coverageError) {
     return precheckOutput(input.task, coverageError);
@@ -106,6 +140,8 @@ export async function runCouncil(input: {
 
   input.onProgress?.({
     status: "COUNCIL_ROUND_1",
+    stage: "ROUND_1",
+    agents,
     message: `Checking ${providerName} and the three review models…`,
     manifest,
   });
@@ -135,6 +171,10 @@ export async function runCouncil(input: {
     return est;
   };
 
+  const emit = (status: TaskStatus, stage: CouncilStage, message: string, extra?: Partial<CouncilProgress>) => {
+    input.onProgress?.({ status, stage, agents: { ...agents }, message, ...extra });
+  };
+
   const ask = async (
     agent: AgentKey,
     round: 1 | 2 | 3,
@@ -144,46 +184,117 @@ export async function runCouncil(input: {
     temperature: number,
     responseFormat?: Record<string, unknown>,
   ): Promise<AgentResponse> => {
-    const est = spend(`${system}${user}`, maxTokens, `${agent} round ${round}`);
-    const out = await completeChat({
-      provider: input.creds.provider,
-      apiKey: key,
-      model: models[agent],
-      messages: chat(system, user),
-      maxTokens,
-      temperature,
-      responseFormat,
-    });
-    if (!out.ok) {
-      return responseFromError(input.task.id, agent, round, models[agent], system, user, out.error, manifest);
+    const stage = `${agent} round ${round}`;
+    let est = 0;
+    try {
+      est = spend(`${system}${user}`, maxTokens, stage);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Council stopped because the configured cost limit was reached.";
+      agents[agent] = { state: "FAILED", attempt: 0, maxAttempts: PROVIDER_ATTEMPTS, error: message };
+      emit(round === 3 ? "SYNTHESIS" : round === 2 ? "COUNCIL_ROUND_2" : "COUNCIL_ROUND_1", round === 3 ? "SYNTHESIS" : round === 2 ? "ROUND_2" : "ROUND_1", message);
+      return responseFromError(input.task.id, agent, round, models[agent], system, user, message, manifest);
     }
-    spent += out.completion.cost ?? est;
-    return responseFromCompletion(input.task.id, agent, round, system, user, out.completion, manifest);
+    let lastFailure: ProviderFailure | null = null;
+    for (let attempt = 1; attempt <= PROVIDER_ATTEMPTS; attempt += 1) {
+      agents[agent] = { state: "RUNNING", attempt, maxAttempts: PROVIDER_ATTEMPTS, error: null };
+      emit(
+        round === 3 ? "SYNTHESIS" : round === 2 ? "COUNCIL_ROUND_2" : "COUNCIL_ROUND_1",
+        round === 3 ? "SYNTHESIS" : round === 2 ? "ROUND_2" : "ROUND_1",
+        attempt > 1
+          ? `${agent} retry ${attempt}/${PROVIDER_ATTEMPTS} after ${lastFailure?.httpClass ?? "error"}.`
+          : `${agent} is running (${attempt}/${PROVIDER_ATTEMPTS}).`,
+      );
+      try {
+        const out = await completeChat({
+          provider: input.creds.provider,
+          apiKey: key,
+          model: models[agent],
+          messages: chat(system, user),
+          maxTokens,
+          temperature,
+          responseFormat,
+        });
+        if (out.ok) {
+          spent += out.completion.cost ?? est;
+          agents[agent] = { state: "DONE", attempt, maxAttempts: PROVIDER_ATTEMPTS, error: null };
+          emit(
+            round === 3 ? "SYNTHESIS" : round === 2 ? "COUNCIL_ROUND_2" : "COUNCIL_ROUND_1",
+            round === 3 ? "SYNTHESIS" : round === 2 ? "ROUND_2" : "ROUND_1",
+            `${agent} finished.`,
+          );
+          return responseFromCompletion(input.task.id, agent, round, system, user, out.completion, manifest);
+        }
+        lastFailure =
+          out.failure ??
+          toProviderFailure(out.error, {
+            provider: input.creds.provider,
+            model: models[agent],
+            stage,
+          });
+      } catch (err) {
+        lastFailure = toProviderFailure(err, {
+          provider: input.creds.provider,
+          model: models[agent],
+          stage,
+        });
+      }
+      const retryable = isRetryableFailure(lastFailure);
+      if (retryable && attempt < PROVIDER_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, retryDelayMs(attempt)));
+        continue;
+      }
+      const failure = lastFailure
+        ? {
+            ...lastFailure,
+            provider: input.creds.provider,
+            model: models[agent],
+            stage,
+            retryExhausted: retryable,
+            message: "",
+          }
+        : providerFailure({
+            provider: input.creds.provider,
+            model: models[agent],
+            stage,
+            retryExhausted: retryable,
+          });
+      failure.message = formatProviderFailure(failure);
+      agents[agent] = { state: "FAILED", attempt, maxAttempts: PROVIDER_ATTEMPTS, error: failure.message };
+      emit(
+        round === 3 ? "SYNTHESIS" : round === 2 ? "COUNCIL_ROUND_2" : "COUNCIL_ROUND_1",
+        round === 3 ? "SYNTHESIS" : round === 2 ? "ROUND_2" : "ROUND_1",
+        failure.message,
+      );
+      return responseFromError(input.task.id, agent, round, models[agent], system, user, failure.message, manifest);
+    }
+    const fallback = providerFailure({
+      provider: input.creds.provider,
+      model: models[agent],
+      stage,
+      retryExhausted: true,
+    });
+    agents[agent] = { state: "FAILED", attempt: PROVIDER_ATTEMPTS, maxAttempts: PROVIDER_ATTEMPTS, error: fallback.message };
+    return responseFromError(input.task.id, agent, round, models[agent], system, user, fallback.message, manifest);
   };
 
   try {
-    input.onProgress?.({
-      status: "COUNCIL_ROUND_1",
-      message:
-        mode === "CREATE"
-          ? "Round 1 — independent analysis from GPT, Grok, and Claude."
-          : "Round 1 — independent reviews from GPT, Grok, and Claude.",
-    });
+    emit("COUNCIL_ROUND_1", "ROUND_1", "Round 1 — GPT, Grok, and Claude.");
     const round1 = await Promise.all(AGENTS.map((agent) => ask(agent, 1, roles[agent], ctx, AGENT_MAX, 0.2)));
     responses.push(...round1);
+    emit("COUNCIL_ROUND_1", "ROUND_1", "Round 1 complete.", { responses: [...responses] });
     const fail1 = councilAgentFailure(round1);
     if (fail1) {
       return failedOutput(input.task, responses, fail1, { manifest });
     }
     const alive = survivingResponses(round1).map((row) => row.agent);
 
-    input.onProgress?.({
-      status: "COUNCIL_ROUND_2",
-      message:
-        mode === "CREATE"
-          ? "Round 2 — cross-examination of the reconstructed architecture."
-          : "Round 2 — the surviving reviewers are reading each other.",
-    });
+    emit(
+      "COUNCIL_ROUND_2",
+      "ROUND_2",
+      mode === "CREATE"
+        ? "Round 2 — cross-examination of the reconstructed architecture."
+        : "Round 2 — the surviving reviewers are reading each other.",
+    );
     const round2 = await Promise.all(
       alive.map((agent) => {
         const system = `${roles[agent]}\n${ROUND2}`;
@@ -198,6 +309,7 @@ export async function runCouncil(input: {
       }),
     );
     responses.push(...round2);
+    emit("COUNCIL_ROUND_2", "ROUND_2", "Round 2 complete.", { responses: [...responses] });
     const fail2 = councilAgentFailure([...survivingResponses(round1), ...round2]);
     if (fail2) {
       return failedOutput(input.task, responses, fail2, { manifest });
@@ -205,13 +317,13 @@ export async function runCouncil(input: {
 
     const synthSpec = synthesisForMode(mode);
     const synthAgent = synthesizerAgent(round2);
-    input.onProgress?.({
-      status: "SYNTHESIS",
-      message:
-        mode === "CREATE"
-          ? "Artifact synthesis — writing the canonical document from Round 1 and Round 2."
-          : "Synthesis — combining the positions and applying the safety gate.",
-    });
+    emit(
+      "SYNTHESIS",
+      "SYNTHESIS",
+      mode === "CREATE"
+        ? "Artifact synthesis — writing the canonical document from Round 1 and Round 2."
+        : "Synthesis — combining the positions and applying the safety gate.",
+    );
     const synthUser = [
       `CONTEXT MANIFEST HASH ${manifest.hash}`,
       ctx,
@@ -219,6 +331,7 @@ export async function runCouncil(input: {
     ].join("\n\n");
     const synth = await ask(synthAgent, 3, synthSpec.prompt, synthUser, synthSpec.max, 0, synthSpec.schema);
     responses.push(synth);
+    emit("SYNTHESIS", "SYNTHESIS", "Synthesis complete.", { responses: [...responses] });
     if (synth.error) {
       return failedOutput(input.task, responses, synth.error, { manifest });
     }
@@ -293,7 +406,13 @@ export async function runCouncil(input: {
     const message =
       err instanceof Error && err.message.toLowerCase().includes("cost limit")
         ? "Council stopped because the configured cost limit was reached."
-        : "The Council run was stopped. Check API Settings and try again.";
+        : formatProviderFailure(
+            toProviderFailure(err, {
+              provider: input.creds.provider,
+              model: "",
+              stage: "Council",
+            }),
+          );
     return failedOutput(input.task, responses, message, { manifest });
   }
 }

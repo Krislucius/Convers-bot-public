@@ -17,11 +17,21 @@ export type ContextStatus = "FROZEN" | "ACTIVE" | "RAW";
 
 export type TaskStatus =
   | "CREATED"
+  | "PREPARING"
   | "COUNCIL_ROUND_1"
   | "COUNCIL_ROUND_2"
   | "SYNTHESIS"
   | "COMPLETE"
   | "FAILED";
+
+export type AgentRunState = "WAITING" | "RUNNING" | "DONE" | "FAILED";
+
+export type AgentProgress = {
+  state: AgentRunState;
+  attempt: number;
+  maxAttempts: number;
+  error: string | null;
+};
 
 export type CouncilStatus = "APPROVED" | "PATCH" | "BLOCKED" | "USER_DECISION_REQUIRED";
 

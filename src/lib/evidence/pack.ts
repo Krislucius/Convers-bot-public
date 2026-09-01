@@ -1,12 +1,15 @@
 import type { ContextItem, Project, Task } from "../council/types.ts";
 import { CURRENT_CONTEXT_TOKEN_LIMIT } from "../architecture/contracts.ts";
-import { countTokens, fitsTokenBudget } from "./tokens.ts";
+import { countTokens } from "./tokens.ts";
+import { truncateClaim } from "./preview.ts";
 import type { LedgerEntry, PackOmission, PackResult } from "./types.ts";
 import { PACKER_VERSION } from "./types.ts";
 
 export { PACKER_VERSION };
 
 export const SOURCE_CAP_RATIO = 0.4;
+export const OMITTED_CLAIM_CHARS = 96;
+export const LEDGER_HEADER = "\n## EVIDENCE LEDGER (non-canonical historical evidence)\n";
 
 function tokensOf(text: string): string[] {
   return text
@@ -15,13 +18,17 @@ function tokensOf(text: string): string[] {
     .filter((row) => row.length > 2);
 }
 
-export function scoreEvidence(entry: LedgerEntry, task: Task): number {
-  const query = new Set(tokensOf(`${task.title} ${task.prompt} ${task.decisionQuestion ?? ""}`));
+function scoreAgainst(entry: LedgerEntry, query: Set<string>): number {
   if (query.size === 0) return 0;
   const claim = tokensOf(entry.claim);
   let hits = 0;
   for (const token of claim) if (query.has(token)) hits += 1;
   return hits;
+}
+
+export function scoreEvidence(entry: LedgerEntry, task: Task): number {
+  const query = new Set(tokensOf(`${task.title} ${task.prompt} ${task.decisionQuestion ?? ""}`));
+  return scoreAgainst(entry, query);
 }
 
 export function buildMandatoryContext(
@@ -60,23 +67,37 @@ export function buildMandatoryContext(
   return chunks.join("\n");
 }
 
-function claimLine(entry: LedgerEntry): string {
+export function claimLine(entry: LedgerEntry): string {
   return `- [${entry.status}] ${entry.claim} ${entry.citation}`;
 }
 
 export function assemblePackedContext(mandatory: string, packed: LedgerEntry[]): string {
-  const header = "\n## EVIDENCE LEDGER (non-canonical historical evidence)\n";
-  if (!packed.length) return `${mandatory}${header}(none)`;
-  return `${mandatory}${header}${packed.map(claimLine).join("\n")}`;
+  if (!packed.length) return `${mandatory}${LEDGER_HEADER}(none)`;
+  return `${mandatory}${LEDGER_HEADER}${packed.map(claimLine).join("\n")}`;
+}
+
+function compactOmission(entry: LedgerEntry, reason: PackOmission["reason"]): PackOmission {
+  return {
+    citation: entry.citation,
+    claim: truncateClaim(entry.claim, OMITTED_CLAIM_CHARS),
+    sourceId: entry.sourceId,
+    reason,
+  };
 }
 
 function rankEntries(entries: LedgerEntry[], task: Task): LedgerEntry[] {
-  return [...entries].sort((a, b) => {
-    const score = scoreEvidence(b, task) - scoreEvidence(a, task);
-    if (score !== 0) return score;
-    if (a.sourceId !== b.sourceId) return a.sourceId < b.sourceId ? -1 : 1;
-    return a.citation < b.citation ? -1 : 1;
-  });
+  const query = new Set(tokensOf(`${task.title} ${task.prompt} ${task.decisionQuestion ?? ""}`));
+  return [...entries]
+    .map((entry) => ({
+      entry,
+      score: scoreAgainst(entry, query),
+    }))
+    .sort((a, b) => {
+      if (a.score !== b.score) return b.score - a.score;
+      if (a.entry.sourceId !== b.entry.sourceId) return a.entry.sourceId < b.entry.sourceId ? -1 : 1;
+      return a.entry.citation < b.entry.citation ? -1 : 1;
+    })
+    .map((row) => row.entry);
 }
 
 export function packEvidence(input: {
@@ -109,8 +130,8 @@ export function packEvidence(input: {
   const selectedSourceCount =
     input.selectedSourceCount ?? new Set(input.entries.map((row) => row.sourceId)).size;
   const applyCap = selectedSourceCount > 1;
-  const remaining = budget - mandatoryTokens;
-  const cap = applyCap ? Math.max(0, Math.floor(remaining * SOURCE_CAP_RATIO)) : remaining;
+  const remainingBudget = budget - mandatoryTokens;
+  const cap = applyCap ? Math.max(0, Math.floor(remainingBudget * SOURCE_CAP_RATIO)) : remainingBudget;
 
   const ranked = rankEntries(input.entries, input.task);
   const packed: LedgerEntry[] = [];
@@ -118,44 +139,51 @@ export function packEvidence(input: {
   const held: LedgerEntry[] = [];
   const seenClaim = new Set<string>();
   const perSource = new Map<string, number>();
+  const lineTokenCache = new Map<string, number>();
+  const packedBaseTokens = countTokens(`${mandatory}${LEDGER_HEADER}`);
+  let used = packedBaseTokens;
+
+  const tokensFor = (entry: LedgerEntry): number => {
+    const cached = lineTokenCache.get(entry.id);
+    if (cached != null) return cached;
+    const n = countTokens(claimLine(entry));
+    lineTokenCache.set(entry.id, n);
+    return n;
+  };
 
   for (const entry of ranked) {
     const claimKey = entry.claim.trim().toLowerCase();
     if (seenClaim.has(claimKey)) {
-      omitted.push({ citation: entry.citation, claim: entry.claim, sourceId: entry.sourceId, reason: "DUPLICATE" });
+      omitted.push(compactOmission(entry, "DUPLICATE"));
       continue;
     }
-    const candidate = assemblePackedContext(mandatory, [...packed, entry]);
-    if (!fitsTokenBudget(candidate, budget)) {
-      omitted.push({ citation: entry.citation, claim: entry.claim, sourceId: entry.sourceId, reason: "BUDGET" });
+    const lineTokens = tokensFor(entry);
+    if (lineTokens > budget - used) {
+      omitted.push(compactOmission(entry, "BUDGET"));
       continue;
     }
-    const lineTokens = countTokens(claimLine(entry));
     const sourceUsed = perSource.get(entry.sourceId) ?? 0;
     if (applyCap && sourceUsed + lineTokens > cap && packed.some((row) => row.sourceId === entry.sourceId)) {
       held.push(entry);
-      omitted.push({ citation: entry.citation, claim: entry.claim, sourceId: entry.sourceId, reason: "SOURCE_CAP" });
+      omitted.push(compactOmission(entry, "SOURCE_CAP"));
       continue;
     }
     packed.push(entry);
     seenClaim.add(claimKey);
     perSource.set(entry.sourceId, sourceUsed + lineTokens);
+    used += lineTokens;
   }
 
   if (applyCap) {
     const stillHeld: PackOmission[] = [];
     for (const entry of held) {
-      const candidate = assemblePackedContext(mandatory, [...packed, entry]);
-      if (!fitsTokenBudget(candidate, budget)) {
-        stillHeld.push({
-          citation: entry.citation,
-          claim: entry.claim,
-          sourceId: entry.sourceId,
-          reason: "SOURCE_CAP",
-        });
+      const lineTokens = tokensFor(entry);
+      if (lineTokens > budget - used) {
+        stillHeld.push(compactOmission(entry, "SOURCE_CAP"));
         continue;
       }
       packed.push(entry);
+      used += lineTokens;
     }
     const kept = omitted.filter((row) => row.reason !== "SOURCE_CAP");
     omitted.length = 0;
@@ -167,7 +195,7 @@ export function packEvidence(input: {
 
   const text = assemblePackedContext(mandatory, packed);
   const totalTokens = countTokens(text);
-  if (!fitsTokenBudget(text, budget)) {
+  if (totalTokens > budget) {
     return {
       ok: false,
       code: "CONTEXT_BUDGET_EXCEEDED",
