@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { ArtifactPanel, ContextManifestPanel } from "@/components/context-manifest-panel";
+import { CouncilFold } from "@/components/council-fold";
 import { CouncilRunPanel } from "@/components/council-run-panel";
 import { CollapsibleText } from "@/components/collapsible-text";
 import { Crumb, Page, PageHeader, Panel, StatusPill } from "@/components/council-ui";
@@ -31,9 +32,11 @@ function ListBlock({ title, rows }: { title: string; rows: string[] }) {
     <>
       <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">{title}</h3>
       {rows.length ? (
-        <ul>
+        <ul className="max-h-log overflow-auto">
           {rows.map((row) => (
-            <li key={row}>{row}</li>
+            <li key={row} className="break-words">
+              {row}
+            </li>
           ))}
         </ul>
       ) : (
@@ -194,17 +197,6 @@ function TaskPage() {
         <StatusPill status={task.status} />
       </header>
 
-      <ContextManifestPanel
-        project={project}
-        task={task}
-        context={context}
-        chatSources={store.chatSources}
-        historyMessages={store.historyMessages}
-        artifacts={projectArtifacts}
-        persisted={manifest}
-        projectFiles={store.projectFiles}
-      />
-
       {canRun && !isRunning ? (
         <CouncilRunPanel
           project={project}
@@ -222,6 +214,17 @@ function TaskPage() {
           onRun={() => void onRun()}
         />
       ) : null}
+
+      <ContextManifestPanel
+        project={project}
+        task={task}
+        context={context}
+        chatSources={store.chatSources}
+        historyMessages={store.historyMessages}
+        artifacts={projectArtifacts}
+        persisted={manifest}
+        projectFiles={store.projectFiles}
+      />
 
       {isRunning ? (
         <Panel>
@@ -283,39 +286,42 @@ function TaskPage() {
           {result.evidence.length ? (
             <>
               <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">Evidence</h3>
-              <ul>
+              <ul className="max-h-log overflow-auto">
                 {result.evidence.map((row) => (
-                  <li key={row.claim}>
+                  <li key={row.claim} className="break-words">
                     <StatusPill status={row.status} /> {row.claim}{" "}
-                    <span className="font-mono text-xs text-faint">{row.citation ?? "no citation"}</span>
+                    <span className="font-mono text-xs break-all text-faint">{row.citation ?? "no citation"}</span>
                   </li>
                 ))}
               </ul>
             </>
           ) : null}
-          <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">Model positions</h3>
-          <dl className="m-0 grid gap-3">
-            <div>
-              <dt className="text-xs tracking-wider text-faint uppercase">GPT</dt>
-              <dd className="m-0">
-                <CollapsibleText text={result.agentPositions.gpt || "—"} defaultCollapsed />
-              </dd>
-            </div>
-            <div>
-              <dt className="text-xs tracking-wider text-faint uppercase">Grok</dt>
-              <dd className="m-0">
-                <CollapsibleText text={result.agentPositions.grok || "—"} defaultCollapsed />
-              </dd>
-            </div>
-            <div>
-              <dt className="text-xs tracking-wider text-faint uppercase">Claude</dt>
-              <dd className="m-0">
-                <CollapsibleText text={result.agentPositions.claude || "—"} defaultCollapsed />
-              </dd>
-            </div>
-          </dl>
+          <div className="mt-4">
+            <CouncilFold title="Model positions" summary="GPT · Grok · Claude">
+              <dl className="m-0 grid gap-3">
+                <div>
+                  <dt className="text-xs tracking-wider text-faint uppercase">GPT</dt>
+                  <dd className="m-0">
+                    <CollapsibleText text={result.agentPositions.gpt || "—"} defaultCollapsed />
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs tracking-wider text-faint uppercase">Grok</dt>
+                  <dd className="m-0">
+                    <CollapsibleText text={result.agentPositions.grok || "—"} defaultCollapsed />
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs tracking-wider text-faint uppercase">Claude</dt>
+                  <dd className="m-0">
+                    <CollapsibleText text={result.agentPositions.claude || "—"} defaultCollapsed />
+                  </dd>
+                </div>
+              </dl>
+            </CouncilFold>
+          </div>
           {responses[0]?.contextHash ? (
-            <p className="mt-3 mb-0 text-xs text-faint">
+            <p className="mt-3 mb-0 text-xs break-all text-faint">
               Context hash {responses[0].contextHash}
               {hashMatch ? " · all agent responses share this snapshot" : " · snapshot mismatch"}
             </p>
@@ -323,65 +329,74 @@ function TaskPage() {
         </Panel>
       ) : null}
 
-      <p className="mb-4 flex flex-wrap gap-3 text-sm text-muted tabular-nums">
-        <span>Council cost: {task.totalCostUsd != null ? `$${task.totalCostUsd.toFixed(4)}` : "—"}</span>
-        <span>Input tokens: {task.totalInputTokens ?? "—"}</span>
-        <span>Output tokens: {task.totalOutputTokens ?? "—"}</span>
-        <span>Total latency: {task.totalLatencyMs != null ? `${task.totalLatencyMs} ms` : "—"}</span>
-      </p>
-
-      {AGENTS.map(([key, heading]) => {
-        const r1 = responses.find((r) => r.agent === key && r.round === 1);
-        const r2 = responses.find((r) => r.agent === key && r.round === 2);
-        return (
-          <details key={key} className="my-4 rounded-xl border border-line bg-elevated p-5">
-            <summary className="cursor-pointer font-semibold">{heading}</summary>
-            <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">Round 1</h3>
-            {r1 ? (
-              r1.error ? (
-                <p className="text-danger">{r1.error}</p>
+      {responses.length || result ? (
+      <div className="grid gap-2">
+        {AGENTS.map(([key, heading]) => {
+          const r1 = responses.find((r) => r.agent === key && r.round === 1);
+          const r2 = responses.find((r) => r.agent === key && r.round === 2);
+          const recorded = Boolean(r1 || r2);
+          return (
+            <CouncilFold key={key} title={heading} summary={recorded ? "recorded" : "not run yet"}>
+              <h3 className="mt-0 text-sm font-semibold tracking-widest text-muted uppercase">Round 1</h3>
+              {r1 ? (
+                r1.error ? (
+                  <p className="text-danger">{r1.error}</p>
+                ) : (
+                  <CollapsibleText text={r1.responseText} defaultCollapsed />
+                )
               ) : (
-                <CollapsibleText text={r1.responseText} defaultCollapsed />
-              )
-            ) : (
-              <p className="text-muted">Not run yet.</p>
-            )}
-            <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">Round 2</h3>
-            {r2 ? (
-              r2.error ? (
-                <p className="text-danger">{r2.error}</p>
+                <p className="text-muted">Not run yet.</p>
+              )}
+              <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">Round 2</h3>
+              {r2 ? (
+                r2.error ? (
+                  <p className="text-danger">{r2.error}</p>
+                ) : (
+                  <CollapsibleText text={r2.responseText} defaultCollapsed />
+                )
               ) : (
-                <CollapsibleText text={r2.responseText} defaultCollapsed />
-              )
-            ) : (
-              <p className="text-muted">Not run yet.</p>
-            )}
-          </details>
-        );
-      })}
+                <p className="text-muted">Not run yet.</p>
+              )}
+            </CouncilFold>
+          );
+        })}
 
-      <details className="my-4 rounded-xl border border-line bg-elevated p-5">
-        <summary className="cursor-pointer font-semibold">Raw synthesis</summary>
-        {synth?.responseText || result?.synthesisRaw ? (
-          <div className="mt-3">
+        <CouncilFold
+          title="Raw synthesis"
+          summary={synth?.responseText || result?.synthesisRaw ? "recorded" : "not available"}
+        >
+          {synth?.responseText || result?.synthesisRaw ? (
             <CollapsibleText text={synth?.responseText || result?.synthesisRaw || ""} defaultCollapsed />
-          </div>
-        ) : (
-          <p className="text-muted">Not available.</p>
-        )}
-      </details>
+          ) : (
+            <p className="m-0 text-muted">Not available.</p>
+          )}
+        </CouncilFold>
 
-      <details className="my-4 rounded-xl border border-line bg-elevated p-5">
-        <summary className="cursor-pointer font-semibold">Technical metadata</summary>
-        <pre className="mt-3 overflow-auto font-mono text-sm whitespace-pre-wrap text-muted tabular-nums">
-          {responses
-            .map(
-              (row) =>
-                `${row.agent} r${row.round} · ${row.model} · in=${row.inputTokens} out=${row.outputTokens} cost=${row.cost} latency=${row.latencyMs} hash=${row.contextHash ?? "—"}`,
-            )
-            .join("\n") || "Not available."}
-        </pre>
-      </details>
+        <CouncilFold
+          title="Technical metadata"
+          summary={
+            task.totalCostUsd != null
+              ? `${task.totalCostUsd.toFixed(4)} USD · ${task.totalLatencyMs ?? "—"} ms`
+              : "not available"
+          }
+        >
+          <p className="mt-0 mb-3 flex flex-wrap gap-3 text-sm text-muted tabular-nums">
+            <span>Council cost: {task.totalCostUsd != null ? `$${task.totalCostUsd.toFixed(4)}` : "—"}</span>
+            <span>Input tokens: {task.totalInputTokens ?? "—"}</span>
+            <span>Output tokens: {task.totalOutputTokens ?? "—"}</span>
+            <span>Total latency: {task.totalLatencyMs != null ? `${task.totalLatencyMs} ms` : "—"}</span>
+          </p>
+          <pre className="mt-0 max-h-log overflow-auto font-mono text-sm whitespace-pre-wrap break-all text-muted tabular-nums">
+            {responses
+              .map(
+                (row) =>
+                  `${row.agent} r${row.round} · ${row.model} · in=${row.inputTokens} out=${row.outputTokens} cost=${row.cost} latency=${row.latencyMs} hash=${row.contextHash ?? "—"}`,
+              )
+              .join("\n") || "Not available."}
+          </pre>
+        </CouncilFold>
+      </div>
+      ) : null}
 
       <OpLogPanel
         title="Council log"

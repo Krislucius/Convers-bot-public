@@ -62,7 +62,7 @@ export function SourcePicker({
       ) : visible.length === 0 ? (
         <p className="text-muted">No chats match that search.</p>
       ) : (
-        <ul className="m-0 grid list-none gap-2 p-0">
+        <ul className="m-0 grid max-h-log list-none gap-2 overflow-auto p-0">
           {visible.map((chat) => {
             const checked = selected.includes(chat.id);
             const truncated = /\[truncated\]/i.test(chat.rawContent);

@@ -57,5 +57,5 @@ FUNCTION BLOCKERS: none.
 
 ### BUILD WORKFLOW
 
-- Production Publish is a user action; git `CB-BUILD-20260901-003` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
+- Production Publish is a user action; git `CB-BUILD-20260902-001` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
 - Local built-output preview omits PGLite wasm/data from the Vercel function output. Production uses Neon.

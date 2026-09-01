@@ -57,7 +57,7 @@ export function FilePicker({
       ) : visible.length === 0 ? (
         <p className="text-muted">No files match that search.</p>
       ) : (
-        <ul className="m-0 grid list-none gap-2 p-0">
+        <ul className="m-0 grid max-h-log list-none gap-2 overflow-auto p-0">
           {visible.map((file) => {
             const checked = selected.includes(file.id);
             const truncated = isTruncatedMarker(file.extractedText) || isTruncatedMarker(file.notes);

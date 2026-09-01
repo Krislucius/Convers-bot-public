@@ -8,8 +8,15 @@ import { parseCitation } from "./extract.ts";
 import { memoryCache } from "./extract.ts";
 import { packEvidence, SOURCE_CAP_RATIO, assemblePackedContext } from "./pack.ts";
 import { coverageBlocksCouncil, runEvidencePipeline, sourceNeedsReimport } from "./pipeline.ts";
+import {
+  PACKED_CITATION_PREVIEW,
+  ledgerFoldLabel,
+  ledgerFoldLabelFromManifest,
+  truncateClaim,
+  visiblePackedCitations,
+} from "./preview.ts";
 import { countTokens } from "./tokens.ts";
-import { COVERAGE_COMPLETE_MEANING } from "./types.ts";
+import { COVERAGE_COMPLETE_MEANING, type EvidenceManifest } from "./types.ts";
 
 function task(over: Partial<Task> = {}): Task {
   return {
@@ -577,5 +584,55 @@ describe("evidence ledger pipeline", () => {
     assert.equal(a.pack.totalTokens, b.pack.totalTokens);
     assert.equal(a.manifest.contextHash, b.manifest.contextHash);
     assert.deepEqual(a.coverage.audit, b.coverage.audit);
+  });
+});
+
+describe("evidence preview helpers", () => {
+  it("caps packed citations at five until show-all", () => {
+    const rows = Array.from({ length: 40 }, (_, i) => `c${i}`);
+    assert.deepEqual(visiblePackedCitations(rows, false), rows.slice(0, PACKED_CITATION_PREVIEW));
+    assert.equal(visiblePackedCitations(rows, false).length, 5);
+    assert.deepEqual(visiblePackedCitations(rows, true), rows);
+    assert.deepEqual(visiblePackedCitations([], false), []);
+    assert.deepEqual(visiblePackedCitations(rows.slice(0, 3), false), rows.slice(0, 3));
+  });
+
+  it("formats the collapsed ledger header as status | sources | chunks | claims | packed", () => {
+    assert.equal(
+      ledgerFoldLabel({ status: "COMPLETE", sources: 3, chunks: 12, claims: 40, packed: 5 }),
+      "COMPLETE | 3 sources | 12 chunks | 40 claims | 5 packed",
+    );
+    assert.equal(
+      ledgerFoldLabel({ status: "PARTIAL", sources: 0, chunks: 0, claims: 0, packed: 0 }),
+      "PARTIAL | 0 sources | 0 chunks | 0 claims | 0 packed",
+    );
+  });
+
+  it("reads the fold label from a manifest audit", () => {
+    const label = ledgerFoldLabelFromManifest({
+      coverageStatus: "COMPLETE",
+      sources: [{}, {}] as EvidenceManifest["sources"],
+      evidenceCount: 9,
+      audit: {
+        chunksTotal: 10,
+        chunksProcessed: 10,
+        chunksWithEvidence: 8,
+        chunksWithoutEvidence: 2,
+        evidenceCount: 9,
+        packedEvidence: 5,
+        omittedEvidence: 4,
+      },
+    });
+    assert.equal(label, "COMPLETE | 2 sources | 10 chunks | 9 claims | 5 packed");
+  });
+
+  it("truncates long claims and keeps short claims intact", () => {
+    assert.equal(truncateClaim("short"), "short");
+    assert.equal(truncateClaim("  padded  "), "padded");
+    const long = `${"word ".repeat(80)}end`;
+    const cut = truncateClaim(long);
+    assert.ok(cut.endsWith("…"));
+    assert.equal(cut.length, 161);
+    assert.equal(truncateClaim(long, 20).length, 21);
   });
 });
