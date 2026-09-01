@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   UNKNOWN_SOURCE_COMMIT,
   resolveSourceCommit,
@@ -53,5 +55,11 @@ describe("systemIdentity", () => {
     assert.ok(id.sourceCommit === UNKNOWN_SOURCE_COMMIT || /^[0-9a-f]{7,40}$/.test(id.sourceCommit));
     assert.equal(id.projectId, "01a048b8-c1f7-7382-9dfd-fb30bff7137d");
     assert.equal(id.buildId, "CB-BUILD-20260830-003");
+  });
+
+  it("statically reads import.meta.env.VITE_SOURCE_COMMIT so Vite inlines it", () => {
+    const src = readFileSync(fileURLToPath(new URL("./identity.ts", import.meta.url)), "utf8");
+    assert.match(src, /import\.meta\.env\.VITE_SOURCE_COMMIT/);
+    assert.equal(src.includes("as Record<string, string"), false);
   });
 });

@@ -32,14 +32,20 @@ export function resolveSourceCommit(env: Record<string, string | undefined> | un
   return value.toLowerCase();
 }
 
+/**
+ * Vite only inlines a static `import.meta.env.VITE_*` member access.
+ * Dynamic lookup of import.meta.env as a Record is undefined in the client bundle.
+ */
 function bakedEnv(): Record<string, string | undefined> {
-  const vite =
-    typeof import.meta !== "undefined" && import.meta.env && typeof import.meta.env === "object"
-      ? (import.meta.env as Record<string, string | undefined>)
-      : {};
+  const viteCommit =
+    typeof import.meta !== "undefined" &&
+    import.meta.env != null &&
+    typeof import.meta.env.VITE_SOURCE_COMMIT === "string"
+      ? import.meta.env.VITE_SOURCE_COMMIT
+      : undefined;
   const node = typeof process !== "undefined" && process.env ? process.env : {};
   return {
-    VITE_SOURCE_COMMIT: node.VITE_SOURCE_COMMIT ?? vite.VITE_SOURCE_COMMIT,
+    VITE_SOURCE_COMMIT: viteCommit ?? node.VITE_SOURCE_COMMIT,
     VERCEL_GIT_COMMIT_SHA: node.VERCEL_GIT_COMMIT_SHA,
     SOURCE_COMMIT: node.SOURCE_COMMIT,
   };
