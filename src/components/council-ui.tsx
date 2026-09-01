@@ -104,6 +104,9 @@ export function StatusPill({ status }: { status: TaskStatus | CouncilStatus | st
   const tone =
     status === "COMPLETE" ||
     status === "APPROVED" ||
+    status === "PASS" ||
+    status === "CLOSED" ||
+    status === "SUCCEEDED" ||
     status === "ACCESSIBLE" ||
     status === "IMPORTED" ||
     status === "CACHE_HIT"
@@ -118,7 +121,9 @@ export function StatusPill({ status }: { status: TaskStatus | CouncilStatus | st
             status === "AUTH_REQUIRED" ||
             status === "PENDING" ||
             status === "UNSUPPORTED" ||
-            status === "PARTIAL"
+            status === "PARTIAL" ||
+            status === "PATCH" ||
+            status === "REVIEW_OPEN"
           ? "text-warn"
           : status === "ARCHIVED"
             ? "text-faint"

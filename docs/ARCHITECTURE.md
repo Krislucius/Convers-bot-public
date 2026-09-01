@@ -1,6 +1,6 @@
 # Conversation Bot architecture
 
-Current revision: **CB-ARCH-20260901-001**
+Current revision: **CB-ARCH-20260901-002**
 
 This document describes the system that is running now. Obsolete trees are listed only under History.
 
@@ -27,10 +27,11 @@ Control flow:
 ```text
 UI (routes + council-ui)
 → account store (in-memory + persist RPCs)
-→ task create
+→ task create (CREATE / REVIEW / DECIDE)
 → council.orchestrator (only path)
-→ council.protocol (context pack + roles + gate)
+→ council.protocol (roles + synthesis schemas + gate)
 → council.providers (OpenRouter / OpenRusRouter)
+→ Implementation Packet (when CREATE is APPROVED)
 → persist.postgres
 ```
 
@@ -45,6 +46,17 @@ Selected chats and files
 → Council Round 1 / Round 2 / synthesis
 ```
 
+Closed loop:
+
+```text
+Council CREATE APPROVED
+→ Implementation Packet (scope, requirements, invariants, evidence refs, acceptance tests, blockers)
+→ Build handoff JSON (direct Build execution unavailable)
+→ recorded implementation result
+→ Council REVIEW
+→ PASS | PATCH | BLOCKED
+```
+
 ## Persistence
 
 Applied migrations (basename order):
@@ -54,6 +66,7 @@ Applied migrations (basename order):
 3. `0003_task_modes.sql` — mode, manifests, artifacts
 4. `0004_project_files.sql` — project_files, selected_file_ids
 5. `0005_evidence_ledger.sql` — evidence_chunks, evidence_items, extractor_cache
+6. `0006_closed_loop.sql` — council_results.review_verdict/structured, implementation_packets
 
 `migrations/auth/` is a template copy. Appliers do not descend into subdirectories.
 
@@ -71,15 +84,17 @@ Settings UI writes `account_settings`. Council server functions resolve the stor
 
 ## Council workflow
 
-Modes: CREATE, REVIEW, DECIDE. Preflight lives in `council.task-mode`. Execution lives only in `src/lib/council/orchestrate.ts` (`runCouncil`). Round 1 is independent. Round 2 is cross-examination. Synthesis is JSON. CREATE writes an artifact. REVIEW must not silently replace one.
+Modes: CREATE, REVIEW, DECIDE. Preflight lives in `council.task-mode`. Execution lives only in `src/lib/council/orchestrate.ts` (`runCouncil`). Round 1 is independent. Round 2 is cross-examination. Synthesis is structured JSON, not chat prose. CREATE writes an artifact. REVIEW returns PASS / PATCH / BLOCKED and must not silently replace a candidate. DECIDE returns decision, alternatives, rationale, evidence, and risks. Unresolved DECIDE disagreement or CONFLICTED evidence becomes `USER_DECISION_REQUIRED`. Two of three models may complete a run; a single survivor fails the council.
+
+GPT = lead architect. Grok = adversarial reviewer. Claude = formal consistency reviewer. Positions, disagreements, blockers, resolved/unresolved issues, and citations are preserved on the Council result.
 
 ## Context pipeline (current)
 
-Every selected chat and file is chunked, then extracted into a non-canonical Evidence Ledger. Frozen invariants, decisions, specs, and project state are mandatory and packed first. If they exceed the 6 000 token Council budget (`countTokens`) the run fails with `CONTEXT_BUDGET_EXCEEDED` instead of slicing. Remaining budget is filled with ranked ledger claims. One selected source may use the full evidence budget; multiple sources get a diversity cap, then unused budget is redistributed deterministically. `HISTORY_NOT_CANONICAL` still holds: ledger rows never become DECISION / SPEC / INVARIANT. Coverage COMPLETE means every selected chunk was processed, not semantic recall. Previously truncated sources without recoverable raw data are `REIMPORT_REQUIRED`. ADR-006 is ACTIVE; ADR-005 first-N `boundContext` is superseded.
+Every selected chat and file is chunked, then extracted into a non-canonical Evidence Ledger. Frozen invariants, decisions, specs, and project state are mandatory and packed first. If they exceed the 6 000 token Council budget (`countTokens`) the run fails with `CONTEXT_BUDGET_EXCEEDED` instead of slicing. Remaining budget is filled with ranked ledger claims. One selected source may use the full evidence budget; multiple sources get a diversity cap, then unused budget is redistributed deterministically. `HISTORY_NOT_CANONICAL` still holds: ledger rows never become DECISION / SPEC / INVARIANT. Coverage COMPLETE means every selected chunk was processed, not semantic recall. Previously truncated sources without recoverable raw data are `REIMPORT_REQUIRED`. Invalid or unpacked citations are demoted; they never mint canonical truth. ADR-006 is ACTIVE; ADR-005 first-N `boundContext` is superseded.
 
 ## Artifact lifecycle
 
-CREATE synthesis → Artifact row + evidence labels. REVIEW consumes a candidate. DECIDE records decision/rationale/dissent on the council result.
+CREATE synthesis → Artifact row + evidence labels. APPROVED CREATE also writes an Implementation Packet. Direct Build execution is unavailable; the packet JSON is the handoff. Recorded implementation results open a REVIEW task. PASS/BLOCKED close the packet. PATCH returns it to READY for another iteration. DECIDE records decision/rationale/alternatives/evidence/risks on the council result. Evaluation rows summarize mode, outcome, disagreements, evidence used, iterations, and later corrections.
 
 ## Deployment
 

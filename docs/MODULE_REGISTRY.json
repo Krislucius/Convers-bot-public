@@ -1,5 +1,5 @@
 {
-  "architecture_revision": "CB-ARCH-20260901-001",
+  "architecture_revision": "CB-ARCH-20260901-002",
   "modules": [
     {
       "module_id": "app.shell",
@@ -42,7 +42,7 @@
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/account.server.ts",
       "architecture_revision": "CB-ARCH-20260829-001",
-      "responsibilities": ["projects", "chats", "files", "tasks", "artifacts", "settings scoped by user_id"],
+      "responsibilities": ["projects", "chats", "files", "tasks", "artifacts", "packets", "settings scoped by user_id"],
       "dependencies": ["persist.postgres", "auth.session"],
       "supersedes": ["legacy.localStorage-v012"]
     },
@@ -96,8 +96,8 @@
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/orchestrate.ts",
       "architecture_revision": "CB-ARCH-20260829-001",
-      "responsibilities": ["single Council execution path: preflight, evidence pipeline, round1, round2, synthesis"],
-      "dependencies": ["council.protocol", "council.providers", "council.manifest", "council.artifact"],
+      "responsibilities": ["single Council execution path: preflight, evidence pipeline, round1, round2, synthesis, packet"],
+      "dependencies": ["council.protocol", "council.providers", "council.manifest", "council.artifact", "council.packet", "context.evidence-ledger"],
       "supersedes": []
     },
     {
@@ -144,6 +144,33 @@
       "responsibilities": ["deterministic chunks", "heuristic extractor", "coverage audit", "non-canonical evidence", "token-budget packer", "source diversity cap"],
       "dependencies": ["history.ingest", "files.ingest"],
       "supersedes": ["ADR-005 boundContext"]
+    },
+    {
+      "module_id": "council.packet",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/council/packet.ts",
+      "architecture_revision": "CB-ARCH-20260901-002",
+      "responsibilities": ["implementation packet", "Build handoff JSON", "READY HANDED_OFF RESULT_RECORDED REVIEW_OPEN CLOSED"],
+      "dependencies": ["council.artifact", "account.persistence"],
+      "supersedes": []
+    },
+    {
+      "module_id": "council.review",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/council/review.ts",
+      "architecture_revision": "CB-ARCH-20260901-002",
+      "responsibilities": ["PASS PATCH BLOCKED mapping", "REVIEW artifact status"],
+      "dependencies": ["council.task-mode"],
+      "supersedes": []
+    },
+    {
+      "module_id": "council.evaluate",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/council/evaluate.ts",
+      "architecture_revision": "CB-ARCH-20260901-002",
+      "responsibilities": ["task quality row", "project quality summary", "later corrections"],
+      "dependencies": ["council.review", "council.packet"],
+      "supersedes": []
     },
     {
       "module_id": "ui.settings",

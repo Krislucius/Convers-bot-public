@@ -1,14 +1,14 @@
 {
   "project_id": "01a048b8-c1f7-7382-9dfd-fb30bff7137d",
   "production_host": "https://swift-lake-solar-cosmic.grok.me",
-  "architecture_revision": "CB-ARCH-20260901-001",
-  "architecture_hash": "20e181c1f3fb8265b185202cb5b2acd54978e04d2afde4c97654a0e6bd65a738",
-  "module_registry_hash": "a4fe461ac222e46d5ab65ee875e0d746d6e1ceb75cb4da864ebb351ec9bb92e4",
-  "schema_hash": "3528d75fca92a4a448b756366f49f375815ea9baba09f0a147f59e45eaed3d64",
-  "critical_contract_hash": "0b83d6c2bd7d26663f84dd737b3fd56a47e3ca917ca7364a09feb94148b213de",
+  "architecture_revision": "CB-ARCH-20260901-002",
+  "architecture_hash": "26165678e82628bec680177bd8265f77c9fbc10f77d734a45f4910cc54ed06e5",
+  "module_registry_hash": "a973bd948c738a7377e56a3ffbd68078c566ffac7e990c5398665e6d0f168f98",
+  "schema_hash": "3f3c2bf60d21261d714c4ba3d133321d7f80f3de0d652b8ed7f75d90e40d5598",
+  "critical_contract_hash": "3944f8a6805d70015e15f8a3904a5ad60c599df026db530dabd1e691b1146dd8",
   "created_at": "2026-08-29T18:45:00.000Z",
-  "build_id": "CB-BUILD-20260901-002",
-  "schema_version": "0005_evidence_ledger",
+  "build_id": "CB-BUILD-20260901-003",
+  "schema_version": "0006_closed_loop",
   "source_root": "src",
   "protected_invariants": [
     "ONE_AUTHORITATIVE_PROJECT",
@@ -20,6 +20,7 @@
     "COUNCIL_THREE_AGENTS_TWO_ROUNDS",
     "KEYS_ACCOUNT_NOT_BROWSER",
     "NO_PARALLEL_GROK_APP",
-    "SINGLE_CONTEXT_PACKER"
+    "SINGLE_CONTEXT_PACKER",
+    "IMPLEMENTATION_PACKET_HANDOFF"
   ]
 }

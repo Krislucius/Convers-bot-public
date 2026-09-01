@@ -4,7 +4,9 @@ import { ArtifactPanel, ContextManifestPanel } from "@/components/context-manife
 import { CouncilRunPanel } from "@/components/council-run-panel";
 import { CollapsibleText } from "@/components/collapsible-text";
 import { Crumb, Page, PageHeader, Panel, StatusPill } from "@/components/council-ui";
+import { ImplementationPacketPanel } from "@/components/implementation-packet-panel";
 import { OpLogPanel } from "@/components/op-log";
+import { displayVerdict } from "@/lib/council/evaluate";
 import { runCouncil } from "@/lib/council/orchestrate";
 import { providerName } from "@/lib/council/providers";
 import { applyCouncilOutput, markTaskFailed, patchTask, rememberManifest, useStore } from "@/lib/council/store";
@@ -24,6 +26,23 @@ const AGENTS: Array<[AgentKey, string]> = [
 
 const RUNNING = new Set(["COUNCIL_ROUND_1", "COUNCIL_ROUND_2", "SYNTHESIS"]);
 
+function ListBlock({ title, rows }: { title: string; rows: string[] }) {
+  return (
+    <>
+      <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">{title}</h3>
+      {rows.length ? (
+        <ul>
+          {rows.map((row) => (
+            <li key={row}>{row}</li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-muted">None recorded.</p>
+      )}
+    </>
+  );
+}
+
 function TaskPage() {
   const { taskId } = Route.useParams();
   const store = useStore();
@@ -33,8 +52,12 @@ function TaskPage() {
   const context = store.context.filter((c) => c.projectId === task?.projectId);
   const responses = store.responses.filter((r) => r.taskId === taskId);
   const result = store.results.find((r) => r.taskId === taskId) ?? null;
-  const artifact = store.artifacts.find((row) => row.taskId === taskId) ?? null;
+  const artifact = store.artifacts.find((row) => row.taskId === taskId) ?? store.artifacts.find((row) => row.id === task?.candidateArtifactId) ?? null;
   const manifest = store.manifests.filter((row) => row.taskId === taskId).at(-1) ?? null;
+  const packet =
+    store.packets.find((row) => row.taskId === taskId) ??
+    store.packets.find((row) => row.reviewTaskId === taskId) ??
+    null;
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(task?.error ?? "");
   const [log, setLog] = useState("");
@@ -55,6 +78,10 @@ function TaskPage() {
     ...selectedChatsToContext(task.projectId, task.selectedChatSourceIds, store.chatSources, store.historyMessages),
   ];
   const isRunning = busy || RUNNING.has(task.status);
+  const parentPacket =
+    currentTask.mode === "CREATE"
+      ? store.packets.filter((row) => row.projectId === currentProject.id && row.status === "READY").at(-1) ?? null
+      : store.packets.find((row) => row.reviewTaskId === currentTask.id) ?? null;
 
   async function onRun() {
     const gate = councilPreflight({ task: currentTask, artifacts: projectArtifacts });
@@ -104,6 +131,7 @@ function TaskPage() {
         historyMessages: store.historyMessages,
         artifacts: projectArtifacts,
         projectFiles: store.projectFiles,
+        parentPacket,
         onProgress: (progress) => {
           if (progress.manifest) rememberManifest(currentTask.id, progress.manifest);
           patchTask(currentTask.id, { status: progress.status, error: null });
@@ -204,13 +232,24 @@ function TaskPage() {
       ) : null}
 
       {artifact ? <ArtifactPanel artifact={artifact} /> : null}
+      {packet ? <ImplementationPacketPanel packet={packet} /> : null}
 
       {result ? (
         <Panel>
-          <p className="mb-1 text-xs font-semibold tracking-widest text-muted uppercase">Council Result</p>
+          <p className="mb-1 text-xs font-semibold tracking-widest text-muted uppercase">Council synthesis</p>
           <h2 className="font-display mb-3 text-2xl">
-            <StatusPill status={result.finalEnforcedStatus ?? result.status} />
+            <StatusPill status={displayVerdict(result.reviewVerdict, result.finalEnforcedStatus ?? result.status)} />
           </h2>
+          {result.reviewVerdict ? (
+            <p className="m-0 mb-3 text-sm text-muted">
+              Review verdict <span className="text-fg">{result.reviewVerdict}</span>
+            </p>
+          ) : null}
+          {result.failedAgents.length ? (
+            <p className="rounded-md bg-subtle p-3 text-warn">
+              Surviving reviewers continued after {result.failedAgents.join(", ")} failed.
+            </p>
+          ) : null}
           {result.verdictOverride ? (
             <p className="rounded-md bg-subtle p-3 text-danger">
               Final status was adjusted by the safety gate. Proposed: {result.synthesizerProposedStatus}.{" "}
@@ -227,40 +266,54 @@ function TaskPage() {
                   <CollapsibleText text={result.rationale} />
                 </>
               ) : null}
-              {result.dissent.length ? (
-                <>
-                  <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">Dissent</h3>
-                  <ul>
-                    {result.dissent.map((row) => (
-                      <li key={row}>{row}</li>
-                    ))}
-                  </ul>
-                </>
-              ) : null}
+              <ListBlock title="Alternatives" rows={result.alternatives} />
+              <ListBlock title="Dissent" rows={result.dissent} />
+              <ListBlock title="Risks" rows={result.risks} />
             </>
           ) : null}
           <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">Main recommendation</h3>
           <CollapsibleText text={result.recommendation || "—"} />
-          <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">Blockers</h3>
-          {result.blockers.length ? (
-            <ul>
-              {result.blockers.map((b) => (
-                <li key={b}>{b}</li>
-              ))}
-            </ul>
-          ) : (
-            <p className="text-muted">None recorded.</p>
-          )}
-          <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">Disagreements</h3>
-          {result.disagreements.length ? (
-            <ul>
-              {result.disagreements.map((b) => (
-                <li key={b}>{b}</li>
-              ))}
-            </ul>
-          ) : (
-            <p className="text-muted">None recorded.</p>
-          )}
+          <ListBlock title="Blockers" rows={result.blockers} />
+          <ListBlock title="Disagreements" rows={result.disagreements} />
+          <ListBlock title="Issues" rows={result.issues} />
+          <ListBlock title="Proposed corrections" rows={result.proposedCorrections} />
+          <ListBlock title="Resolved issues" rows={result.resolvedIssues} />
+          <ListBlock title="Unresolved issues" rows={result.unresolvedIssues} />
+          <ListBlock title="Citations" rows={result.citations} />
+          {result.evidence.length ? (
+            <>
+              <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">Evidence</h3>
+              <ul>
+                {result.evidence.map((row) => (
+                  <li key={row.claim}>
+                    <StatusPill status={row.status} /> {row.claim}{" "}
+                    <span className="font-mono text-xs text-faint">{row.citation ?? "no citation"}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+          <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">Model positions</h3>
+          <dl className="m-0 grid gap-3">
+            <div>
+              <dt className="text-xs tracking-wider text-faint uppercase">GPT</dt>
+              <dd className="m-0">
+                <CollapsibleText text={result.agentPositions.gpt || "—"} defaultCollapsed />
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs tracking-wider text-faint uppercase">Grok</dt>
+              <dd className="m-0">
+                <CollapsibleText text={result.agentPositions.grok || "—"} defaultCollapsed />
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs tracking-wider text-faint uppercase">Claude</dt>
+              <dd className="m-0">
+                <CollapsibleText text={result.agentPositions.claude || "—"} defaultCollapsed />
+              </dd>
+            </div>
+          </dl>
           {responses[0]?.contextHash ? (
             <p className="mt-3 mb-0 text-xs text-faint">
               Context hash {responses[0].contextHash}

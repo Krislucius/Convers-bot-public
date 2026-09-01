@@ -61,7 +61,7 @@ test("applied migrations live in the globbed directory and auth/ stays a templat
   const pending = pendingMigrations(readdirSync(migrationsDir), []);
   assert.deepEqual(
     pending.map((row) => row.name),
-    ["0001_auth.sql", "0002_app.sql", "0003_task_modes.sql", "0004_project_files.sql", "0005_evidence_ledger.sql"],
+    ["0001_auth.sql", "0002_app.sql", "0003_task_modes.sql", "0004_project_files.sql", "0005_evidence_ledger.sql", "0006_closed_loop.sql"],
   );
   assert.ok(readdirSync(join(migrationsDir, "auth")).includes("0001_auth.sql"));
 });

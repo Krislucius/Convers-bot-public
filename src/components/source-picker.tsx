@@ -1,3 +1,4 @@
+import { useMemo, useState } from "react";
 import { GhostButton } from "@/components/council-ui";
 import { PROVIDER_LABEL, formatChars, formatTokens } from "@/lib/history/format";
 import { HISTORY_NOT_CANONICAL, memoryChatIds } from "@/lib/history/provenance";
@@ -16,8 +17,19 @@ export function SourcePicker({
   selected: string[];
   onChange: (ids: string[]) => void;
 }) {
+  const [query, setQuery] = useState("");
   const imported = chats.filter((row) => row.projectId === projectId && row.importStatus === "IMPORTED");
   const memoryIds = memoryChatIds(chats, projectId);
+  const visible = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return imported;
+    return imported.filter(
+      (row) =>
+        row.title.toLowerCase().includes(needle) ||
+        row.provider.toLowerCase().includes(needle) ||
+        row.rawContent.toLowerCase().includes(needle),
+    );
+  }, [imported, query]);
   const chosen = imported.filter((row) => selected.includes(row.id));
   const messageCount = chosen.reduce((sum, row) => {
     const n = messages.filter((turn) => turn.chatSourceId === row.id).length;
@@ -35,13 +47,25 @@ export function SourcePicker({
   return (
     <fieldset className="m-0 grid gap-2 border-0 p-0">
       <legend className="mb-1 text-sm font-medium tracking-wider text-muted uppercase">Relevant AI Chats</legend>
-      <p className="m-0 text-sm text-faint">{HISTORY_NOT_CANONICAL} Chats in project memory are selected by default.</p>
+      <p className="m-0 text-sm text-faint">{HISTORY_NOT_CANONICAL} Selection is persisted on the task.</p>
+      {imported.length ? (
+        <input
+          type="search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search chats"
+          className="min-h-11 rounded-md border border-line bg-subtle px-3 text-sm text-fg"
+        />
+      ) : null}
       {imported.length === 0 ? (
         <p className="text-muted">No imported chats in this project.</p>
+      ) : visible.length === 0 ? (
+        <p className="text-muted">No chats match that search.</p>
       ) : (
         <ul className="m-0 grid list-none gap-2 p-0">
-          {imported.map((chat) => {
+          {visible.map((chat) => {
             const checked = selected.includes(chat.id);
+            const truncated = /\[truncated\]/i.test(chat.rawContent);
             return (
               <li key={chat.id}>
                 <label
@@ -55,6 +79,9 @@ export function SourcePicker({
                     <span className="ml-2 text-faint">{PROVIDER_LABEL[chat.provider]}</span>
                     {chat.includeInMemory ? (
                       <span className="ml-2 text-xs tracking-wider text-ok uppercase">in memory</span>
+                    ) : null}
+                    {truncated ? (
+                      <span className="ml-2 text-xs tracking-wider text-danger uppercase">reimport required</span>
                     ) : null}
                     <span className="mt-1 block text-xs text-faint tabular-nums">
                       {chat.messageCount ?? 0} messages · {formatChars(chat.characterCount)}

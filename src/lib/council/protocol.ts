@@ -8,14 +8,17 @@ import type {
   ContextManifest,
   CouncilResult,
   CouncilStatus,
+  EvidenceLabel,
   ProjectFile,
   ProviderCreds,
+  ReviewVerdict,
   RunCouncilOutput,
   Task,
   TaskMode,
 } from "./types.ts";
 import { filterCreateBlockers, normalizeTaskMode } from "./task-mode.ts";
-import { parseSynthesizedArtifact } from "./artifact.ts";
+import { parseSynthesizedArtifact, parseEvidenceLabels } from "./artifact.ts";
+import { asReviewVerdict, reviewVerdictFromStatus } from "./review.ts";
 import { buildMandatoryContext } from "../evidence/pack.ts";
 import { CURRENT_CONTEXT_TOKEN_LIMIT } from "../architecture/contracts.ts";
 import { countTokens } from "../evidence/tokens.ts";
@@ -102,8 +105,8 @@ RECOMMENDATION
 If a section has no items write "none".`;
 
 export const SYNTHESIS = `You are the council synthesizer. Output a single JSON object matching:
-{"status":"APPROVED|BLOCKED|USER_DECISION_REQUIRED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"","agent_positions":{"gpt":"","grok":"","claude":""}}
-Any substantiated P0 or unresolved P1 => BLOCKED. P4 never blocks.`;
+{"status":"APPROVED|PATCH|BLOCKED|USER_DECISION_REQUIRED","review_verdict":"PASS|PATCH|BLOCKED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"","agent_positions":{"gpt":"","grok":"","claude":""},"issues":[],"proposed_corrections":[],"resolved_issues":[],"unresolved_issues":[],"citations":[]}
+REVIEW: PASS = candidate is acceptable, PATCH = issues with proposed corrections, BLOCKED = P0/P1. Preserve each model position, disagreements, and citations. Any substantiated P0 or unresolved P1 => BLOCKED. P4 never blocks.`;
 
 export const CREATE_SYNTHESIS = `You are the CREATE-mode artifact synthesizer.
 The Council's job is to PRODUCE the requested canonical artifact from TASK + CONTEXT MANIFEST + ROUND 1 + ROUND 2.
@@ -113,12 +116,17 @@ Critical claims should cite evidence.
 Distinguish provenance: EVIDENCED, INFERRED, UNKNOWN, CONFLICTED, HISTORICALLY_ASSERTED, HISTORICALLY_FROZEN.
 
 Output a single JSON object:
-{"status":"APPROVED|BLOCKED|USER_DECISION_REQUIRED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"","agent_positions":{"gpt":"","grok":"","claude":""},"artifact":{"type":"SPECIFICATION|ARCHITECTURE|PLAN|ADR|PROJECT_STATE|OTHER","title":"","version":"1.0","content":"markdown artifact","evidenceLabels":[{"claim":"","status":"EVIDENCED","citation":"[CHAT:source_id:1]"}]}}
+{"status":"APPROVED|BLOCKED|USER_DECISION_REQUIRED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"","agent_positions":{"gpt":"","grok":"","claude":""},"citations":[],"resolved_issues":[],"unresolved_issues":[],"artifact":{"type":"SPECIFICATION|ARCHITECTURE|PLAN|ADR|PROJECT_STATE|OTHER","title":"","version":"1.0","content":"markdown artifact","evidenceLabels":[{"claim":"","status":"EVIDENCED","citation":"[CHAT:source_id:1]"}]}}
 P4 never blocks. Do not BLOCK only because a candidate or repository was missing.`;
 
 export const DECIDE_SYNTHESIS = `You are the DECIDE-mode synthesizer. Output a single JSON object:
-{"status":"APPROVED|BLOCKED|USER_DECISION_REQUIRED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"","agent_positions":{"gpt":"","grok":"","claude":""},"decision":"","rationale":"","dissent":[]}
-Unresolved material disagreement => USER_DECISION_REQUIRED. Substantiated P0/P1 => BLOCKED.`;
+{"status":"APPROVED|BLOCKED|USER_DECISION_REQUIRED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"","agent_positions":{"gpt":"","grok":"","claude":""},"decision":"","alternatives":[],"rationale":"","dissent":[],"evidence":[{"claim":"","status":"EVIDENCED","citation":"[CHAT:source_id:1]"}],"risks":[],"citations":[]}
+Unresolved material disagreement or CONFLICTED evidence => USER_DECISION_REQUIRED. Substantiated P0/P1 => BLOCKED.`;
+
+export const REVIEW_SYNTHESIS = `You are the REVIEW-mode synthesizer. The candidate artifact is under review.
+Output a single JSON object:
+{"status":"APPROVED|PATCH|BLOCKED|USER_DECISION_REQUIRED","review_verdict":"PASS|PATCH|BLOCKED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"","agent_positions":{"gpt":"","grok":"","claude":""},"issues":[],"proposed_corrections":[],"resolved_issues":[],"unresolved_issues":[],"citations":[]}
+PASS when the candidate is acceptable. PATCH when issues have proposed corrections and no P0/P1 remains. BLOCKED on substantiated P0/P1. Preserve each model position.`;
 
 export const SCHEMA = {
   type: "json_schema",
@@ -129,7 +137,8 @@ export const SCHEMA = {
       type: "object",
       additionalProperties: false,
       properties: {
-        status: { type: "string", enum: ["APPROVED", "BLOCKED", "USER_DECISION_REQUIRED"] },
+        status: { type: "string", enum: ["APPROVED", "PATCH", "BLOCKED", "USER_DECISION_REQUIRED"] },
+        review_verdict: { type: "string", enum: ["PASS", "PATCH", "BLOCKED"] },
         consensus: { type: "array", items: { type: "string" } },
         disagreements: { type: "array", items: { type: "string" } },
         blockers: { type: "array", items: { type: "string" } },
@@ -144,8 +153,26 @@ export const SCHEMA = {
           },
           required: ["gpt", "grok", "claude"],
         },
+        issues: { type: "array", items: { type: "string" } },
+        proposed_corrections: { type: "array", items: { type: "string" } },
+        resolved_issues: { type: "array", items: { type: "string" } },
+        unresolved_issues: { type: "array", items: { type: "string" } },
+        citations: { type: "array", items: { type: "string" } },
       },
-      required: ["status", "consensus", "disagreements", "blockers", "recommendation", "agent_positions"],
+      required: [
+        "status",
+        "review_verdict",
+        "consensus",
+        "disagreements",
+        "blockers",
+        "recommendation",
+        "agent_positions",
+        "issues",
+        "proposed_corrections",
+        "resolved_issues",
+        "unresolved_issues",
+        "citations",
+      ],
     },
   },
 };
@@ -159,7 +186,7 @@ export const CREATE_SCHEMA = {
       type: "object",
       additionalProperties: false,
       properties: {
-        status: { type: "string", enum: ["APPROVED", "BLOCKED", "USER_DECISION_REQUIRED"] },
+        status: { type: "string", enum: ["APPROVED", "PATCH", "BLOCKED", "USER_DECISION_REQUIRED"] },
         consensus: { type: "array", items: { type: "string" } },
         disagreements: { type: "array", items: { type: "string" } },
         blockers: { type: "array", items: { type: "string" } },
@@ -174,6 +201,9 @@ export const CREATE_SCHEMA = {
           },
           required: ["gpt", "grok", "claude"],
         },
+        citations: { type: "array", items: { type: "string" } },
+        resolved_issues: { type: "array", items: { type: "string" } },
+        unresolved_issues: { type: "array", items: { type: "string" } },
         artifact: {
           type: "object",
           additionalProperties: false,
@@ -219,6 +249,9 @@ export const CREATE_SCHEMA = {
         "blockers",
         "recommendation",
         "agent_positions",
+        "citations",
+        "resolved_issues",
+        "unresolved_issues",
         "artifact",
       ],
     },
@@ -234,7 +267,7 @@ export const DECIDE_SCHEMA = {
       type: "object",
       additionalProperties: false,
       properties: {
-        status: { type: "string", enum: ["APPROVED", "BLOCKED", "USER_DECISION_REQUIRED"] },
+        status: { type: "string", enum: ["APPROVED", "PATCH", "BLOCKED", "USER_DECISION_REQUIRED"] },
         consensus: { type: "array", items: { type: "string" } },
         disagreements: { type: "array", items: { type: "string" } },
         blockers: { type: "array", items: { type: "string" } },
@@ -252,6 +285,32 @@ export const DECIDE_SCHEMA = {
         decision: { type: "string" },
         rationale: { type: "string" },
         dissent: { type: "array", items: { type: "string" } },
+        alternatives: { type: "array", items: { type: "string" } },
+        evidence: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              claim: { type: "string" },
+              status: {
+                type: "string",
+                enum: [
+                  "EVIDENCED",
+                  "INFERRED",
+                  "UNKNOWN",
+                  "CONFLICTED",
+                  "HISTORICALLY_ASSERTED",
+                  "HISTORICALLY_FROZEN",
+                ],
+              },
+              citation: { type: "string" },
+            },
+            required: ["claim", "status", "citation"],
+          },
+        },
+        risks: { type: "array", items: { type: "string" } },
+        citations: { type: "array", items: { type: "string" } },
       },
       required: [
         "status",
@@ -263,10 +322,16 @@ export const DECIDE_SCHEMA = {
         "decision",
         "rationale",
         "dissent",
+        "alternatives",
+        "evidence",
+        "risks",
+        "citations",
       ],
     },
   },
 };
+
+export const REVIEW_SCHEMA = SCHEMA;
 
 const EMPTY = new Set(["", "none", "none.", "n/a", "na", "no blockers", "no issues", "-", "—", "nil"]);
 const PROMPT_RATE = 8 / 1_000_000;
@@ -413,7 +478,30 @@ export type ParsedSynth = {
   rationale: string | null;
   dissent: string[];
   artifact: ReturnType<typeof parseSynthesizedArtifact>;
+  reviewVerdict: ReviewVerdict | null;
+  alternatives: string[];
+  evidence: EvidenceLabel[];
+  risks: string[];
+  issues: string[];
+  proposedCorrections: string[];
+  resolvedIssues: string[];
+  unresolvedIssues: string[];
+  citations: string[];
 };
+
+function asStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((row) => String(row)).map((row) => row.trim()).filter(Boolean);
+}
+
+function asCouncilStatus(value: unknown): CouncilStatus | null {
+  const text = String(value ?? "").toUpperCase();
+  if (text === "APPROVED" || text === "PASS") return "APPROVED";
+  if (text === "PATCH") return "PATCH";
+  if (text === "BLOCKED") return "BLOCKED";
+  if (text === "USER_DECISION_REQUIRED") return "USER_DECISION_REQUIRED";
+  return null;
+}
 
 export function parseJson(text: string): ParsedSynth | null {
   const candidates = [text.trim()];
@@ -424,14 +512,14 @@ export function parseJson(text: string): ParsedSynth | null {
   for (const raw of candidates) {
     try {
       const data = JSON.parse(raw) as Record<string, unknown>;
-      const status = data.status;
-      if (status !== "APPROVED" && status !== "BLOCKED" && status !== "USER_DECISION_REQUIRED") continue;
-      const pos = (data.agent_positions ?? {}) as Record<string, string>;
+      const status = asCouncilStatus(data.status);
+      if (!status) continue;
+      const pos = (data.agent_positions ?? data.agentPositions ?? {}) as Record<string, string>;
       return {
         status,
-        consensus: Array.isArray(data.consensus) ? data.consensus.map(String) : [],
-        disagreements: Array.isArray(data.disagreements) ? data.disagreements.map(String) : [],
-        blockers: Array.isArray(data.blockers) ? data.blockers.map(String) : [],
+        consensus: asStringList(data.consensus),
+        disagreements: asStringList(data.disagreements),
+        blockers: asStringList(data.blockers),
         recommendation: String(data.recommendation ?? ""),
         agent_positions: {
           gpt: String(pos.gpt ?? ""),
@@ -440,8 +528,17 @@ export function parseJson(text: string): ParsedSynth | null {
         },
         decision: data.decision == null || data.decision === "" ? null : String(data.decision),
         rationale: data.rationale == null || data.rationale === "" ? null : String(data.rationale),
-        dissent: Array.isArray(data.dissent) ? data.dissent.map(String) : [],
+        dissent: asStringList(data.dissent),
         artifact: parseSynthesizedArtifact(data.artifact),
+        reviewVerdict: asReviewVerdict(data.review_verdict ?? data.reviewVerdict ?? data.status),
+        alternatives: asStringList(data.alternatives),
+        evidence: parseEvidenceLabels(data.evidence),
+        risks: asStringList(data.risks),
+        issues: asStringList(data.issues),
+        proposedCorrections: asStringList(data.proposed_corrections ?? data.proposedCorrections),
+        resolvedIssues: asStringList(data.resolved_issues ?? data.resolvedIssues),
+        unresolvedIssues: asStringList(data.unresolved_issues ?? data.unresolvedIssues),
+        citations: asStringList(data.citations),
       };
     } catch {
       continue;
@@ -505,6 +602,15 @@ export function applyGate(
     blockers = [];
     reason =
       "CREATE safety gate: missing candidate or repository evidence cannot block artifact creation.";
+  } else if (resolvedMode === "REVIEW" && proposed === "PATCH" && !gatedP0.length && !gatedP1.length) {
+    status = "PATCH";
+  } else if (
+    resolvedMode === "DECIDE" &&
+    proposed === "APPROVED" &&
+    (parsed.disagreements.length > 0 || parsed.evidence.some((row) => row.status === "CONFLICTED"))
+  ) {
+    status = "USER_DECISION_REQUIRED";
+    reason = "Safety gate: DECIDE disagreements or CONFLICTED evidence require USER_DECISION_REQUIRED.";
   }
   return { status, blockers, reason };
 }
@@ -592,7 +698,7 @@ export function failedOutput(
   task: Task,
   responses: AgentResponse[],
   error: string,
-  extras?: { manifest?: ContextManifest | null; artifact?: Artifact | null },
+  extras?: { manifest?: ContextManifest | null; artifact?: Artifact | null; packet?: import("./types.ts").ImplementationPacket | null },
 ): RunCouncilOutput {
   return {
     task: {
@@ -607,6 +713,7 @@ export function failedOutput(
     result: null,
     artifact: extras?.artifact ?? null,
     manifest: extras?.manifest ?? null,
+    packet: extras?.packet ?? null,
   };
 }
 
@@ -622,6 +729,7 @@ export function precheckOutput(task: Task, error: string): RunCouncilOutput {
     result: null,
     artifact: null,
     manifest: null,
+    packet: null,
   };
 }
 
@@ -630,13 +738,24 @@ export function completeOutput(
   responses: AgentResponse[],
   parsed: ParsedSynth,
   gated: { status: CouncilStatus; blockers: string[]; reason: string | null },
-  extras?: { artifact?: Artifact | null; manifest?: ContextManifest | null },
+  extras?: {
+    artifact?: Artifact | null;
+    manifest?: ContextManifest | null;
+    packet?: import("./types.ts").ImplementationPacket | null;
+    packedCitations?: string[];
+    failedAgents?: AgentKey[];
+  },
 ): RunCouncilOutput {
   const ins = responses.map((r) => r.inputTokens).filter((n): n is number => n !== null);
   const outs = responses.map((r) => r.outputTokens).filter((n): n is number => n !== null);
   const costs = responses.map((r) => r.cost).filter((n): n is number => n !== null);
   const lats = responses.map((r) => r.latencyMs).filter((n): n is number => n !== null);
   const synth = responses.find((r) => r.round === 3);
+  const reviewVerdict =
+    task.mode === "REVIEW"
+      ? parsed.reviewVerdict ?? reviewVerdictFromStatus(gated.status)
+      : null;
+  const citations = [...new Set([...(extras?.packedCitations ?? []), ...parsed.citations])];
   const result: CouncilResult = {
     taskId: task.id,
     status: gated.status,
@@ -653,6 +772,16 @@ export function completeOutput(
     decision: parsed.decision,
     rationale: parsed.rationale,
     dissent: parsed.dissent,
+    reviewVerdict,
+    alternatives: parsed.alternatives,
+    evidence: parsed.evidence,
+    risks: parsed.risks,
+    issues: parsed.issues,
+    proposedCorrections: parsed.proposedCorrections,
+    resolvedIssues: parsed.resolvedIssues,
+    unresolvedIssues: parsed.unresolvedIssues,
+    citations,
+    failedAgents: extras?.failedAgents ?? [],
   };
   return {
     task: {
@@ -672,6 +801,7 @@ export function completeOutput(
     result,
     artifact: extras?.artifact ?? null,
     manifest: extras?.manifest ?? null,
+    packet: extras?.packet ?? null,
   };
 }
 
@@ -686,5 +816,5 @@ export function synthesisForMode(mode: TaskMode | string | null | undefined) {
   const resolved = normalizeTaskMode(mode);
   if (resolved === "CREATE") return { prompt: CREATE_SYNTHESIS, schema: CREATE_SCHEMA, max: CREATE_SYNTH_MAX };
   if (resolved === "DECIDE") return { prompt: DECIDE_SYNTHESIS, schema: DECIDE_SCHEMA, max: SYNTH_MAX };
-  return { prompt: SYNTHESIS, schema: SCHEMA, max: SYNTH_MAX };
+  return { prompt: REVIEW_SYNTHESIS, schema: REVIEW_SCHEMA, max: SYNTH_MAX };
 }

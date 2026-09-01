@@ -12,7 +12,7 @@ Tracks may independently be `READY` / `DEGRADED` / `BLOCKED` / `FAILED`.
 
 The Conversation Bot product:
 
-Council, CREATE/REVIEW/DECIDE, history/import, Evidence Ledger, auth,
+Council, CREATE/REVIEW/DECIDE, history/import, Evidence Ledger, Implementation Packet, evaluation, auth,
 projects/tasks, UI, providers, citations.
 
 Failures on this track are **FUNCTION BLOCKERS**.

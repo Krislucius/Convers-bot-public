@@ -23,7 +23,9 @@ export type TaskStatus =
   | "COMPLETE"
   | "FAILED";
 
-export type CouncilStatus = "APPROVED" | "BLOCKED" | "USER_DECISION_REQUIRED";
+export type CouncilStatus = "APPROVED" | "PATCH" | "BLOCKED" | "USER_DECISION_REQUIRED";
+
+export type ReviewVerdict = "PASS" | "PATCH" | "BLOCKED";
 
 export type ProviderId = "openrouter" | "openrusrouter";
 
@@ -209,6 +211,68 @@ export type CouncilResult = {
   decision: string | null;
   rationale: string | null;
   dissent: string[];
+  reviewVerdict: ReviewVerdict | null;
+  alternatives: string[];
+  evidence: EvidenceLabel[];
+  risks: string[];
+  issues: string[];
+  proposedCorrections: string[];
+  resolvedIssues: string[];
+  unresolvedIssues: string[];
+  citations: string[];
+  failedAgents: AgentKey[];
+};
+
+export type PacketStatus = "READY" | "HANDED_OFF" | "RESULT_RECORDED" | "REVIEW_OPEN" | "CLOSED";
+
+export type ImplementationStatus = "SUCCEEDED" | "FAILED" | "PARTIAL";
+
+export type ImplementationPacket = {
+  id: string;
+  projectId: string;
+  taskId: string;
+  artifactId: string;
+  parentPacketId: string | null;
+  iteration: number;
+  status: PacketStatus;
+  scope: string;
+  requirements: string[];
+  invariants: string[];
+  evidenceRefs: string[];
+  acceptanceTests: string[];
+  blockers: string[];
+  packetHash: string;
+  handoffAt: string | null;
+  implementationStatus: ImplementationStatus | null;
+  implementationNotes: string | null;
+  implementationRecordedAt: string | null;
+  reviewTaskId: string | null;
+  createdAt: string;
+};
+
+export type TaskQualityRow = {
+  taskId: string;
+  mode: TaskMode;
+  councilOutcome: string;
+  reviewVerdict: ReviewVerdict | null;
+  disagreements: number;
+  evidenceUsed: number;
+  iteration: number;
+  packetStatus: PacketStatus | null;
+  laterCorrection: boolean;
+};
+
+export type ProjectQualitySummary = {
+  projectId: string;
+  taskCount: number;
+  approvedOrPass: number;
+  patch: number;
+  blocked: number;
+  disagreements: number;
+  evidenceUsed: number;
+  iterations: number;
+  laterCorrections: number;
+  rows: TaskQualityRow[];
 };
 
 export type Task = {
@@ -250,6 +314,7 @@ export type StoreShape = {
   projectFiles: ProjectFile[];
   artifacts: Artifact[];
   manifests: ContextManifest[];
+  packets: ImplementationPacket[];
 };
 
 export type RunCouncilOutput = {
@@ -258,6 +323,7 @@ export type RunCouncilOutput = {
   result: CouncilResult | null;
   artifact: Artifact | null;
   manifest: ContextManifest | null;
+  packet: ImplementationPacket | null;
 };
 
 export type ConnectionCheck = { ok: boolean; label: string; detail: string };

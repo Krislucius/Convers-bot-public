@@ -5,20 +5,20 @@ export const TASK_MODES: TaskMode[] = ["CREATE", "REVIEW", "DECIDE"];
 export const MODE_COPY: Record<TaskMode, { label: string; hint: string }> = {
   CREATE: {
     label: "Create",
-    hint: "Council analyzes evidence and writes a new canonical artifact. A missing candidate document is not a blocker.",
+    hint: "Build a new canonical artifact from the task and selected evidence. No candidate artifact is required.",
   },
   REVIEW: {
     label: "Review",
-    hint: "Council evaluates an existing candidate artifact. The paid run will not start without one.",
+    hint: "Review an existing candidate. Returns PASS, PATCH, or BLOCKED with issues and proposed corrections.",
   },
   DECIDE: {
     label: "Decide",
-    hint: "Council resolves a bounded architecture or design question. No candidate artifact is required.",
+    hint: "Resolve a bounded decision: decision, alternatives, rationale, evidence, and risks.",
   },
 };
 
 export const ZERO_SOURCE_MESSAGE =
-  "Historical reconstruction requires at least one selected imported source.";
+  "Historical reconstruction requires at least one selected imported chat or file.";
 
 export const REVIEW_CANDIDATE_MESSAGE =
   "REVIEW mode requires a candidate artifact. Create one with a CREATE task first.";
@@ -47,7 +47,7 @@ export type CouncilPreflight = {
 export function councilPreflight(input: {
   task: Pick<
     Task,
-    "mode" | "requiresHistoricalContext" | "selectedChatSourceIds" | "candidateArtifactId" | "decisionQuestion" | "prompt"
+    "mode" | "requiresHistoricalContext" | "selectedChatSourceIds" | "selectedFileIds" | "candidateArtifactId" | "decisionQuestion" | "prompt"
   >;
   artifacts: Artifact[];
 }): CouncilPreflight {
@@ -65,8 +65,12 @@ export function councilPreflight(input: {
       return { ok: false, code: "PRECHECK_FAIL", error: DECIDE_QUESTION_MESSAGE, providerCalls: 0 };
     }
   }
-  if (mode === "CREATE" && input.task.requiresHistoricalContext && input.task.selectedChatSourceIds.length === 0) {
-    return { ok: false, code: "PRECHECK_FAIL", error: ZERO_SOURCE_MESSAGE, providerCalls: 0 };
+  if (mode === "CREATE" && input.task.requiresHistoricalContext) {
+    const sources =
+      input.task.selectedChatSourceIds.length + (input.task.selectedFileIds ?? []).length;
+    if (sources === 0) {
+      return { ok: false, code: "PRECHECK_FAIL", error: ZERO_SOURCE_MESSAGE, providerCalls: 0 };
+    }
   }
   return { ok: true, code: "OK", error: null, providerCalls: 0 };
 }

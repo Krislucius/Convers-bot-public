@@ -8,6 +8,7 @@ import {
   persistAccountDeleteFile,
   persistAccountFile,
   persistAccountManifest,
+  persistAccountPacket,
   persistAccountProject,
   persistAccountTask,
 } from "./account";
@@ -15,11 +16,20 @@ import { applyRemoteAccessChange, filterSelectedForProject, memoryChatIds } from
 import type { ChatSource, HistoryMessage } from "@/lib/history/types";
 import type { AccessStatus, ImportStatus } from "@/lib/history/types";
 import { normalizeTaskMode } from "./task-mode";
+import { artifactStatusForReview, reviewVerdictFor } from "./review";
+import {
+  applyPacketReview,
+  handOffPacket,
+  openPacketReview,
+  recordImplementation,
+} from "./packet";
 import type {
   Artifact,
   ContextItem,
   ContextManifest,
   CouncilResult,
+  ImplementationPacket,
+  ImplementationStatus,
   Project,
   ProjectFile,
   StoreShape,
@@ -41,6 +51,7 @@ const empty: StoreShape = {
   projectFiles: [],
   artifacts: [],
   manifests: [],
+  packets: [],
 };
 
 const listeners = new Set<() => void>();
@@ -94,6 +105,16 @@ function normalizeResult(row: CouncilResult): CouncilResult {
     decision: row.decision ?? null,
     rationale: row.rationale ?? null,
     dissent: Array.isArray(row.dissent) ? row.dissent : [],
+    reviewVerdict: row.reviewVerdict ?? null,
+    alternatives: Array.isArray(row.alternatives) ? row.alternatives : [],
+    evidence: Array.isArray(row.evidence) ? row.evidence : [],
+    risks: Array.isArray(row.risks) ? row.risks : [],
+    issues: Array.isArray(row.issues) ? row.issues : [],
+    proposedCorrections: Array.isArray(row.proposedCorrections) ? row.proposedCorrections : [],
+    resolvedIssues: Array.isArray(row.resolvedIssues) ? row.resolvedIssues : [],
+    unresolvedIssues: Array.isArray(row.unresolvedIssues) ? row.unresolvedIssues : [],
+    citations: Array.isArray(row.citations) ? row.citations : [],
+    failedAgents: Array.isArray(row.failedAgents) ? row.failedAgents : [],
   };
 }
 
@@ -111,6 +132,7 @@ function normalize(parsed: Partial<StoreShape>): StoreShape {
     projectFiles: parsed.projectFiles ?? [],
     artifacts: parsed.artifacts ?? [],
     manifests: parsed.manifests ?? [],
+    packets: parsed.packets ?? [],
   };
 }
 
@@ -309,6 +331,7 @@ export function applyCouncilOutput(
     result: CouncilResult | null;
     artifact?: Artifact | null;
     manifest?: ContextManifest | null;
+    packet?: ImplementationPacket | null;
   },
 ) {
   const existing = memory.tasks.find((t) => t.id === taskId);
@@ -325,21 +348,30 @@ export function applyCouncilOutput(
   if (patch.artifact) {
     artifacts = [...artifacts.filter((row) => row.id !== patch.artifact!.id), patch.artifact];
   } else if (mergedTask.mode === "REVIEW" && mergedTask.candidateArtifactId && patch.result) {
-    const nextStatus =
-      patch.result.status === "APPROVED"
-        ? "APPROVED"
-        : patch.result.status === "BLOCKED"
-          ? "BLOCKED"
-          : null;
-    if (nextStatus) {
-      artifacts = artifacts.map((row) =>
-        row.id === mergedTask.candidateArtifactId ? { ...row, status: nextStatus } : row,
-      );
-    }
+    const nextStatus = artifactStatusForReview(reviewVerdictFor(mergedTask.mode, patch.result), patch.result.status);
+    artifacts = artifacts.map((row) =>
+      row.id === mergedTask.candidateArtifactId ? { ...row, status: nextStatus } : row,
+    );
   }
   const manifests = patch.manifest
     ? [...memory.manifests.filter((row) => row.id !== patch.manifest!.id), patch.manifest]
     : memory.manifests;
+  let packets = memory.packets;
+  if (patch.packet) {
+    packets = [...packets.filter((row) => row.id !== patch.packet!.id), patch.packet];
+  }
+  let reviewedPacket: ImplementationPacket | null = patch.packet ?? null;
+  if (mergedTask.mode === "REVIEW" && patch.result) {
+    const verdict = reviewVerdictFor(mergedTask.mode, patch.result);
+    if (verdict) {
+      packets = packets.map((row) => {
+        if (row.reviewTaskId !== taskId) return row;
+        const next = applyPacketReview(row, verdict);
+        reviewedPacket = next;
+        return next;
+      });
+    }
+  }
   persist({
     ...memory,
     tasks: memory.tasks.map((t) => (t.id === taskId ? mergedTask : t)),
@@ -349,6 +381,7 @@ export function applyCouncilOutput(
       : memory.results.filter((r) => r.taskId !== taskId),
     artifacts,
     manifests,
+    packets,
   });
   const task = memory.tasks.find((row) => row.id === taskId) ?? mergedTask;
   enqueue(() =>
@@ -359,10 +392,56 @@ export function applyCouncilOutput(
         result: patch.result,
         artifact: patch.artifact ?? null,
         manifest: patch.manifest ?? null,
+        packet: reviewedPacket,
         artifacts,
       },
     }),
   );
+}
+
+export function rememberPacket(packet: ImplementationPacket) {
+  persist({
+    ...memory,
+    packets: [...memory.packets.filter((row) => row.id !== packet.id), packet],
+  });
+  enqueue(() => persistAccountPacket({ data: packet }));
+}
+
+export function handOffImplementation(packetId: string): ImplementationPacket | null {
+  const current = memory.packets.find((row) => row.id === packetId);
+  if (!current) return null;
+  const next = handOffPacket(current);
+  rememberPacket(next);
+  return next;
+}
+
+export function recordPacketImplementation(
+  packetId: string,
+  input: { status: ImplementationStatus; notes: string },
+): ImplementationPacket | null {
+  const current = memory.packets.find((row) => row.id === packetId);
+  if (!current) return null;
+  const next = recordImplementation(current, input);
+  rememberPacket(next);
+  return next;
+}
+
+export function openImplementationReview(packetId: string): Task | null {
+  const current = memory.packets.find((row) => row.id === packetId);
+  if (!current) return null;
+  const artifact = memory.artifacts.find((row) => row.id === current.artifactId);
+  const task = createTask({
+    projectId: current.projectId,
+    title: `Review implementation ${current.iteration}: ${artifact?.title ?? current.scope.slice(0, 80)}`,
+    prompt: `Review the implementation result against this packet.\n\n${current.scope}\n\nNotes:\n${current.implementationNotes ?? "(none)"}\n\nStatus: ${current.implementationStatus ?? "unknown"}`,
+    mode: "REVIEW",
+    candidateArtifactId: current.artifactId,
+    requiresHistoricalContext: false,
+    selectedChatSourceIds: [],
+    selectedFileIds: [],
+  });
+  rememberPacket(openPacketReview(current, task.id));
+  return task;
 }
 
 export function markTaskFailed(taskId: string, error: string) {

@@ -1,7 +1,7 @@
 # Current system state
 
-Revision: CB-ARCH-20260901-001
-Recorded: 2026-09-01T00:00:00.000Z
+Revision: CB-ARCH-20260901-002
+Recorded: 2026-09-01T18:25:00.000Z
 
 Factual state of the authoritative tree. Not a backlog.
 
@@ -11,6 +11,7 @@ Factual state of the authoritative tree. Not a backlog.
 - persist.postgres, account.persistence
 - history.ingest, files.ingest
 - council.task-mode, council.protocol, council.orchestrator, council.manifest, council.artifact, council.providers
+- council.packet, council.review, council.evaluate
 - context.pipeline (chunks → ledger → ranked packer)
 - context.evidence-ledger
 - ui.settings (includes system identity)
@@ -18,7 +19,7 @@ Factual state of the authoritative tree. Not a backlog.
 
 ## CURRENT DATA MODEL
 
-Postgres tables from migrations `0001`–`0005`: Better Auth identity; `account_settings`; `projects`; `context_items`; `tasks`; `agent_responses`; `council_results`; `chat_sources`; `history_messages`; `context_manifests`; `artifacts`; `project_files`; `evidence_chunks`; `evidence_items`; `extractor_cache`. All app tables carry `user_id`.
+Postgres tables from migrations `0001`–`0006`: Better Auth identity; `account_settings`; `projects`; `context_items`; `tasks`; `agent_responses`; `council_results` (including `review_verdict` and `structured`); `chat_sources`; `history_messages`; `context_manifests`; `artifacts`; `project_files`; `evidence_chunks`; `evidence_items`; `extractor_cache`; `implementation_packets`. All app tables carry `user_id`.
 
 ## CURRENT AUTHENTICATION
 
@@ -30,11 +31,15 @@ OpenRouter (`sk-or-…`) and OpenRusRouter (`orr_live_…`). Keys persist on `ac
 
 ## CURRENT COUNCIL FLOW
 
-`src/routes/t.$taskId.tsx` → `runCouncil` in `src/lib/council/orchestrate.ts` only. CREATE / REVIEW / DECIDE. Round 1, Round 2, synthesis.
+`src/routes/t.$taskId.tsx` → `runCouncil` in `src/lib/council/orchestrate.ts` only. CREATE / REVIEW / DECIDE. Round 1, Round 2, structured synthesis. Two surviving agents are enough. CREATE APPROVED writes an Implementation Packet. REVIEW returns PASS / PATCH / BLOCKED. DECIDE disagreements or CONFLICTED evidence require USER_DECISION_REQUIRED.
 
 ## CURRENT CONTEXT PIPELINE
 
-`runEvidencePipeline` chunks every selected chat/file, extracts non-canonical ledger claims, then packs mandatory canonical context plus ranked evidence into 6 000 tokens via `countTokens`. No character slice. Incomplete coverage blocks Council. Truncated stored extracts require re-import.
+`runEvidencePipeline` chunks every selected chat/file, extracts non-canonical ledger claims, then packs mandatory canonical context plus ranked evidence into 6 000 tokens via `countTokens`. No character slice. Incomplete coverage blocks Council. Truncated stored extracts require re-import. Invalid citations are demoted.
+
+## CURRENT CLOSED LOOP
+
+Implementation Packet JSON is the Build handoff. Direct Build execution is unavailable and is not simulated. Packet states: READY → HANDED_OFF → RESULT_RECORDED → REVIEW_OPEN → CLOSED (PASS/BLOCKED) or READY (PATCH). Evaluation summary lives on the project Tasks page.
 
 ## CURRENT DEPLOYMENT
 
@@ -46,11 +51,11 @@ Reporting contract: `docs/SERVICE_STATUS.md`. Functionality and build workflow a
 
 ### FUNCTIONALITY
 
-Standing constraints (not defects): truncated sources without recoverable raw text are `REIMPORT_REQUIRED`; extractor cache is in-memory; provider keys are account-scoped DB text.
+Standing constraints (not defects): truncated sources without recoverable raw text are `REIMPORT_REQUIRED`; extractor cache is in-memory; provider keys are account-scoped DB text; direct Build execution is unavailable so packets stay first-class handoff JSON.
 
 FUNCTION BLOCKERS: none.
 
 ### BUILD WORKFLOW
 
-- Production Publish is a user action; git `CB-BUILD-20260901-002` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
+- Production Publish is a user action; git `CB-BUILD-20260901-003` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
 - Local built-output preview omits PGLite wasm/data from the Vercel function output. Production uses Neon.

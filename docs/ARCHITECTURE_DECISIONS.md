@@ -65,3 +65,12 @@ Only ACTIVE rows define current architecture.
 - RATIONALE: Prevent stale-module and parallel-app patches.
 - SUPERSEDES: none
 - AFFECTED_MODULES: architecture.lock
+
+## ADR-008
+
+- DECISION: Council closed loop is CREATE / REVIEW / DECIDE structured synthesis → Implementation Packet (scope, requirements, invariants, evidence refs, acceptance tests, blockers) → Build handoff JSON → recorded implementation result → Council REVIEW with PASS / PATCH / BLOCKED. Direct Build execution is unavailable; the packet is first-class state, never a simulated run. One of three Council models may fail if two survive. Invalid or unpacked citations are demoted and never mint canonical truth.
+- STATUS: ACTIVE
+- ARCHITECTURE_REVISION: CB-ARCH-20260901-002
+- RATIONALE: Artifact approval without a reviewable implementation packet and verdict leaves the decision loop open.
+- SUPERSEDES: none
+- AFFECTED_MODULES: council.packet, council.evaluate, council.review, council.orchestrator, council.protocol, account.persistence

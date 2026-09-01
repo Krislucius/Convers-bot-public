@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { Check } from "lucide-react";
 import { SourcePicker } from "@/components/source-picker";
+import { FilePicker } from "@/components/file-picker";
 import { EvidenceCoveragePanel } from "@/components/evidence-coverage";
 import { Panel, PrimaryButton } from "@/components/council-ui";
 import { CONTEXT_TOKEN_LIMIT, estimateCouncilRun } from "@/lib/council/protocol";
@@ -132,6 +133,15 @@ export function CouncilRunPanel({
           messages={historyMessages}
           selected={task.selectedChatSourceIds}
           onChange={(ids) => patchTask(task.id, { selectedChatSourceIds: ids })}
+        />
+      </div>
+
+      <div className="mt-6">
+        <FilePicker
+          projectId={project.id}
+          files={projectFiles ?? []}
+          selected={task.selectedFileIds ?? []}
+          onChange={(ids) => patchTask(task.id, { selectedFileIds: ids })}
         />
       </div>
 

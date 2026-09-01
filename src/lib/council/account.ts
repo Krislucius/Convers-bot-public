@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
-import type { AgentResponse, AccountSettingsPublic, Artifact, ContextItem, ContextManifest, CouncilResult, Project, ProjectFile, StoreShape, Task } from "./types";
+import type { AgentResponse, AccountSettingsPublic, Artifact, ContextItem, ContextManifest, CouncilResult, ImplementationPacket, Project, ProjectFile, StoreShape, Task } from "./types";
 import type { ProviderId } from "./types";
 import type { ChatSource, HistoryMessage } from "@/lib/history/types";
 
@@ -99,12 +99,22 @@ export const persistAccountCouncil = createServerFn({ method: "POST" })
       result: CouncilResult | null;
       artifact?: Artifact | null;
       manifest?: ContextManifest | null;
+      packet?: ImplementationPacket | null;
       artifacts?: Artifact[];
     }) => data,
   )
   .handler(async ({ context, data }) => {
     const mod = await import("./account.server");
     await mod.persistCouncilOutput(context.userId, data);
+    return { ok: true };
+  });
+
+export const persistAccountPacket = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((data: ImplementationPacket) => data)
+  .handler(async ({ context, data }) => {
+    const mod = await import("./account.server");
+    await mod.persistPacket(context.userId, data);
     return { ok: true };
   });
 

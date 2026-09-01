@@ -23,12 +23,17 @@ import { sanitizeApiKey } from "./api-key";
 import { councilPreflight } from "./task-mode";
 import { CONTEXT_BUDGET_EXCEEDED, coverageBlocksCouncil, runEvidencePipeline } from "@/lib/evidence/pipeline";
 import { countTokens } from "@/lib/evidence/tokens";
+import { councilAgentFailure, failedResponses, survivingResponses, synthesizerAgent } from "./agents";
+import { sanitizeEvidenceLabels } from "./citations";
+import { buildImplementationPacket } from "./packet";
+import { artifactStatusForReview, reviewVerdictFromStatus } from "./review";
 import type {
   AgentKey,
   AgentResponse,
   Artifact,
   ContextItem,
   ContextManifest,
+  ImplementationPacket,
   ProviderCreds,
   RunCouncilOutput,
   Task,
@@ -52,6 +57,7 @@ export async function runCouncil(input: {
   historyMessages?: HistoryMessage[];
   projectFiles?: ProjectFile[];
   artifacts?: Artifact[];
+  parentPacket?: ImplementationPacket | null;
   onProgress?: (progress: CouncilProgress) => void;
 }): Promise<RunCouncilOutput> {
   const artifacts = input.artifacts ?? [];
@@ -85,6 +91,7 @@ export async function runCouncil(input: {
     return precheckOutput(input.task, CONTEXT_BUDGET_EXCEEDED);
   }
   const ctx = pipeline.pack.text;
+  const packedCitations = pipeline.manifest.packedCitations;
   const manifest: ContextManifest = persistableManifest({
     project: { id: input.project.id, name: input.project.name, description: input.project.description, createdAt: "" },
     task: input.task,
@@ -164,53 +171,53 @@ export async function runCouncil(input: {
     });
     const round1 = await Promise.all(AGENTS.map((agent) => ask(agent, 1, roles[agent], ctx, AGENT_MAX, 0.2)));
     responses.push(...round1);
-    if (round1.some((row) => row.error)) {
-      return failedOutput(input.task, responses, round1.find((row) => row.error)?.error ?? "A reviewer failed.", {
-        manifest,
-      });
+    const fail1 = councilAgentFailure(round1);
+    if (fail1) {
+      return failedOutput(input.task, responses, fail1, { manifest });
     }
+    const alive = survivingResponses(round1).map((row) => row.agent);
 
     input.onProgress?.({
       status: "COUNCIL_ROUND_2",
       message:
         mode === "CREATE"
           ? "Round 2 — cross-examination of the reconstructed architecture."
-          : "Round 2 — the three reviewers are reading each other.",
+          : "Round 2 — the surviving reviewers are reading each other.",
     });
     const round2 = await Promise.all(
-      AGENTS.map((agent) => {
+      alive.map((agent) => {
         const system = `${roles[agent]}\n${ROUND2}`;
         const user = [
           ctx,
           `YOUR ROUND 1 POSITION\n${round1.find((row) => row.agent === agent)?.responseText ?? ""}`,
-          `GPT ROUND 1\n${round1.find((row) => row.agent === "GPT")?.responseText ?? ""}`,
-          `GROK ROUND 1\n${round1.find((row) => row.agent === "GROK")?.responseText ?? ""}`,
-          `CLAUDE ROUND 1\n${round1.find((row) => row.agent === "CLAUDE")?.responseText ?? ""}`,
+          `GPT ROUND 1\n${round1.find((row) => row.agent === "GPT")?.responseText ?? "(failed)"}`,
+          `GROK ROUND 1\n${round1.find((row) => row.agent === "GROK")?.responseText ?? "(failed)"}`,
+          `CLAUDE ROUND 1\n${round1.find((row) => row.agent === "CLAUDE")?.responseText ?? "(failed)"}`,
         ].join("\n\n");
         return ask(agent, 2, system, user, AGENT_MAX, 0.2);
       }),
     );
     responses.push(...round2);
-    if (round2.some((row) => row.error)) {
-      return failedOutput(input.task, responses, round2.find((row) => row.error)?.error ?? "A reviewer failed.", {
-        manifest,
-      });
+    const fail2 = councilAgentFailure([...survivingResponses(round1), ...round2]);
+    if (fail2) {
+      return failedOutput(input.task, responses, fail2, { manifest });
     }
 
     const synthSpec = synthesisForMode(mode);
+    const synthAgent = synthesizerAgent(round2);
     input.onProgress?.({
       status: "SYNTHESIS",
       message:
         mode === "CREATE"
           ? "Artifact synthesis — writing the canonical document from Round 1 and Round 2."
-          : "Synthesis — combining the three positions and applying the safety gate.",
+          : "Synthesis — combining the positions and applying the safety gate.",
     });
     const synthUser = [
       `CONTEXT MANIFEST HASH ${manifest.hash}`,
       ctx,
-      ...AGENTS.map((agent) => `ROUND 2 ${agent}\n${round2.find((row) => row.agent === agent)?.responseText ?? ""}`),
+      ...alive.map((agent) => `ROUND 2 ${agent}\n${round2.find((row) => row.agent === agent)?.responseText ?? ""}`),
     ].join("\n\n");
-    const synth = await ask("GPT", 3, synthSpec.prompt, synthUser, synthSpec.max, 0, synthSpec.schema);
+    const synth = await ask(synthAgent, 3, synthSpec.prompt, synthUser, synthSpec.max, 0, synthSpec.schema);
     responses.push(synth);
     if (synth.error) {
       return failedOutput(input.task, responses, synth.error, { manifest });
@@ -224,13 +231,20 @@ export async function runCouncil(input: {
         { manifest },
       );
     }
-    const gated = applyGate(parsed, round2, mode);
+    const gated = applyGate(parsed, survivingResponses(round2), mode);
+    const failedAgents = failedResponses(responses)
+      .map((row) => row.agent)
+      .filter((agent, index, all) => all.indexOf(agent) === index);
     let artifact: Artifact | null = null;
     if (mode === "CREATE") {
       const drafted = parsed.artifact;
       if (!drafted) {
         return failedOutput(input.task, responses, "CREATE synthesis did not produce an artifact.", { manifest });
       }
+      const sanitized = sanitizeEvidenceLabels(
+        normalizeEvidenceLabels(drafted.evidenceLabels),
+        packedCitations,
+      );
       artifact = {
         id: nid(),
         projectId: input.project.id,
@@ -241,11 +255,40 @@ export async function runCouncil(input: {
         content: drafted.content,
         status: nextArtifactStatus(gated.status),
         contextHash: manifest.hash,
-        evidenceLabels: normalizeEvidenceLabels(drafted.evidenceLabels),
+        evidenceLabels: sanitized.labels,
         createdAt: new Date().toISOString(),
       };
     }
-    return completeOutput(input.task, responses, parsed, gated, { artifact, manifest });
+    if (mode === "REVIEW" && candidate) {
+      const verdict = parsed.reviewVerdict ?? reviewVerdictFromStatus(gated.status);
+      artifact = {
+        ...candidate,
+        status: artifactStatusForReview(verdict, gated.status),
+      };
+    }
+    if (parsed.evidence.length) {
+      parsed.evidence = sanitizeEvidenceLabels(parsed.evidence, packedCitations).labels;
+    }
+    let packet: ImplementationPacket | null = null;
+    if (mode === "CREATE" && artifact && gated.status === "APPROVED") {
+      packet = buildImplementationPacket({
+        project: input.project,
+        task: input.task,
+        artifact,
+        result: { blockers: gated.blockers, status: gated.status },
+        frozen: input.context,
+        packedCitations,
+        parentPacketId: input.parentPacket?.id ?? null,
+        iteration: input.parentPacket ? input.parentPacket.iteration + 1 : 1,
+      });
+    }
+    return completeOutput(input.task, responses, parsed, gated, {
+      artifact,
+      manifest,
+      packet,
+      packedCitations,
+      failedAgents,
+    });
   } catch (err) {
     const message =
       err instanceof Error && err.message.toLowerCase().includes("cost limit")

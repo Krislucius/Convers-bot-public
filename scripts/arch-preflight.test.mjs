@@ -55,6 +55,9 @@ describe("architecture lock (workspace)", { concurrency: false }, () => {
       "src/lib/council/protocol.ts",
       "src/lib/council/task-mode.ts",
       "src/lib/council/orchestrate.ts",
+      "src/lib/council/packet.ts",
+      "src/lib/council/review.ts",
+      "src/lib/council/evaluate.ts",
       "src/lib/evidence",
       "conversation-bot/LEGACY.md",
     ]) {

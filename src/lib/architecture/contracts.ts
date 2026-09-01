@@ -1,4 +1,4 @@
-/** Protected current-architecture contracts. Changing these requires an architecture revision bump. */
+/** Protected current-architecture contracts. Changing these requires an architecture revision. */
 
 export const PROTECTED_INVARIANTS = [
   "ONE_AUTHORITATIVE_PROJECT",
@@ -11,6 +11,7 @@ export const PROTECTED_INVARIANTS = [
   "KEYS_ACCOUNT_NOT_BROWSER",
   "NO_PARALLEL_GROK_APP",
   "SINGLE_CONTEXT_PACKER",
+  "IMPLEMENTATION_PACKET_HANDOFF",
 ] as const;
 
 export type ProtectedInvariant = (typeof PROTECTED_INVARIANTS)[number];

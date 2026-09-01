@@ -2,7 +2,7 @@ import { getSql } from "@/lib/db";
 import { runSerialQueries } from "./hydrate";
 import { maskKey, mergeStoredApiKeys, sanitizeApiKey } from "./api-key";
 import { DEFAULT_CLAUDE, DEFAULT_GPT, DEFAULT_GROK, DEFAULT_MAX_COST_USD, isProviderId } from "./providers";
-import type { AgentResponse, AccountSettingsPublic, Artifact, ContextItem, ContextManifest, CouncilResult, Project, ProjectFile, StoreShape, Task } from "./types";
+import type { AgentResponse, AccountSettingsPublic, Artifact, ContextItem, ContextManifest, CouncilResult, ImplementationPacket, Project, ProjectFile, StoreShape, Task } from "./types";
 import type { ProviderId } from "./types";
 import type { ChatSource, HistoryMessage } from "@/lib/history/types";
 import type { FileKind } from "./files";
@@ -240,6 +240,16 @@ function mapResult(row: Record<string, unknown>): CouncilResult {
     decision: row.decision == null ? null : asString(row.decision),
     rationale: row.rationale == null ? null : asString(row.rationale),
     dissent: asJson(row.dissent, []),
+    reviewVerdict: (row.review_verdict ? asString(row.review_verdict) : asJson(row.structured, {} as Record<string, unknown>).reviewVerdict ?? null) as CouncilResult["reviewVerdict"],
+    alternatives: asJson(asJson(row.structured, {} as Record<string, unknown>).alternatives, []),
+    evidence: asJson(asJson(row.structured, {} as Record<string, unknown>).evidence, []),
+    risks: asJson(asJson(row.structured, {} as Record<string, unknown>).risks, []),
+    issues: asJson(asJson(row.structured, {} as Record<string, unknown>).issues, []),
+    proposedCorrections: asJson(asJson(row.structured, {} as Record<string, unknown>).proposedCorrections, []),
+    resolvedIssues: asJson(asJson(row.structured, {} as Record<string, unknown>).resolvedIssues, []),
+    unresolvedIssues: asJson(asJson(row.structured, {} as Record<string, unknown>).unresolvedIssues, []),
+    citations: asJson(asJson(row.structured, {} as Record<string, unknown>).citations, []),
+    failedAgents: asJson(asJson(row.structured, {} as Record<string, unknown>).failedAgents, []),
   };
 }
 
@@ -340,6 +350,31 @@ function mapManifest(row: Record<string, unknown>): ContextManifest {
   };
 }
 
+function mapPacket(row: Record<string, unknown>): ImplementationPacket {
+  return {
+    id: asString(row.id),
+    projectId: asString(row.project_id),
+    taskId: asString(row.task_id),
+    artifactId: asString(row.artifact_id),
+    parentPacketId: row.parent_packet_id == null ? null : asString(row.parent_packet_id),
+    iteration: asNum(row.iteration) ?? 1,
+    status: asString(row.status) as ImplementationPacket["status"],
+    scope: asString(row.scope),
+    requirements: asJson(row.requirements, []),
+    invariants: asJson(row.invariants, []),
+    evidenceRefs: asJson(row.evidence_refs, []),
+    acceptanceTests: asJson(row.acceptance_tests, []),
+    blockers: asJson(row.blockers, []),
+    packetHash: asString(row.packet_hash),
+    handoffAt: row.handoff_at == null ? null : asString(row.handoff_at),
+    implementationStatus: row.implementation_status == null ? null : (asString(row.implementation_status) as ImplementationPacket["implementationStatus"]),
+    implementationNotes: row.implementation_notes == null ? null : asString(row.implementation_notes),
+    implementationRecordedAt: row.implementation_recorded_at == null ? null : asString(row.implementation_recorded_at),
+    reviewTaskId: row.review_task_id == null ? null : asString(row.review_task_id),
+    createdAt: asString(row.created_at),
+  };
+}
+
 export async function loadSnapshot(userId: string): Promise<StoreShape> {
   const sql = await getSql();
   const projects = await sql`select * from projects where user_id = ${userId} order by created_at desc`;
@@ -355,6 +390,7 @@ export async function loadSnapshot(userId: string): Promise<StoreShape> {
       projectFiles: [],
       artifacts: [],
       manifests: [],
+      packets: [],
     };
   }
   const [context, tasks, responses, results, chatSources, historyMessages, artifacts, manifests] =
@@ -375,6 +411,13 @@ export async function loadSnapshot(userId: string): Promise<StoreShape> {
     const message = err instanceof Error ? err.message : String(err);
     if (!/project_files|does not exist|undefined_table/i.test(message)) throw err;
   }
+  let packets: Record<string, unknown>[] = [];
+  try {
+    packets = await sql`select * from implementation_packets where user_id = ${userId} order by created_at desc`;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!/implementation_packets|does not exist|undefined_table/i.test(message)) throw err;
+  }
   return {
     projects: projects.map(mapProject),
     context: context.map(mapContext),
@@ -386,6 +429,7 @@ export async function loadSnapshot(userId: string): Promise<StoreShape> {
     projectFiles: projectFiles.map(mapFile),
     artifacts: artifacts.map(mapArtifact),
     manifests: manifests.map(mapManifest),
+    packets: packets.map(mapPacket),
   };
 }
 
@@ -483,13 +527,26 @@ async function insertResultRow(userId: string, result: CouncilResult) {
     insert into council_results (
       task_id, user_id, status, consensus, disagreements, blockers, recommendation, agent_positions,
       synthesis_raw, synthesizer_proposed_status, final_enforced_status, verdict_override, override_reason,
-      decision, rationale, dissent
+      decision, rationale, dissent, review_verdict, structured
     ) values (
       ${result.taskId}, ${userId}, ${result.status}, ${jsonParam(result.consensus) ?? "[]"}::jsonb,
       ${jsonParam(result.disagreements) ?? "[]"}::jsonb, ${jsonParam(result.blockers) ?? "[]"}::jsonb,
       ${result.recommendation}, ${jsonParam(result.agentPositions) ?? "{}"}::jsonb, ${result.synthesisRaw},
       ${result.synthesizerProposedStatus}, ${result.finalEnforcedStatus}, ${result.verdictOverride}, ${result.overrideReason},
-      ${result.decision}, ${result.rationale}, ${jsonParam(result.dissent) ?? "[]"}::jsonb
+      ${result.decision}, ${result.rationale}, ${jsonParam(result.dissent) ?? "[]"}::jsonb,
+      ${result.reviewVerdict},
+      ${jsonParam({
+        alternatives: result.alternatives,
+        evidence: result.evidence,
+        risks: result.risks,
+        issues: result.issues,
+        proposedCorrections: result.proposedCorrections,
+        resolvedIssues: result.resolvedIssues,
+        unresolvedIssues: result.unresolvedIssues,
+        citations: result.citations,
+        failedAgents: result.failedAgents,
+        reviewVerdict: result.reviewVerdict,
+      }) ?? "{}"}::jsonb
     )
     on conflict (task_id) do update set
       status = excluded.status,
@@ -505,7 +562,9 @@ async function insertResultRow(userId: string, result: CouncilResult) {
       override_reason = excluded.override_reason,
       decision = excluded.decision,
       rationale = excluded.rationale,
-      dissent = excluded.dissent
+      dissent = excluded.dissent,
+      review_verdict = excluded.review_verdict,
+      structured = excluded.structured
     where council_results.user_id = ${userId}
   `;
 }
@@ -591,6 +650,40 @@ async function insertManifestRow(userId: string, manifest: ContextManifest) {
   `;
 }
 
+async function insertPacketRow(userId: string, packet: ImplementationPacket) {
+  const sql = await getSql();
+  await sql`
+    insert into implementation_packets (
+      id, user_id, project_id, task_id, artifact_id, parent_packet_id, iteration, status, scope,
+      requirements, invariants, evidence_refs, acceptance_tests, blockers, packet_hash, handoff_at,
+      implementation_status, implementation_notes, implementation_recorded_at, review_task_id, created_at
+    ) values (
+      ${packet.id}, ${userId}, ${packet.projectId}, ${packet.taskId}, ${packet.artifactId}, ${packet.parentPacketId},
+      ${packet.iteration}, ${packet.status}, ${packet.scope},
+      ${jsonParam(packet.requirements) ?? "[]"}::jsonb, ${jsonParam(packet.invariants) ?? "[]"}::jsonb,
+      ${jsonParam(packet.evidenceRefs) ?? "[]"}::jsonb, ${jsonParam(packet.acceptanceTests) ?? "[]"}::jsonb,
+      ${jsonParam(packet.blockers) ?? "[]"}::jsonb, ${packet.packetHash}, ${packet.handoffAt},
+      ${packet.implementationStatus}, ${packet.implementationNotes}, ${packet.implementationRecordedAt},
+      ${packet.reviewTaskId}, ${packet.createdAt}
+    )
+    on conflict (id) do update set
+      status = excluded.status,
+      scope = excluded.scope,
+      requirements = excluded.requirements,
+      invariants = excluded.invariants,
+      evidence_refs = excluded.evidence_refs,
+      acceptance_tests = excluded.acceptance_tests,
+      blockers = excluded.blockers,
+      packet_hash = excluded.packet_hash,
+      handoff_at = excluded.handoff_at,
+      implementation_status = excluded.implementation_status,
+      implementation_notes = excluded.implementation_notes,
+      implementation_recorded_at = excluded.implementation_recorded_at,
+      review_task_id = excluded.review_task_id
+    where implementation_packets.user_id = ${userId}
+  `;
+}
+
 export async function writeSnapshot(userId: string, snapshot: StoreShape): Promise<void> {
   const sql = await getSql();
   await sql`delete from history_messages where user_id = ${userId}`;
@@ -600,6 +693,12 @@ export async function writeSnapshot(userId: string, snapshot: StoreShape): Promi
   await sql`delete from council_results where user_id = ${userId}`;
   await sql`delete from artifacts where user_id = ${userId}`;
   await sql`delete from context_manifests where user_id = ${userId}`;
+  try {
+    await sql`delete from implementation_packets where user_id = ${userId}`;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!/implementation_packets|does not exist|undefined_table/i.test(message)) throw err;
+  }
   await sql`delete from tasks where user_id = ${userId}`;
   await sql`delete from context_items where user_id = ${userId}`;
   await sql`delete from projects where user_id = ${userId}`;
@@ -613,6 +712,7 @@ export async function writeSnapshot(userId: string, snapshot: StoreShape): Promi
   for (const file of snapshot.projectFiles ?? []) await insertFileRow(userId, file);
   for (const artifact of snapshot.artifacts ?? []) await insertArtifactRow(userId, artifact);
   for (const manifest of snapshot.manifests ?? []) await insertManifestRow(userId, manifest);
+  for (const packet of snapshot.packets ?? []) await insertPacketRow(userId, packet);
 }
 
 export async function importSnapshotIfEmpty(userId: string, snapshot: StoreShape): Promise<StoreShape> {
@@ -647,6 +747,7 @@ export async function persistCouncilOutput(
     result: CouncilResult | null;
     artifact?: Artifact | null;
     manifest?: ContextManifest | null;
+    packet?: ImplementationPacket | null;
     artifacts?: Artifact[];
   },
 ) {
@@ -661,6 +762,11 @@ export async function persistCouncilOutput(
   if (patch.artifacts) {
     for (const artifact of patch.artifacts) await insertArtifactRow(userId, artifact);
   }
+  if (patch.packet) await insertPacketRow(userId, patch.packet);
+}
+
+export async function persistPacket(userId: string, packet: ImplementationPacket) {
+  await insertPacketRow(userId, packet);
 }
 
 export async function persistChat(

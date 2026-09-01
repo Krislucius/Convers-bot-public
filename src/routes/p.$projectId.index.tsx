@@ -2,7 +2,9 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { FormEvent, useMemo, useState } from "react";
 import { SourcePicker } from "@/components/source-picker";
 import { FilePicker } from "@/components/file-picker";
+import { QualitySummary } from "@/components/quality-summary";
 import { Field, Panel, PrimaryButton, TextArea, TextInput } from "@/components/council-ui";
+import { evaluateProject } from "@/lib/council/evaluate";
 import { createTask, useStore } from "@/lib/council/store";
 import { MODE_COPY, TASK_MODES, defaultRequiresHistorical } from "@/lib/council/task-mode";
 import type { TaskMode } from "@/lib/council/types";
@@ -31,6 +33,13 @@ function TasksPage() {
   const chosen = selected ?? memoryIds;
   const chosenFiles = selectedFiles ?? memoryFileIds;
   const resolvedMode = mode || null;
+  const quality = evaluateProject({
+    projectId,
+    tasks,
+    results: store.results,
+    packets: store.packets,
+    artifacts,
+  });
 
   function onMode(next: TaskMode) {
     setMode(next);
@@ -56,6 +65,7 @@ function TasksPage() {
 
   return (
     <>
+      {tasks.length ? <QualitySummary summary={quality} /> : null}
       <Panel>
         <h2 className="font-display mb-3 text-lg">Tasks</h2>
         {tasks.length === 0 ? (

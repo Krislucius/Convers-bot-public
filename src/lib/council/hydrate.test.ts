@@ -27,6 +27,7 @@ const emptySnapshot: StoreShape = {
   projectFiles: [],
   artifacts: [],
   manifests: [],
+  packets: [],
 };
 
 const emptySettings: AccountSettingsPublic = {

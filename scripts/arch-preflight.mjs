@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 
 export const PROJECT_ID = "01a048b8-c1f7-7382-9dfd-fb30bff7137d";
 export const PRODUCTION_HOST = "https://swift-lake-solar-cosmic.grok.me";
-export const ARCHITECTURE_REVISION = "CB-ARCH-20260901-001";
+export const ARCHITECTURE_REVISION = "CB-ARCH-20260901-002";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export function repoRoot(from = here) {
@@ -61,9 +61,15 @@ export function criticalContractHash(root) {
   const packPath = join(root, "src/lib/evidence/pack.ts");
   const pipelinePath = join(root, "src/lib/evidence/pipeline.ts");
   const tokensPath = join(root, "src/lib/evidence/tokens.ts");
+  const packetPath = join(root, "src/lib/council/packet.ts");
+  const reviewPath = join(root, "src/lib/council/review.ts");
+  const evaluatePath = join(root, "src/lib/council/evaluate.ts");
   const pack = existsSync(packPath) ? read(root, "src/lib/evidence/pack.ts") : "";
   const pipeline = existsSync(pipelinePath) ? read(root, "src/lib/evidence/pipeline.ts") : "";
   const tokens = existsSync(tokensPath) ? read(root, "src/lib/evidence/tokens.ts") : "";
+  const packet = existsSync(packetPath) ? read(root, "src/lib/council/packet.ts") : "";
+  const review = existsSync(reviewPath) ? read(root, "src/lib/council/review.ts") : "";
+  const evaluate = existsSync(evaluatePath) ? read(root, "src/lib/council/evaluate.ts") : "";
   const contracts = read(root, "src/lib/architecture/contracts.ts");
   const tokenLimit = contracts.match(/export const CURRENT_CONTEXT_TOKEN_LIMIT = (\d+);/)?.[1] ?? "";
   const tokenBound = protocol.includes("countTokens(ctx)") && protocol.includes("CONTEXT_TOKEN_LIMIT");
@@ -76,6 +82,12 @@ export function criticalContractHash(root) {
       : "UNKNOWN";
   const modes = taskMode.includes('"CREATE"') && taskMode.includes('"REVIEW"') && taskMode.includes('"DECIDE"');
   const singleOrch = orchestrate.includes("export async function runCouncil");
+  const closedLoop =
+    packet.includes("export function buildImplementationPacket") &&
+    packet.includes("serializePacketHandoff") &&
+    review.includes("PASS") &&
+    review.includes("PATCH") &&
+    evaluate.includes("evaluateProject");
   return sha256(
     JSON.stringify({
       project: PROJECT_ID,
@@ -86,10 +98,14 @@ export function criticalContractHash(root) {
       packer,
       modes,
       singleOrch,
+      closedLoop,
       identity,
       tokens,
       pack,
       pipeline,
+      packet,
+      review,
+      evaluate,
     }),
   );
 }
