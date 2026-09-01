@@ -28,9 +28,7 @@ const task: Task = {
 };
 
 describe("council estimate", () => {
-  it("caps sent context at 24k characters", () => {
-    // Current architecture (CB-ARCH-20260829-001): single packer boundContext.
-    // Hierarchical ledger is PROPOSED (ADR-006), not a second live path.
+  it("does not first-N slice oversized raw context", () => {
     const huge = "x".repeat(CONTEXT_CHAR_LIMIT + 4000);
     const ctx = buildContext({ name: "DEX", description: "clocks" }, task, [
       {
@@ -43,13 +41,11 @@ describe("council estimate", () => {
         createdAt: task.createdAt,
       } satisfies ContextItem,
     ]);
-    assert.equal(ctx.length > CONTEXT_CHAR_LIMIT, true);
-    assert.equal(boundContext(ctx).length, CONTEXT_CHAR_LIMIT);
+    assert.equal(ctx.includes(huge), false);
+    assert.equal(ctx.length <= CONTEXT_CHAR_LIMIT, true);
     const estimate = estimateCouncilRun(ctx, 1);
-    assert.equal(estimate.capped, true);
-    assert.equal(estimate.inputChars, CONTEXT_CHAR_LIMIT);
-    assert.equal(estimate.inputTokens, Math.ceil(CONTEXT_CHAR_LIMIT / 4));
-    assert.equal(estimate.uncappedChars > CONTEXT_CHAR_LIMIT, true);
+    assert.equal(estimate.capped, false);
+    assert.throws(() => boundContext(huge), /CONTEXT_BUDGET_EXCEEDED/);
   });
 
   it("returns a positive dollar estimate for the 3+3+1 council", () => {
@@ -93,7 +89,6 @@ describe("council estimate", () => {
       },
     );
     assert.match(ctx, /SELECTED FILE IDS: f1/);
-    assert.match(ctx, /UNTRUSTED PROJECT FILE/);
-    assert.match(ctx, /BuyFlow must not enter the kernel/);
+    assert.equal(ctx.includes("BuyFlow must not enter the kernel"), false);
   });
 });

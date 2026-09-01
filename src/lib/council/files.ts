@@ -43,9 +43,16 @@ export function wrapUntrustedFile(input: { id: string; filename: string; kind: F
   ].join("\n");
 }
 
+export const PREVIEW_EXTRACTED_CHARS = MAX_EXTRACTED_CHARS;
+
 function clipText(text: string): string {
-  if (text.length <= MAX_EXTRACTED_CHARS) return text;
-  return `${text.slice(0, MAX_EXTRACTED_CHARS)}\n[truncated]`;
+  if (text.length <= PREVIEW_EXTRACTED_CHARS) return text;
+  return `${text.slice(0, PREVIEW_EXTRACTED_CHARS)}\n[truncated]`;
+}
+
+/** UI preview only. Evidence packing uses the full extracted text. */
+export function previewExtractedText(text: string): string {
+  return clipText(text);
 }
 
 function decodeUtf8(bytes: Uint8Array): string {
@@ -241,7 +248,6 @@ export async function parseProjectFile(bytes: Uint8Array, filename: string): Pro
     members = zip.members;
     notes = zip.notes;
   }
-  extractedText = clipText(extractedText);
   return {
     filename,
     kind,

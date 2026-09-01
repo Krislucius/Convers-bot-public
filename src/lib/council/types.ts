@@ -1,4 +1,5 @@
 import type { FileKind } from "./files";
+import type { EvidenceManifest } from "@/lib/evidence/types";
 import type { ChatSource, HistoryMessage } from "@/lib/history/types";
 
 export type AgentKey = "GPT" | "GROK" | "CLAUDE";
@@ -104,6 +105,7 @@ export type ContextManifestPayload = {
   activeSpecifications: Array<{ id: string; content: string }>;
   projectState: Array<{ id: string; content: string }>;
   candidateArtifact: { id: string; title: string; version: string; status: string } | null;
+  evidence: EvidenceManifest | null;
 };
 
 export type ContextManifest = {

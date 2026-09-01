@@ -14,9 +14,9 @@ import type {
   Task,
   TaskMode,
 } from "./types.ts";
-import { wrapUntrustedFile } from "./files.ts";
 import { filterCreateBlockers, normalizeTaskMode } from "./task-mode.ts";
 import { parseSynthesizedArtifact } from "./artifact.ts";
+import { buildMandatoryContext } from "../evidence/pack.ts";
 
 export const AGENTS: AgentKey[] = ["GPT", "GROK", "CLAUDE"];
 
@@ -299,47 +299,22 @@ export function buildContext(
   items: ContextItem[],
   extras?: { manifestSummary?: string; candidateText?: string | null; files?: ProjectFile[] },
 ): string {
-  const mode = normalizeTaskMode(task.mode);
-  const chunks: string[] = [
-    `PROJECT: ${project.name}`,
-    project.description,
-    `TASK: ${task.title}`,
-    `TASK MODE: ${mode}`,
-    task.prompt,
-  ];
-  if (task.decisionQuestion) chunks.push(`DECISION QUESTION: ${task.decisionQuestion}`);
-  chunks.push(`SELECTED CHAT SOURCE IDS: ${task.selectedChatSourceIds.join(",") || "(none)"}`);
-  chunks.push(`SELECTED FILE IDS: ${(task.selectedFileIds ?? []).join(",") || "(none)"}`);
-  chunks.push(`REQUIRES HISTORICAL CONTEXT: ${task.requiresHistoricalContext ? "true" : "false"}`);
-  if (extras?.manifestSummary) chunks.push(extras.manifestSummary);
-  if (mode === "REVIEW" && extras?.candidateText) {
-    chunks.push(`\n## CANDIDATE ARTIFACT\n${extras.candidateText}`);
+  const frozen = items.filter((item) => item.kind !== "RAW_HISTORY");
+  const mandatory = buildMandatoryContext(project, task, frozen, {
+    candidateText: extras?.candidateText,
+  });
+  if (extras?.manifestSummary) {
+    return `${mandatory}\n${extras.manifestSummary}`;
   }
-  if (mode === "CREATE") {
-    chunks.push(
-      "CREATE MODE RULES: produce the artifact. Do not treat a missing candidate document as a blocker. Repository absence => implementation status UNKNOWN, not BLOCKED.",
-    );
-  }
-  const files = (extras?.files ?? []).filter((file) => (task.selectedFileIds ?? []).includes(file.id));
-  if (files.length) {
-    chunks.push("\n## UNTRUSTED PROJECT FILES");
-    for (const file of files) chunks.push(wrapUntrustedFile(file));
-  }
-  const order = ["INVARIANT", "SPECIFICATION", "DECISION", "PROJECT_STATE", "RAW_HISTORY"] as const;
-  for (const kind of order) {
-    const rows = items.filter((i) => i.kind === kind);
-    if (!rows.length) continue;
-    chunks.push(`\n## ${kind}`);
-    for (const row of rows) {
-      const body = kind === "RAW_HISTORY" ? `UNTRUSTED imported text:\n${row.content}` : row.content;
-      chunks.push(`- [${row.status}] ${body}`);
-    }
-  }
-  return chunks.join("\n");
+  return mandatory;
 }
 
+/** Safety check only. The ledger packer already enforces the budget; this must not slice sources. */
 export function boundContext(ctx: string): string {
-  return ctx.slice(0, CONTEXT_CHAR_LIMIT);
+  if (ctx.length > CONTEXT_CHAR_LIMIT) {
+    throw new Error("CONTEXT_BUDGET_EXCEEDED");
+  }
+  return ctx;
 }
 
 export function estimateCouncilRun(
@@ -355,7 +330,18 @@ export function estimateCouncilRun(
   overBudget: boolean;
 } {
   const uncappedChars = ctx.length;
-  const sent = boundContext(ctx);
+  if (uncappedChars > CONTEXT_CHAR_LIMIT) {
+    return {
+      inputChars: 0,
+      inputTokens: 0,
+      uncappedChars,
+      uncappedTokens: Math.max(0, Math.ceil(uncappedChars / 4)),
+      capped: true,
+      costUsd: 0,
+      overBudget: true,
+    };
+  }
+  const sent = ctx;
   const r1OutChars = TYPICAL_AGENT_OUT * 4;
   const r2OutChars = TYPICAL_AGENT_OUT * 4;
   let costUsd = 0;

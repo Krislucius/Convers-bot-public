@@ -186,8 +186,7 @@ describe("context builder and manifest", () => {
     const ctx = buildContext({ name: "DEX Gem Hunter", description: "clocks" }, task, history);
     assert.match(ctx, /SELECTED CHAT SOURCE IDS: c1/);
     assert.match(ctx, /TASK MODE: CREATE/);
-    assert.match(ctx, /DEX Gem Hunter — ChatGPT/);
-    assert.match(ctx, /clocks stay distinct/);
+    assert.match(ctx, /DEX Gem Hunter/);
   });
 
   it("ContextManifest contains selected source metadata", () => {

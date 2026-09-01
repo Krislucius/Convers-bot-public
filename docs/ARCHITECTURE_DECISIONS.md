@@ -41,20 +41,21 @@ Only ACTIVE rows define current architecture.
 ## ADR-005
 
 - DECISION: Current context packer is `buildContext` concatenation plus `boundContext` at 24 000 characters.
-- STATUS: ACTIVE
+- STATUS: SUPERSEDED
 - ARCHITECTURE_REVISION: CB-ARCH-20260829-001
-- RATIONALE: This is the implemented packer. Cost estimates and Council prompts use it. Changing it is an architecture revision, not a silent patch.
+- RATIONALE: First-N character slice silently dropped later selected sources. Replaced by the Evidence Ledger packer.
 - SUPERSEDES: none
+- SUPERSEDED_BY: ADR-006
 - AFFECTED_MODULES: context.pipeline, council.protocol
 
 ## ADR-006
 
-- DECISION: Hierarchical Evidence Ledger (chunk → extract → ledger → council pack) is proposed, not implemented.
-- STATUS: PROPOSED
-- ARCHITECTURE_REVISION: CB-ARCH-20260829-001
-- RATIONALE: Product request exists; this hardening revision does not change Council context semantics.
-- SUPERSEDES: none
-- AFFECTED_MODULES: context.evidence-ledger, context.pipeline
+- DECISION: Canonical Council context is Evidence Ledger packing: RAW sources → chunks → task-independent extraction → ledger → task-aware ranked packer within the 24 000 character budget.
+- STATUS: ACTIVE
+- ARCHITECTURE_REVISION: CB-ARCH-20260901-001
+- RATIONALE: Process every selected source. Mandatory canonical context has priority. Ledger evidence stays non-canonical. Coverage must be explicit.
+- SUPERSEDES: ADR-005
+- AFFECTED_MODULES: context.evidence-ledger, context.pipeline, council.orchestrator, council.manifest
 
 ## ADR-007
 

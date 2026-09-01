@@ -334,6 +334,7 @@ function mapManifest(row: Record<string, unknown>): ContextManifest {
       activeSpecifications: [],
       projectState: [],
       candidateArtifact: null,
+      evidence: null,
     }),
     createdAt: asString(row.created_at),
   };

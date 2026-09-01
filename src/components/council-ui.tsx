@@ -105,17 +105,20 @@ export function StatusPill({ status }: { status: TaskStatus | CouncilStatus | st
     status === "COMPLETE" ||
     status === "APPROVED" ||
     status === "ACCESSIBLE" ||
-    status === "IMPORTED"
+    status === "IMPORTED" ||
+    status === "CACHE_HIT"
       ? "text-ok"
       : status === "FAILED" ||
           status === "BLOCKED" ||
           status === "FETCH_FAILED" ||
-          status === "NOT_FOUND"
+          status === "NOT_FOUND" ||
+          status === "REIMPORT_REQUIRED"
         ? "text-danger"
         : status === "USER_DECISION_REQUIRED" ||
             status === "AUTH_REQUIRED" ||
             status === "PENDING" ||
-            status === "UNSUPPORTED"
+            status === "UNSUPPORTED" ||
+            status === "PARTIAL"
           ? "text-warn"
           : status === "ARCHIVED"
             ? "text-faint"

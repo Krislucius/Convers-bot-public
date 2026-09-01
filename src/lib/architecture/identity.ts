@@ -2,10 +2,10 @@
 
 export const PROJECT_ID = "01a048b8-c1f7-7382-9dfd-fb30bff7137d";
 export const PRODUCTION_HOST = "https://swift-lake-solar-cosmic.grok.me";
-export const ARCHITECTURE_REVISION = "CB-ARCH-20260829-001";
-export const BUILD_ID = "CB-BUILD-20260831-001";
-export const BUILD_TIMESTAMP = "2026-08-31T00:00:00.000Z";
-export const SCHEMA_VERSION = "0004_project_files";
+export const ARCHITECTURE_REVISION = "CB-ARCH-20260901-001";
+export const BUILD_ID = "CB-BUILD-20260901-001";
+export const BUILD_TIMESTAMP = "2026-09-01T00:00:00.000Z";
+export const SCHEMA_VERSION = "0005_evidence_ledger";
 export const SOURCE_ROOT = "src";
 export const LOCK_PATH = "docs/ARCHITECTURE_LOCK.json";
 export const REGISTRY_PATH = "docs/MODULE_REGISTRY.json";

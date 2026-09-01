@@ -1,6 +1,6 @@
 # Conversation Bot architecture
 
-Current revision: **CB-ARCH-20260829-001**
+Current revision: **CB-ARCH-20260901-001**
 
 This document describes the system that is running now. Obsolete trees are listed only under History.
 
@@ -37,12 +37,12 @@ UI (routes + council-ui)
 Evidence flow:
 
 ```text
-AI Chat Sources + Files + Memory (invariants/decisions/specs)
-→ Context Manifest
-→ buildContext concatenation
-→ boundContext (24 000 characters)
+Selected chats and files
+→ deterministic chunks
+→ task-independent evidence extraction (cached by source hash + chunker + extractor)
+→ evidence ledger (non-canonical)
+→ task-aware ranked packer (24 000 character Council budget)
 → Council Round 1 / Round 2 / synthesis
-→ Artifact (CREATE) or review verdict
 ```
 
 ## Persistence
@@ -53,6 +53,7 @@ Applied migrations (basename order):
 2. `0002_app.sql` — account_settings, projects, context, tasks, chats, history
 3. `0003_task_modes.sql` — mode, manifests, artifacts
 4. `0004_project_files.sql` — project_files, selected_file_ids
+5. `0005_evidence_ledger.sql` — evidence_chunks, evidence_items, extractor_cache
 
 `migrations/auth/` is a template copy. Appliers do not descend into subdirectories.
 
@@ -74,7 +75,7 @@ Modes: CREATE, REVIEW, DECIDE. Preflight lives in `council.task-mode`. Execution
 
 ## Context pipeline (current)
 
-Selected chats become `RAW_HISTORY`. Selected files are wrapped as untrusted. `buildContext` concatenates project, task, files, invariants, then history. `boundContext` slices to 24 000 characters (~6k tokens). That is the only packer in this revision. Hierarchical Evidence Ledger is **not** in this revision (ADR-006 PROPOSED).
+Every selected chat and file is chunked, then extracted into a non-canonical Evidence Ledger. Frozen invariants, decisions, specs, and project state are mandatory and packed first. If they exceed the 24 000 character Council budget the run fails with `CONTEXT_BUDGET_EXCEEDED` instead of slicing. Remaining budget is filled with ranked ledger claims (per-source cap). `HISTORY_NOT_CANONICAL` still holds: ledger rows never become DECISION / SPEC / INVARIANT. Coverage must be COMPLETE or Council is blocked. Previously truncated sources without recoverable raw data are `REIMPORT_REQUIRED`. ADR-006 is ACTIVE; ADR-005 first-N `boundContext` is superseded.
 
 ## Artifact lifecycle
 

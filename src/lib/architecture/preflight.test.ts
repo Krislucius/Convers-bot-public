@@ -20,7 +20,7 @@ const lock: ArchitectureLock = {
 const registry: RegistryModule[] = [
   { module_id: "council.orchestrator", status: "ACTIVE" },
   { module_id: "legacy.python-fastapi", status: "SUPERSEDED" },
-  { module_id: "context.evidence-ledger", status: "REMOVED" },
+  { module_id: "context.evidence-ledger", status: "ACTIVE" },
 ];
 
 function sampleChat(projectId: string, id: string): ChatSource {
@@ -141,10 +141,10 @@ describe("architecture stress: isolation and context packer", () => {
     assert.equal(fromA[0]?.id, "b1");
   });
 
-  it("locks a single first-N context packer as current architecture", () => {
-    assert.equal(CURRENT_CONTEXT_PACKER, "boundContext");
+  it("locks the evidence ledger packer and refuses silent first-N slice", () => {
+    assert.equal(CURRENT_CONTEXT_PACKER, "evidenceLedgerPacker");
     assert.equal(CONTEXT_CHAR_LIMIT, CURRENT_CONTEXT_CHAR_LIMIT);
-    const packed = boundContext("z".repeat(CURRENT_CONTEXT_CHAR_LIMIT + 80));
-    assert.equal(packed.length, CURRENT_CONTEXT_CHAR_LIMIT);
+    assert.throws(() => boundContext("z".repeat(CURRENT_CONTEXT_CHAR_LIMIT + 80)), /CONTEXT_BUDGET_EXCEEDED/);
+    assert.equal(boundContext("ok").length, 2);
   });
 });

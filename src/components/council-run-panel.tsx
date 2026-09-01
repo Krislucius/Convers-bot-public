@@ -1,13 +1,14 @@
 import { Link } from "@tanstack/react-router";
 import { Check } from "lucide-react";
 import { SourcePicker } from "@/components/source-picker";
+import { EvidenceCoveragePanel } from "@/components/evidence-coverage";
 import { Panel, PrimaryButton } from "@/components/council-ui";
-import { CONTEXT_TOKEN_LIMIT, buildContext, estimateCouncilRun } from "@/lib/council/protocol";
+import { CONTEXT_TOKEN_LIMIT, estimateCouncilRun } from "@/lib/council/protocol";
 import { patchTask } from "@/lib/council/store";
 import { councilPreflight } from "@/lib/council/task-mode";
 import type { Artifact, ContextItem, Project, ProjectFile, Task } from "@/lib/council/types";
+import { coverageBlocksCouncil, runEvidencePipeline } from "@/lib/evidence/pipeline";
 import { formatChars, formatTokens, formatUsd } from "@/lib/history/format";
-import { selectedChatsToContext } from "@/lib/history/provenance";
 import type { ChatSource, HistoryMessage } from "@/lib/history/types";
 
 export function CouncilRunPanel({
@@ -39,21 +40,23 @@ export function CouncilRunPanel({
   onRun: () => void;
   projectFiles?: ProjectFile[];
 }) {
-  const historyItems = selectedChatsToContext(
-    project.id,
-    task.selectedChatSourceIds,
+  const candidate = artifacts.find((row) => row.id === task.candidateArtifactId) ?? null;
+  const pipeline = runEvidencePipeline({
+    project,
+    task,
+    frozen,
     chatSources,
     historyMessages,
-  );
-  const candidate = artifacts.find((row) => row.id === task.candidateArtifactId) ?? null;
-  const ctx = buildContext(project, task, [...frozen, ...historyItems], {
+    projectFiles: projectFiles ?? [],
     candidateText: candidate ? `# ${candidate.title} v${candidate.version}\n\n${candidate.content}` : null,
-    files: (projectFiles ?? []).filter((file) => (task.selectedFileIds ?? []).includes(file.id)),
   });
+  const ctx = pipeline.pack.ok ? pipeline.pack.text : "";
   const estimate = estimateCouncilRun(ctx, maxCostUsd);
   const budget = maxCostUsd > 0 ? maxCostUsd : 1;
   const precheck = councilPreflight({ task, artifacts });
-  const canPay = ready && precheck.ok && !busy;
+  const coverageError = coverageBlocksCouncil(pipeline.coverage);
+  const budgetError = pipeline.pack.ok ? null : "Mandatory context exceeds the Council budget.";
+  const canPay = ready && precheck.ok && !busy && !coverageError && !budgetError;
 
   return (
     <Panel>
@@ -85,10 +88,10 @@ export function CouncilRunPanel({
         </div>
       </dl>
 
-      {estimate.capped ? (
+      {pipeline.pack.omitted.length > 0 ? (
         <p className="mt-3 mb-0 text-sm text-warn">
-          Selected context is {formatTokens(estimate.uncappedTokens)}. Only the first {formatTokens(CONTEXT_TOKEN_LIMIT)} (
-          {formatChars(estimate.inputChars)}) are sent. Cost is for the truncated packet.
+          Packed {pipeline.pack.packed.length} claims ({formatChars(estimate.inputChars)} / {formatTokens(CONTEXT_TOKEN_LIMIT)}).
+          Omitted {pipeline.pack.omitted.length} ranked claims after every selected source was extracted.
         </p>
       ) : null}
 
@@ -119,6 +122,10 @@ export function CouncilRunPanel({
       )}
 
       <div className="mt-6">
+        <EvidenceCoveragePanel manifest={pipeline.manifest} packed={pipeline.pack.packed} chunks={pipeline.chunks} />
+      </div>
+
+      <div className="mt-6">
         <SourcePicker
           projectId={project.id}
           chats={chatSources}
@@ -132,6 +139,12 @@ export function CouncilRunPanel({
         <p className="mt-4 mb-0 rounded-md border border-danger bg-subtle px-3 py-3 text-sm text-danger">
           {precheck.error}
         </p>
+      ) : null}
+      {coverageError ? (
+        <p className="mt-4 mb-0 rounded-md border border-danger bg-subtle px-3 py-3 text-sm text-danger">{coverageError}</p>
+      ) : null}
+      {budgetError ? (
+        <p className="mt-4 mb-0 rounded-md border border-danger bg-subtle px-3 py-3 text-sm text-danger">{budgetError}</p>
       ) : null}
 
       {ready ? (

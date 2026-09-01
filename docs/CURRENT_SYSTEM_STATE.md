@@ -1,7 +1,7 @@
 # Current system state
 
-Revision: CB-ARCH-20260829-001
-Recorded: 2026-08-29T18:45:00.000Z
+Revision: CB-ARCH-20260901-001
+Recorded: 2026-09-01T00:00:00.000Z
 
 Factual state of the authoritative tree. Not a backlog.
 
@@ -11,13 +11,14 @@ Factual state of the authoritative tree. Not a backlog.
 - persist.postgres, account.persistence
 - history.ingest, files.ingest
 - council.task-mode, council.protocol, council.orchestrator, council.manifest, council.artifact, council.providers
-- context.pipeline (concat + boundContext 24k)
+- context.pipeline (chunks → ledger → ranked packer)
+- context.evidence-ledger
 - ui.settings (includes system identity)
 - architecture.lock
 
 ## CURRENT DATA MODEL
 
-Postgres tables from migrations `0001`–`0004`: Better Auth identity; `account_settings`; `projects`; `context_items`; `tasks`; `agent_responses`; `council_results`; `chat_sources`; `history_messages`; `context_manifests`; `artifacts`; `project_files`. All app tables carry `user_id`.
+Postgres tables from migrations `0001`–`0005`: Better Auth identity; `account_settings`; `projects`; `context_items`; `tasks`; `agent_responses`; `council_results`; `chat_sources`; `history_messages`; `context_manifests`; `artifacts`; `project_files`; `evidence_chunks`; `evidence_items`; `extractor_cache`. All app tables carry `user_id`.
 
 ## CURRENT AUTHENTICATION
 
@@ -33,7 +34,7 @@ OpenRouter (`sk-or-…`) and OpenRusRouter (`orr_live_…`). Keys persist on `ac
 
 ## CURRENT CONTEXT PIPELINE
 
-`selectedChatsToContext` + selected files + memory items → `buildContext` → `boundContext` (24 000 characters). No Evidence Ledger table. No hierarchical extraction.
+`runEvidencePipeline` chunks every selected chat/file, extracts non-canonical ledger claims, then packs mandatory canonical context plus ranked evidence into 24 000 characters. No first-N slice. Incomplete coverage blocks Council. Truncated stored extracts require re-import.
 
 ## CURRENT DEPLOYMENT
 
@@ -41,6 +42,6 @@ Grok Build project `01a048b8-c1f7-7382-9dfd-fb30bff7137d` → `https://swift-lak
 
 ## CURRENT KNOWN BLOCKERS
 
-- Hierarchical Evidence Ledger is not implemented (PROPOSED ADR-006). CREATE tasks with large histories are packed by first-N `boundContext`.
+- Previously truncated files/chats without recoverable raw text are `REIMPORT_REQUIRED`.
 - Provider keys are account-scoped DB text, not application-level encryption beyond the database platform.
 - `src/lib/council/task-mode.test.ts` previously failed under `node --test` because `manifest.ts` imported `@/lib` (fixed in this revision).

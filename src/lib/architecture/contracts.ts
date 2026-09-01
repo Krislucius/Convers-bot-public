@@ -15,7 +15,7 @@ export const PROTECTED_INVARIANTS = [
 
 export type ProtectedInvariant = (typeof PROTECTED_INVARIANTS)[number];
 
-export const CURRENT_CONTEXT_PACKER = "boundContext";
+export const CURRENT_CONTEXT_PACKER = "evidenceLedgerPacker";
 export const CURRENT_CONTEXT_CHAR_LIMIT = 24000;
 export const CURRENT_CONTEXT_TOKEN_LIMIT = 6000;
 export const COUNCIL_ORCHESTRATOR_PATH = "src/lib/council/orchestrate.ts";

@@ -14,7 +14,7 @@ import {
 
 const root = repoRoot();
 
-describe("architecture lock (workspace)", () => {
+describe("architecture lock (workspace)", { concurrency: false }, () => {
   it("fingerprints are stable 64-char sha256", () => {
     const hashes = currentFingerprints(root);
     for (const value of Object.values(hashes)) {
@@ -55,6 +55,7 @@ describe("architecture lock (workspace)", () => {
       "src/lib/council/protocol.ts",
       "src/lib/council/task-mode.ts",
       "src/lib/council/orchestrate.ts",
+      "src/lib/evidence",
       "conversation-bot/LEGACY.md",
     ]) {
       const from = join(root, rel);

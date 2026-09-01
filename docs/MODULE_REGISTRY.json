@@ -1,5 +1,5 @@
 {
-  "architecture_revision": "CB-ARCH-20260829-001",
+  "architecture_revision": "CB-ARCH-20260901-001",
   "modules": [
     {
       "module_id": "app.shell",
@@ -87,7 +87,7 @@
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/protocol.ts",
       "architecture_revision": "CB-ARCH-20260829-001",
-      "responsibilities": ["roles", "buildContext", "boundContext", "synthesis schemas", "gate"],
+      "responsibilities": ["roles", "mandatory context", "synthesis schemas", "gate"],
       "dependencies": ["council.task-mode"],
       "supersedes": []
     },
@@ -96,7 +96,7 @@
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/orchestrate.ts",
       "architecture_revision": "CB-ARCH-20260829-001",
-      "responsibilities": ["single Council execution path: preflight, round1, round2, synthesis"],
+      "responsibilities": ["single Council execution path: preflight, evidence pipeline, round1, round2, synthesis"],
       "dependencies": ["council.protocol", "council.providers", "council.manifest", "council.artifact"],
       "supersedes": []
     },
@@ -130,20 +130,20 @@
     {
       "module_id": "context.pipeline",
       "status": "ACTIVE",
-      "implementation_path": "src/lib/council/protocol.ts",
-      "architecture_revision": "CB-ARCH-20260829-001",
-      "responsibilities": ["concatenate selected evidence then boundContext 24000 characters"],
-      "dependencies": ["history.ingest", "files.ingest", "council.manifest"],
-      "supersedes": []
+      "implementation_path": "src/lib/evidence/pipeline.ts",
+      "architecture_revision": "CB-ARCH-20260901-001",
+      "responsibilities": ["RAW sources to chunks to ledger to ranked packer"],
+      "dependencies": ["history.ingest", "files.ingest", "context.evidence-ledger", "council.manifest"],
+      "supersedes": ["boundContext first-N packer"]
     },
     {
       "module_id": "context.evidence-ledger",
-      "status": "REMOVED",
-      "implementation_path": "",
-      "architecture_revision": "CB-ARCH-20260829-001",
-      "responsibilities": ["not present in this revision; proposed by ADR-006"],
-      "dependencies": [],
-      "supersedes": []
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/evidence/pipeline.ts",
+      "architecture_revision": "CB-ARCH-20260901-001",
+      "responsibilities": ["deterministic chunks", "heuristic extractor", "coverage", "non-canonical evidence", "token-budget packer"],
+      "dependencies": ["history.ingest", "files.ingest"],
+      "supersedes": ["ADR-005 boundContext"]
     },
     {
       "module_id": "ui.settings",

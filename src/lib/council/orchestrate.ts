@@ -5,8 +5,6 @@ import {
   AGENT_MAX,
   AGENTS,
   applyGate,
-  boundContext,
-  buildContext,
   chat,
   completeOutput,
   estimateCost,
@@ -23,6 +21,7 @@ import {
 } from "./protocol";
 import { sanitizeApiKey } from "./api-key";
 import { councilPreflight } from "./task-mode";
+import { CONTEXT_BUDGET_EXCEEDED, coverageBlocksCouncil, runEvidencePipeline } from "@/lib/evidence/pipeline";
 import type {
   AgentKey,
   AgentResponse,
@@ -68,12 +67,23 @@ export async function runCouncil(input: {
     ? artifacts.find((row) => row.id === input.task.candidateArtifactId) ?? null
     : null;
 
-  const ctx = boundContext(
-    buildContext(input.project, input.task, input.context, {
-      candidateText: candidate ? `# ${candidate.title} v${candidate.version}\n\n${candidate.content}` : null,
-      files: (input.projectFiles ?? []).filter((file) => (input.task.selectedFileIds ?? []).includes(file.id)),
-    }),
-  );
+  const pipeline = runEvidencePipeline({
+    project: input.project,
+    task: input.task,
+    frozen: input.context.filter((row) => row.kind !== "RAW_HISTORY"),
+    chatSources: input.chatSources ?? [],
+    historyMessages: input.historyMessages ?? [],
+    projectFiles: (input.projectFiles ?? []).filter((file) => (input.task.selectedFileIds ?? []).includes(file.id)),
+    candidateText: candidate ? `# ${candidate.title} v${candidate.version}\n\n${candidate.content}` : null,
+  });
+  const coverageError = coverageBlocksCouncil(pipeline.coverage);
+  if (coverageError) {
+    return precheckOutput(input.task, coverageError);
+  }
+  if (!pipeline.pack.ok) {
+    return precheckOutput(input.task, CONTEXT_BUDGET_EXCEEDED);
+  }
+  const ctx = pipeline.pack.text;
   const manifest: ContextManifest = persistableManifest({
     project: { id: input.project.id, name: input.project.name, description: input.project.description, createdAt: "" },
     task: input.task,
@@ -83,6 +93,7 @@ export async function runCouncil(input: {
     artifacts,
     projectFiles: input.projectFiles ?? [],
     contextText: ctx,
+    evidence: pipeline.manifest,
   });
 
   input.onProgress?.({

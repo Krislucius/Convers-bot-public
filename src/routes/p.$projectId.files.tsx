@@ -2,11 +2,12 @@ import { createFileRoute } from "@tanstack/react-router";
 import { Upload } from "lucide-react";
 import { FormEvent, useRef, useState } from "react";
 import { Field, GhostButton, Panel, PrimaryButton } from "@/components/council-ui";
-import { FileParseError, parseProjectFile } from "@/lib/council/files";
+import { FileParseError, parseProjectFile, previewExtractedText } from "@/lib/council/files";
 import { nid } from "@/lib/council/protocol";
 import { addProjectFile, deleteProjectFile, setFileIncludeInMemory, useStore } from "@/lib/council/store";
 import type { ProjectFile } from "@/lib/council/types";
 import { formatChars, formatTokens } from "@/lib/history/format";
+import { sourceNeedsReimport } from "@/lib/evidence/pipeline";
 
 export const Route = createFileRoute("/p/$projectId/files")({ component: FilesPage });
 
@@ -128,9 +129,19 @@ function FilesPage() {
                   </GhostButton>
                 </div>
               </div>
+              {sourceNeedsReimport({
+                kind: "FILE",
+                extractedText: row.extractedText,
+                notes: row.notes,
+                messages: 0,
+              }) ? (
+                <p className="mt-3 mb-0 text-sm text-danger">
+                  Re-import required. Previously truncated text cannot be recovered for the Evidence Ledger.
+                </p>
+              ) : null}
               {row.extractedText ? (
                 <pre className="mt-3 max-h-40 overflow-auto rounded-md bg-subtle p-3 text-xs whitespace-pre-wrap text-muted">
-                  {row.extractedText.slice(0, 400)}
+                  {previewExtractedText(row.extractedText).slice(0, 400)}
                   {row.extractedText.length > 400 ? "…" : ""}
                 </pre>
               ) : null}

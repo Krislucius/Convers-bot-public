@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 
 export const PROJECT_ID = "01a048b8-c1f7-7382-9dfd-fb30bff7137d";
 export const PRODUCTION_HOST = "https://swift-lake-solar-cosmic.grok.me";
-export const ARCHITECTURE_REVISION = "CB-ARCH-20260829-001";
+export const ARCHITECTURE_REVISION = "CB-ARCH-20260901-001";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export function repoRoot(from = here) {
@@ -58,10 +58,14 @@ export function criticalContractHash(root) {
   const taskMode = read(root, "src/lib/council/task-mode.ts");
   const orchestrate = read(root, "src/lib/council/orchestrate.ts");
   const identity = read(root, "src/lib/architecture/identity.ts");
+  const packPath = join(root, "src/lib/evidence/pack.ts");
+  const pipelinePath = join(root, "src/lib/evidence/pipeline.ts");
+  const pack = existsSync(packPath) ? read(root, "src/lib/evidence/pack.ts") : "";
+  const pipeline = existsSync(pipelinePath) ? read(root, "src/lib/evidence/pipeline.ts") : "";
   const limit = protocol.match(/export const CONTEXT_CHAR_LIMIT = (\d+);/)?.[1] ?? "";
   const packer =
-    protocol.includes("export function boundContext") && protocol.includes("ctx.slice(0, CONTEXT_CHAR_LIMIT)")
-      ? "boundContext"
+    pack.includes("export function packEvidence") && pipeline.includes("export function runEvidencePipeline")
+      ? "evidenceLedgerPacker"
       : "UNKNOWN";
   const modes = taskMode.includes('"CREATE"') && taskMode.includes('"REVIEW"') && taskMode.includes('"DECIDE"');
   const singleOrch = orchestrate.includes("export async function runCouncil");

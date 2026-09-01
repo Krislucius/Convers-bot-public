@@ -1,6 +1,7 @@
 import { hashContent } from "../history/hash.ts";
 import { messagesForSource, resolveChatsForRun } from "../history/provenance.ts";
 import type { ChatSource, HistoryMessage } from "../history/types.ts";
+import type { EvidenceManifest } from "../evidence/types.ts";
 import { nid } from "./protocol.ts";
 import type {
   Artifact,
@@ -80,6 +81,7 @@ export function buildManifestPayload(input: {
   historyMessages: HistoryMessage[];
   artifacts: Artifact[];
   projectFiles?: ProjectFile[];
+  evidence?: EvidenceManifest | null;
 }): ContextManifestPayload {
   const items = input.context.filter((row) => row.projectId === input.project.id && row.kind !== "RAW_HISTORY");
   const candidate = input.task.candidateArtifactId
@@ -118,6 +120,7 @@ export function buildManifestPayload(input: {
     candidateArtifact: candidate
       ? { id: candidate.id, title: candidate.title, version: candidate.version, status: candidate.status }
       : null,
+    evidence: input.evidence ?? null,
   };
 }
 
@@ -130,6 +133,7 @@ export function persistableManifest(input: {
   artifacts: Artifact[];
   projectFiles?: ProjectFile[];
   contextText: string;
+  evidence?: EvidenceManifest | null;
 }): ContextManifest {
   const payload = buildManifestPayload(input);
   const hash = hashCanonical({ payload, contextText: input.contextText });
