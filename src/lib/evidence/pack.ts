@@ -1,11 +1,12 @@
 import type { ContextItem, Project, Task } from "../council/types.ts";
-import { CURRENT_CONTEXT_CHAR_LIMIT } from "../architecture/contracts.ts";
+import { CURRENT_CONTEXT_TOKEN_LIMIT } from "../architecture/contracts.ts";
+import { countTokens, fitsTokenBudget } from "./tokens.ts";
 import type { LedgerEntry, PackOmission, PackResult } from "./types.ts";
 import { PACKER_VERSION } from "./types.ts";
 
 export { PACKER_VERSION };
 
-const SOURCE_CAP_RATIO = 0.4;
+export const SOURCE_CAP_RATIO = 0.4;
 
 function tokensOf(text: string): string[] {
   return text
@@ -59,46 +60,64 @@ export function buildMandatoryContext(
   return chunks.join("\n");
 }
 
+function claimLine(entry: LedgerEntry): string {
+  return `- [${entry.status}] ${entry.claim} ${entry.citation}`;
+}
+
+export function assemblePackedContext(mandatory: string, packed: LedgerEntry[]): string {
+  const header = "\n## EVIDENCE LEDGER (non-canonical historical evidence)\n";
+  if (!packed.length) return `${mandatory}${header}(none)`;
+  return `${mandatory}${header}${packed.map(claimLine).join("\n")}`;
+}
+
+function rankEntries(entries: LedgerEntry[], task: Task): LedgerEntry[] {
+  return [...entries].sort((a, b) => {
+    const score = scoreEvidence(b, task) - scoreEvidence(a, task);
+    if (score !== 0) return score;
+    if (a.sourceId !== b.sourceId) return a.sourceId < b.sourceId ? -1 : 1;
+    return a.citation < b.citation ? -1 : 1;
+  });
+}
+
 export function packEvidence(input: {
   project: Pick<Project, "name" | "description">;
   task: Task;
   frozen: ContextItem[];
   entries: LedgerEntry[];
   candidateText?: string | null;
-  budgetChars?: number;
+  budgetTokens?: number;
+  selectedSourceCount?: number;
 }): PackResult {
-  const budget = input.budgetChars ?? CURRENT_CONTEXT_CHAR_LIMIT;
+  const budget = input.budgetTokens ?? CURRENT_CONTEXT_TOKEN_LIMIT;
   const mandatory = buildMandatoryContext(input.project, input.task, input.frozen, {
     candidateText: input.candidateText,
   });
-  if (mandatory.length > budget) {
+  const mandatoryTokens = countTokens(mandatory);
+  if (mandatoryTokens > budget) {
     return {
       ok: false,
       code: "CONTEXT_BUDGET_EXCEEDED",
       text: "",
       packed: [],
       omitted: [],
-      mandatoryChars: mandatory.length,
-      evidenceChars: 0,
+      mandatoryTokens,
+      evidenceTokens: 0,
+      totalTokens: 0,
     };
   }
 
-  const ranked = [...input.entries].sort((a, b) => {
-    const score = scoreEvidence(b, input.task) - scoreEvidence(a, input.task);
-    if (score !== 0) return score;
-    if (a.sourceId !== b.sourceId) return a.sourceId < b.sourceId ? -1 : 1;
-    return a.citation < b.citation ? -1 : 1;
-  });
+  const selectedSourceCount =
+    input.selectedSourceCount ?? new Set(input.entries.map((row) => row.sourceId)).size;
+  const applyCap = selectedSourceCount > 1;
+  const remaining = budget - mandatoryTokens;
+  const cap = applyCap ? Math.max(0, Math.floor(remaining * SOURCE_CAP_RATIO)) : remaining;
 
-  const remaining = budget - mandatory.length;
-  const cap = Math.max(0, Math.floor(remaining * SOURCE_CAP_RATIO));
+  const ranked = rankEntries(input.entries, input.task);
   const packed: LedgerEntry[] = [];
   const omitted: PackOmission[] = [];
+  const held: LedgerEntry[] = [];
   const seenClaim = new Set<string>();
   const perSource = new Map<string, number>();
-  let used = 0;
-  const header = "\n## EVIDENCE LEDGER (non-canonical historical evidence)\n";
-  used += header.length;
 
   for (const entry of ranked) {
     const claimKey = entry.claim.trim().toLowerCase();
@@ -106,33 +125,68 @@ export function packEvidence(input: {
       omitted.push({ citation: entry.citation, claim: entry.claim, sourceId: entry.sourceId, reason: "DUPLICATE" });
       continue;
     }
-    const line = `- [${entry.status}] ${entry.claim} ${entry.citation}\n`;
-    const sourceUsed = perSource.get(entry.sourceId) ?? 0;
-    if (sourceUsed + line.length > cap && packed.some((row) => row.sourceId === entry.sourceId)) {
-      omitted.push({ citation: entry.citation, claim: entry.claim, sourceId: entry.sourceId, reason: "SOURCE_CAP" });
+    const candidate = assemblePackedContext(mandatory, [...packed, entry]);
+    if (!fitsTokenBudget(candidate, budget)) {
+      omitted.push({ citation: entry.citation, claim: entry.claim, sourceId: entry.sourceId, reason: "BUDGET" });
       continue;
     }
-    if (used + line.length > remaining) {
-      omitted.push({ citation: entry.citation, claim: entry.claim, sourceId: entry.sourceId, reason: "BUDGET" });
+    const lineTokens = countTokens(claimLine(entry));
+    const sourceUsed = perSource.get(entry.sourceId) ?? 0;
+    if (applyCap && sourceUsed + lineTokens > cap && packed.some((row) => row.sourceId === entry.sourceId)) {
+      held.push(entry);
+      omitted.push({ citation: entry.citation, claim: entry.claim, sourceId: entry.sourceId, reason: "SOURCE_CAP" });
       continue;
     }
     packed.push(entry);
     seenClaim.add(claimKey);
-    perSource.set(entry.sourceId, sourceUsed + line.length);
-    used += line.length;
+    perSource.set(entry.sourceId, sourceUsed + lineTokens);
   }
 
-  const evidenceBlock = packed.length
-    ? `${header}${packed.map((row) => `- [${row.status}] ${row.claim} ${row.citation}`).join("\n")}`
-    : `${header}(none)`;
-  const text = `${mandatory}${evidenceBlock}`;
+  if (applyCap) {
+    const stillHeld: PackOmission[] = [];
+    for (const entry of held) {
+      const candidate = assemblePackedContext(mandatory, [...packed, entry]);
+      if (!fitsTokenBudget(candidate, budget)) {
+        stillHeld.push({
+          citation: entry.citation,
+          claim: entry.claim,
+          sourceId: entry.sourceId,
+          reason: "SOURCE_CAP",
+        });
+        continue;
+      }
+      packed.push(entry);
+    }
+    const kept = omitted.filter((row) => row.reason !== "SOURCE_CAP");
+    omitted.length = 0;
+    omitted.push(...kept, ...stillHeld);
+  }
+
+  const rankIndex = new Map(ranked.map((row, index) => [row.id, index]));
+  packed.sort((a, b) => (rankIndex.get(a.id) ?? 0) - (rankIndex.get(b.id) ?? 0));
+
+  const text = assemblePackedContext(mandatory, packed);
+  const totalTokens = countTokens(text);
+  if (!fitsTokenBudget(text, budget)) {
+    return {
+      ok: false,
+      code: "CONTEXT_BUDGET_EXCEEDED",
+      text: "",
+      packed: [],
+      omitted: [],
+      mandatoryTokens,
+      evidenceTokens: 0,
+      totalTokens,
+    };
+  }
   return {
     ok: true,
     code: "OK",
     text,
     packed,
     omitted,
-    mandatoryChars: mandatory.length,
-    evidenceChars: evidenceBlock.length,
+    mandatoryTokens,
+    evidenceTokens: Math.max(0, totalTokens - mandatoryTokens),
+    totalTokens,
   };
 }

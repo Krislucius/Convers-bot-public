@@ -34,7 +34,7 @@ OpenRouter (`sk-or-…`) and OpenRusRouter (`orr_live_…`). Keys persist on `ac
 
 ## CURRENT CONTEXT PIPELINE
 
-`runEvidencePipeline` chunks every selected chat/file, extracts non-canonical ledger claims, then packs mandatory canonical context plus ranked evidence into 24 000 characters. No first-N slice. Incomplete coverage blocks Council. Truncated stored extracts require re-import.
+`runEvidencePipeline` chunks every selected chat/file, extracts non-canonical ledger claims, then packs mandatory canonical context plus ranked evidence into 6 000 tokens via `countTokens`. No character slice. Incomplete coverage blocks Council. Truncated stored extracts require re-import.
 
 ## CURRENT DEPLOYMENT
 

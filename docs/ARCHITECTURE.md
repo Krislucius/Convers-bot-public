@@ -41,7 +41,7 @@ Selected chats and files
 → deterministic chunks
 → task-independent evidence extraction (cached by source hash + chunker + extractor)
 → evidence ledger (non-canonical)
-→ task-aware ranked packer (24 000 character Council budget)
+→ task-aware ranked packer (6 000 token Council budget)
 → Council Round 1 / Round 2 / synthesis
 ```
 
@@ -75,7 +75,7 @@ Modes: CREATE, REVIEW, DECIDE. Preflight lives in `council.task-mode`. Execution
 
 ## Context pipeline (current)
 
-Every selected chat and file is chunked, then extracted into a non-canonical Evidence Ledger. Frozen invariants, decisions, specs, and project state are mandatory and packed first. If they exceed the 24 000 character Council budget the run fails with `CONTEXT_BUDGET_EXCEEDED` instead of slicing. Remaining budget is filled with ranked ledger claims (per-source cap). `HISTORY_NOT_CANONICAL` still holds: ledger rows never become DECISION / SPEC / INVARIANT. Coverage must be COMPLETE or Council is blocked. Previously truncated sources without recoverable raw data are `REIMPORT_REQUIRED`. ADR-006 is ACTIVE; ADR-005 first-N `boundContext` is superseded.
+Every selected chat and file is chunked, then extracted into a non-canonical Evidence Ledger. Frozen invariants, decisions, specs, and project state are mandatory and packed first. If they exceed the 6 000 token Council budget (`countTokens`) the run fails with `CONTEXT_BUDGET_EXCEEDED` instead of slicing. Remaining budget is filled with ranked ledger claims. One selected source may use the full evidence budget; multiple sources get a diversity cap, then unused budget is redistributed deterministically. `HISTORY_NOT_CANONICAL` still holds: ledger rows never become DECISION / SPEC / INVARIANT. Coverage COMPLETE means every selected chunk was processed, not semantic recall. Previously truncated sources without recoverable raw data are `REIMPORT_REQUIRED`. ADR-006 is ACTIVE; ADR-005 first-N `boundContext` is superseded.
 
 ## Artifact lifecycle
 

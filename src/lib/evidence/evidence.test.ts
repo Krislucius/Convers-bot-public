@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ContextItem, ProjectFile, Task } from "../council/types.ts";
-import { CURRENT_CONTEXT_CHAR_LIMIT, CURRENT_CONTEXT_PACKER } from "../architecture/contracts.ts";
+import { CURRENT_CONTEXT_PACKER, CURRENT_CONTEXT_TOKEN_LIMIT } from "../architecture/contracts.ts";
 import { hashContent } from "../history/hash.ts";
 import type { ChatSource, HistoryMessage } from "../history/types.ts";
 import { parseCitation } from "./extract.ts";
 import { memoryCache } from "./extract.ts";
-import { packEvidence } from "./pack.ts";
+import { packEvidence, SOURCE_CAP_RATIO, assemblePackedContext } from "./pack.ts";
 import { coverageBlocksCouncil, runEvidencePipeline, sourceNeedsReimport } from "./pipeline.ts";
+import { countTokens } from "./tokens.ts";
+import { COVERAGE_COMPLETE_MEANING } from "./types.ts";
 
 function task(over: Partial<Task> = {}): Task {
   return {
@@ -112,10 +114,13 @@ describe("evidence ledger pipeline", () => {
     assert.equal(result.coverage.status, "COMPLETE");
     assert.equal(result.coverage.sources.length, 1);
     assert.ok(result.chunks.length >= 400);
-    assert.ok(result.pack.text.length <= CURRENT_CONTEXT_CHAR_LIMIT);
+    assert.ok(countTokens(result.pack.text) <= CURRENT_CONTEXT_TOKEN_LIMIT);
+    assert.equal(result.pack.totalTokens, countTokens(result.pack.text));
     assert.equal(result.coverage.sources[0]?.omittedReason, null);
     assert.ok(result.pack.packed.length > 0);
-    assert.ok(result.pack.omitted.some((row) => row.reason === "BUDGET" || row.reason === "SOURCE_CAP"));
+    assert.ok(result.pack.omitted.some((row) => row.reason === "BUDGET"));
+    assert.equal(result.pack.omitted.some((row) => row.reason === "SOURCE_CAP"), false);
+    assert.equal(result.coverage.audit.chunksProcessed, result.coverage.audit.chunksTotal);
   });
 
   it("chunks files larger than 200k characters", () => {
@@ -164,7 +169,7 @@ describe("evidence ledger pipeline", () => {
   });
 
   it("caps a dominating source so other sources still pack", () => {
-    const bigTurns = Array.from({ length: 80 }, (_, i) =>
+    const bigTurns = Array.from({ length: 400 }, (_, i) =>
       message("big", i + 1, `Dominating source ${i} about clocks stay distinct and matching engine clocks.`),
     );
     const small = message("small", 1, "Inventory clock must remain a separate domain from matching.");
@@ -227,6 +232,7 @@ describe("evidence ledger pipeline", () => {
     });
     assert.equal(second.coverage.cacheHits, 1);
     assert.equal(second.coverage.sources[0]?.status, "CACHE_HIT");
+    assert.equal(second.coverage.sources[0]?.processedChunks, second.coverage.sources[0]?.chunkCount);
     const third = runEvidencePipeline({
       project,
       task: t,
@@ -416,5 +422,160 @@ describe("evidence ledger pipeline", () => {
     });
     assert.ok(result.entries.every((row) => row.kind === "EVIDENCE"));
     assert.equal(result.pack.text.includes("## INVARIANT"), false);
+  });
+
+  it("counts CJK and long tokens deterministically and never overflows the token budget", () => {
+    assert.equal(countTokens(""), 0);
+    assert.equal(countTokens("ok"), 1);
+    assert.equal(countTokens("时钟"), 2);
+    assert.equal(countTokens("A".repeat(8)), 2);
+    const cjk = "时钟必须保持独立。匹配引擎不得混用库存时钟。".repeat(80);
+    const long = `Clocks stay distinct. ${"A".repeat(4000)}`;
+    const result = runEvidencePipeline({
+      project,
+      task: task({ selectedChatSourceIds: ["cjk", "long"] }),
+      frozen: [],
+      chatSources: [chat("cjk", "cjk", cjk), chat("long", "long", long)],
+      historyMessages: [message("cjk", 1, cjk), message("long", 1, long)],
+      projectFiles: [],
+    });
+    assert.equal(result.coverage.status, "COMPLETE");
+    assert.ok(countTokens(result.pack.text) <= CURRENT_CONTEXT_TOKEN_LIMIT);
+    assert.equal(result.pack.totalTokens, countTokens(result.pack.text));
+    const cut = result.pack.text.indexOf("\n## EVIDENCE LEDGER");
+    assert.ok(cut > 0);
+    assert.equal(result.pack.text, assemblePackedContext(result.pack.text.slice(0, cut), result.pack.packed));
+  });
+
+  it("exposes a coverage audit: processed chunks, not semantic recall", () => {
+    const result = runEvidencePipeline({
+      project,
+      task: task({ selectedChatSourceIds: ["c1"] }),
+      frozen: [],
+      chatSources: [chat("c1", "c", "Clocks stay distinct inside the matching engine forever.")],
+      historyMessages: [message("c1", 1, "Clocks stay distinct inside the matching engine forever.")],
+      projectFiles: [],
+    });
+    const audit = result.coverage.audit;
+    assert.equal(audit.chunksTotal, result.chunks.length);
+    assert.equal(audit.chunksProcessed, result.chunks.length);
+    assert.equal(audit.chunksWithEvidence + audit.chunksWithoutEvidence, audit.chunksProcessed);
+    assert.equal(audit.evidenceCount, result.entries.length);
+    assert.equal(audit.packedEvidence, result.pack.packed.length);
+    assert.equal(audit.omittedEvidence, result.pack.omitted.length);
+    assert.equal(result.coverage.status, "COMPLETE");
+    assert.equal(result.coverage.meaning, COVERAGE_COMPLETE_MEANING);
+    assert.equal(result.manifest.coverageMeaning, COVERAGE_COMPLETE_MEANING);
+    assert.deepEqual(result.manifest.audit, audit);
+  });
+
+  it("treats zero-evidence chunks as processed COMPLETE coverage", () => {
+    const result = runEvidencePipeline({
+      project,
+      task: task({ selectedChatSourceIds: ["c1"] }),
+      frozen: [],
+      chatSources: [chat("c1", "short", "ok\nyes\nhi")],
+      historyMessages: [message("c1", 1, "ok"), message("c1", 2, "yes"), message("c1", 3, "hi")],
+      projectFiles: [],
+    });
+    assert.equal(result.coverage.status, "COMPLETE");
+    assert.ok(result.coverage.audit.chunksTotal >= 3);
+    assert.equal(result.coverage.audit.chunksProcessed, result.coverage.audit.chunksTotal);
+    assert.ok(result.coverage.audit.chunksWithoutEvidence >= 3);
+    assert.equal(result.coverage.audit.evidenceCount, 0);
+    assert.equal(coverageBlocksCouncil(result.coverage), null);
+  });
+
+  it("lets a single huge source use the full evidence token budget", () => {
+    const turns = Array.from({ length: 400 }, (_, i) =>
+      message("only", i + 1, `Single source claim ${i} documents that clocks stay distinct under matching load.`),
+    );
+    const result = runEvidencePipeline({
+      project,
+      task: task({ selectedChatSourceIds: ["only"] }),
+      frozen: [],
+      chatSources: [chat("only", "only", turns.map((row) => row.content).join("\n"))],
+      historyMessages: turns,
+      projectFiles: [],
+    });
+    assert.equal(result.pack.omitted.some((row) => row.reason === "SOURCE_CAP"), false);
+    assert.ok(result.pack.omitted.some((row) => row.reason === "BUDGET"));
+    assert.ok(countTokens(result.pack.text) <= CURRENT_CONTEXT_TOKEN_LIMIT);
+    assert.ok(result.pack.packed.length > 0);
+  });
+
+  it("applies a diversity cap across many sources then redistributes leftover budget", () => {
+    const ids = Array.from({ length: 8 }, (_, i) => `s${i}`);
+    const turns = ids.flatMap((id) =>
+      Array.from({ length: 12 }, (_, n) =>
+        message(id, n + 1, `${id} claim ${n} says clocks stay distinct in the matching engine domain.`),
+      ),
+    );
+    const result = runEvidencePipeline({
+      project,
+      task: task({
+        selectedChatSourceIds: ids,
+        prompt: "clocks stay distinct matching engine",
+      }),
+      frozen: [],
+      chatSources: ids.map((id) => chat(id, id, `${id} clocks stay distinct in the matching engine domain.`)),
+      historyMessages: turns,
+      projectFiles: [],
+    });
+    const packedSources = new Set(result.pack.packed.map((row) => row.sourceId));
+    assert.equal(packedSources.size, ids.length);
+    assert.ok(countTokens(result.pack.text) <= CURRENT_CONTEXT_TOKEN_LIMIT);
+
+    const small = message("small", 1, "Inventory clock must remain a separate domain from matching.");
+    const bigTurns = Array.from({ length: 400 }, (_, i) =>
+      message("big", i + 1, `Dominating source ${i} about clocks stay distinct and matching engine clocks.`),
+    );
+    const mixed = runEvidencePipeline({
+      project,
+      task: task({
+        selectedChatSourceIds: ["big", "small"],
+        prompt: "inventory clock matching engine",
+      }),
+      frozen: [],
+      chatSources: [
+        chat("big", "big", bigTurns.map((row) => row.content).join("\n")),
+        chat("small", "small", small.content),
+      ],
+      historyMessages: [...bigTurns, small],
+      projectFiles: [],
+    });
+    const mandatory = mixed.pack.text.slice(0, mixed.pack.text.indexOf("\n## EVIDENCE LEDGER"));
+    const remaining = CURRENT_CONTEXT_TOKEN_LIMIT - countTokens(mandatory);
+    const cap = Math.floor(remaining * SOURCE_CAP_RATIO);
+    const bigLines = mixed.pack.packed
+      .filter((row) => row.sourceId === "big")
+      .map((row) => `- [${row.status}] ${row.claim} ${row.citation}`)
+      .join("\n");
+    assert.ok(mixed.pack.packed.some((row) => row.sourceId === "small"));
+    assert.ok(countTokens(bigLines) > cap);
+    assert.ok(countTokens(mixed.pack.text) <= CURRENT_CONTEXT_TOKEN_LIMIT);
+  });
+
+  it("repeats packing identically including token counts", () => {
+    const input = {
+      project,
+      task: task({ selectedChatSourceIds: ["c1", "c2"] }),
+      frozen: [] as ContextItem[],
+      chatSources: [
+        chat("c1", "one", "First source records that clocks stay distinct."),
+        chat("c2", "two", "Second source forbids mixing inventory clocks."),
+      ],
+      historyMessages: [
+        message("c1", 1, "First source records that clocks stay distinct."),
+        message("c2", 1, "Second source forbids mixing inventory clocks."),
+      ],
+      projectFiles: [] as ProjectFile[],
+    };
+    const a = runEvidencePipeline(input);
+    const b = runEvidencePipeline(input);
+    assert.equal(a.pack.text, b.pack.text);
+    assert.equal(a.pack.totalTokens, b.pack.totalTokens);
+    assert.equal(a.manifest.contextHash, b.manifest.contextHash);
+    assert.deepEqual(a.coverage.audit, b.coverage.audit);
   });
 });

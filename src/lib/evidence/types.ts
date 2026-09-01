@@ -2,7 +2,10 @@ export const CHUNKER_VERSION = "chunker-v1";
 export const EXTRACTOR_VERSION = "extract-v1-heuristic";
 export const EXTRACTOR_MODEL = "none";
 export const EXTRACTOR_PROMPT_VERSION = "heuristic-sentences-v1";
-export const PACKER_VERSION = "packer-v1";
+export const PACKER_VERSION = "packer-v2";
+
+export const COVERAGE_COMPLETE_MEANING =
+  "COMPLETE means every selected chunk was processed. It does not guarantee semantic recall or that every extracted claim was packed.";
 
 export type SourceKind = "CHAT" | "FILE";
 
@@ -47,6 +50,16 @@ export type CacheStore = {
   set(fingerprint: string, value: CachedExtraction): void;
 };
 
+export type CoverageAudit = {
+  chunksTotal: number;
+  chunksProcessed: number;
+  chunksWithEvidence: number;
+  chunksWithoutEvidence: number;
+  evidenceCount: number;
+  packedEvidence: number;
+  omittedEvidence: number;
+};
+
 export type SourceCoverage = {
   sourceId: string;
   sourceKind: SourceKind;
@@ -54,6 +67,8 @@ export type SourceCoverage = {
   status: SourceCoverageStatus;
   chunkCount: number;
   processedChunks: number;
+  chunksWithEvidence: number;
+  chunksWithoutEvidence: number;
   evidenceCount: number;
   cacheHits: number;
   omittedReason: string | null;
@@ -61,7 +76,9 @@ export type SourceCoverage = {
 
 export type CoverageReport = {
   status: CoverageStatus;
+  meaning: string;
   sources: SourceCoverage[];
+  audit: CoverageAudit;
   chunkCount: number;
   evidenceCount: number;
   cacheHits: number;
@@ -84,8 +101,9 @@ export type PackResult = {
   text: string;
   packed: LedgerEntry[];
   omitted: PackOmission[];
-  mandatoryChars: number;
-  evidenceChars: number;
+  mandatoryTokens: number;
+  evidenceTokens: number;
+  totalTokens: number;
 };
 
 export type EvidenceManifest = {
@@ -93,12 +111,14 @@ export type EvidenceManifest = {
   chunkerVersion: string;
   packerVersion: string;
   coverageStatus: CoverageStatus;
+  coverageMeaning: string;
   ledgerHash: string;
   contextHash: string;
   selectedSourceHashes: Array<{ sourceId: string; sourceKind: SourceKind; hash: string }>;
   sources: SourceCoverage[];
   packedCitations: string[];
   omitted: PackOmission[];
+  audit: CoverageAudit;
   evidenceCount: number;
   chunkCount: number;
   cacheHits: number;

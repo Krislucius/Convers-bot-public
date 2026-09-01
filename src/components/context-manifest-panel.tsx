@@ -55,8 +55,14 @@ export function ContextManifestPanel({
         <Stat label="Specifications" value={String(counts.specifications)} />
         <Stat label="Project state" value={String(counts.projectState)} />
         <Stat label="Coverage" value={payload.evidence?.coverageStatus ?? "n/a"} />
+        <Stat label="Chunks processed" value={String(payload.evidence?.audit?.chunksProcessed ?? 0)} />
+        <Stat label="Packed evidence" value={String(payload.evidence?.audit?.packedEvidence ?? 0)} />
+        <Stat label="Omitted evidence" value={String(payload.evidence?.audit?.omittedEvidence ?? 0)} />
         <Stat label="Ledger claims" value={String(payload.evidence?.evidenceCount ?? 0)} />
       </dl>
+      {payload.evidence ? (
+        <p className="mt-3 mb-0 text-sm text-muted">{payload.evidence.coverageMeaning}</p>
+      ) : null}
       {payload.evidence ? (
         <p className="mt-3 mb-0 font-mono text-xs text-faint">
           Extractor {payload.evidence.extractorFingerprint} · ledger {payload.evidence.ledgerHash} · context{" "}

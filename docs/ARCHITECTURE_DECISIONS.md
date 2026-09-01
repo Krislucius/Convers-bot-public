@@ -50,7 +50,7 @@ Only ACTIVE rows define current architecture.
 
 ## ADR-006
 
-- DECISION: Canonical Council context is Evidence Ledger packing: RAW sources → chunks → task-independent extraction → ledger → task-aware ranked packer within the 24 000 character budget.
+- DECISION: Canonical Council context is Evidence Ledger packing: RAW sources → chunks → task-independent extraction → ledger → task-aware ranked packer within a 6 000 token budget (`countTokens`). COMPLETE coverage means every selected chunk was processed, not guaranteed semantic recall. A single selected source may use the full evidence budget; multiple sources use a diversity cap with deterministic leftover redistribution.
 - STATUS: ACTIVE
 - ARCHITECTURE_REVISION: CB-ARCH-20260901-001
 - RATIONALE: Process every selected source. Mandatory canonical context has priority. Ledger evidence stays non-canonical. Coverage must be explicit.

@@ -141,7 +141,7 @@
       "status": "ACTIVE",
       "implementation_path": "src/lib/evidence/pipeline.ts",
       "architecture_revision": "CB-ARCH-20260901-001",
-      "responsibilities": ["deterministic chunks", "heuristic extractor", "coverage", "non-canonical evidence", "token-budget packer"],
+      "responsibilities": ["deterministic chunks", "heuristic extractor", "coverage audit", "non-canonical evidence", "token-budget packer", "source diversity cap"],
       "dependencies": ["history.ingest", "files.ingest"],
       "supersedes": ["ADR-005 boundContext"]
     },

@@ -66,20 +66,51 @@ export function extractChunk(chunk: EvidenceChunk): LedgerEntry[] {
   return entries;
 }
 
-export function extractChunks(chunks: EvidenceChunk[], cache?: CacheStore, fingerprint?: string): {
+export function chunkEvidenceStats(chunks: EvidenceChunk[], entries: LedgerEntry[]): {
+  chunksWithEvidence: number;
+  chunksWithoutEvidence: number;
+} {
+  const withEvidence = new Set(entries.map((row) => row.chunkId));
+  const chunksWithEvidence = chunks.filter((row) => withEvidence.has(row.id)).length;
+  return {
+    chunksWithEvidence,
+    chunksWithoutEvidence: chunks.length - chunksWithEvidence,
+  };
+}
+
+export function extractChunks(
+  chunks: EvidenceChunk[],
+  cache?: CacheStore,
+  fingerprint?: string,
+): {
   entries: LedgerEntry[];
   cacheHits: number;
   processed: number;
+  chunksWithEvidence: number;
+  chunksWithoutEvidence: number;
 } {
   if (fingerprint && cache) {
     const hit = cache.get(fingerprint);
-    if (hit) return { entries: hit.entries, cacheHits: hit.chunks.length, processed: 0 };
+    if (hit) {
+      const stats = chunkEvidenceStats(hit.chunks, hit.entries);
+      return {
+        entries: hit.entries,
+        cacheHits: hit.chunks.length,
+        processed: hit.chunks.length,
+        ...stats,
+      };
+    }
   }
   const entries = chunks.flatMap(extractChunk);
   if (fingerprint && cache) {
     cache.set(fingerprint, { fingerprint, chunks, entries });
   }
-  return { entries, cacheHits: 0, processed: chunks.length };
+  return {
+    entries,
+    cacheHits: 0,
+    processed: chunks.length,
+    ...chunkEvidenceStats(chunks, entries),
+  };
 }
 
 export function memoryCache(): CacheStore {

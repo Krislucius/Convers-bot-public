@@ -4,8 +4,8 @@ import { ARCHITECTURE_REVISION, PRODUCTION_HOST, PROJECT_ID } from "./identity.t
 import { evaluatePatch, type ArchitectureLock, type RegistryModule } from "./preflight.ts";
 import { resolveChatsForRun } from "../history/provenance.ts";
 import type { ChatSource } from "../history/types.ts";
-import { CONTEXT_CHAR_LIMIT, boundContext } from "../council/protocol.ts";
-import { CURRENT_CONTEXT_CHAR_LIMIT, CURRENT_CONTEXT_PACKER } from "./contracts.ts";
+import { CONTEXT_TOKEN_LIMIT, boundContext } from "../council/protocol.ts";
+import { CURRENT_CONTEXT_PACKER, CURRENT_CONTEXT_TOKEN_LIMIT } from "./contracts.ts";
 
 const lock: ArchitectureLock = {
   project_id: PROJECT_ID,
@@ -143,8 +143,8 @@ describe("architecture stress: isolation and context packer", () => {
 
   it("locks the evidence ledger packer and refuses silent first-N slice", () => {
     assert.equal(CURRENT_CONTEXT_PACKER, "evidenceLedgerPacker");
-    assert.equal(CONTEXT_CHAR_LIMIT, CURRENT_CONTEXT_CHAR_LIMIT);
-    assert.throws(() => boundContext("z".repeat(CURRENT_CONTEXT_CHAR_LIMIT + 80)), /CONTEXT_BUDGET_EXCEEDED/);
-    assert.equal(boundContext("ok").length, 2);
+    assert.equal(CONTEXT_TOKEN_LIMIT, CURRENT_CONTEXT_TOKEN_LIMIT);
+    assert.throws(() => boundContext("字".repeat(CURRENT_CONTEXT_TOKEN_LIMIT + 10)), /CONTEXT_BUDGET_EXCEEDED/);
+    assert.equal(boundContext("ok"), "ok");
   });
 });

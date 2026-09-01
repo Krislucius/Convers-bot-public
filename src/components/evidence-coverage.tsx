@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Panel, StatusPill } from "@/components/council-ui";
 import { parseCitation } from "@/lib/evidence/extract";
 import type { EvidenceChunk, EvidenceManifest, LedgerEntry } from "@/lib/evidence/types";
+import { COVERAGE_COMPLETE_MEANING } from "@/lib/evidence/types";
 
 export function EvidenceCoveragePanel({
   manifest,
@@ -14,16 +15,22 @@ export function EvidenceCoveragePanel({
 }) {
   const [open, setOpen] = useState<string | null>(null);
   const reimport = manifest.sources.filter((row) => row.status === "REIMPORT_REQUIRED");
+  const audit = manifest.audit;
   return (
     <Panel>
       <p className="mb-1 text-xs font-semibold tracking-widest text-muted uppercase">Evidence ledger</p>
       <h2 className="font-display mt-0 mb-4 text-xl">Coverage before Council</h2>
       <dl className="m-0 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label="Coverage" value={manifest.coverageStatus} />
-        <Stat label="Chunks processed" value={String(manifest.processedChunks)} />
-        <Stat label="Cache hits" value={String(manifest.cacheHits)} />
-        <Stat label="Evidence claims" value={String(manifest.evidenceCount)} />
+        <Stat label="Chunks total" value={String(audit.chunksTotal)} />
+        <Stat label="Chunks processed" value={String(audit.chunksProcessed)} />
+        <Stat label="Chunks with evidence" value={String(audit.chunksWithEvidence)} />
+        <Stat label="Chunks without evidence" value={String(audit.chunksWithoutEvidence)} />
+        <Stat label="Evidence claims" value={String(audit.evidenceCount)} />
+        <Stat label="Packed evidence" value={String(audit.packedEvidence)} />
+        <Stat label="Omitted evidence" value={String(audit.omittedEvidence)} />
       </dl>
+      <p className="mt-3 mb-0 text-sm text-muted">{manifest.coverageMeaning || COVERAGE_COMPLETE_MEANING}</p>
       {reimport.length > 0 ? (
         <p className="mt-3 mb-0 text-sm text-danger">
           Re-import required for {reimport.map((row) => row.sourceId).join(", ")}. Previously truncated text cannot be recovered.
@@ -41,7 +48,8 @@ export function EvidenceCoveragePanel({
                 {row.sourceKind} {row.sourceId}
               </span>
               <span className="ml-2 font-mono text-xs text-faint">
-                {row.processedChunks}/{row.chunkCount} chunks · {row.evidenceCount} claims
+                {row.processedChunks}/{row.chunkCount} processed · {row.chunksWithEvidence} with evidence ·{" "}
+                {row.chunksWithoutEvidence} without · {row.evidenceCount} claims
                 {row.cacheHits ? ` · cache ${row.cacheHits}` : ""}
                 {row.omittedReason ? ` · ${row.omittedReason}` : ""}
               </span>

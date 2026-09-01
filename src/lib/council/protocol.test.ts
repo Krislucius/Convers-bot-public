@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { CONTEXT_CHAR_LIMIT, boundContext, buildContext, estimateCouncilRun } from "./protocol.ts";
+import { CONTEXT_TOKEN_LIMIT, boundContext, buildContext, estimateCouncilRun } from "./protocol.ts";
+import { countTokens } from "../evidence/tokens.ts";
 import type { ContextItem, Task } from "./types.ts";
 
 const task: Task = {
@@ -29,7 +30,7 @@ const task: Task = {
 
 describe("council estimate", () => {
   it("does not first-N slice oversized raw context", () => {
-    const huge = "x".repeat(CONTEXT_CHAR_LIMIT + 4000);
+    const huge = "字".repeat(CONTEXT_TOKEN_LIMIT + 400);
     const ctx = buildContext({ name: "DEX", description: "clocks" }, task, [
       {
         id: "c1",
@@ -42,7 +43,7 @@ describe("council estimate", () => {
       } satisfies ContextItem,
     ]);
     assert.equal(ctx.includes(huge), false);
-    assert.equal(ctx.length <= CONTEXT_CHAR_LIMIT, true);
+    assert.ok(countTokens(ctx) <= CONTEXT_TOKEN_LIMIT);
     const estimate = estimateCouncilRun(ctx, 1);
     assert.equal(estimate.capped, false);
     assert.throws(() => boundContext(huge), /CONTEXT_BUDGET_EXCEEDED/);

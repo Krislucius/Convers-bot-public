@@ -8,7 +8,7 @@ import { patchTask } from "@/lib/council/store";
 import { councilPreflight } from "@/lib/council/task-mode";
 import type { Artifact, ContextItem, Project, ProjectFile, Task } from "@/lib/council/types";
 import { coverageBlocksCouncil, runEvidencePipeline } from "@/lib/evidence/pipeline";
-import { formatChars, formatTokens, formatUsd } from "@/lib/history/format";
+import { formatTokens, formatUsd } from "@/lib/history/format";
 import type { ChatSource, HistoryMessage } from "@/lib/history/types";
 
 export function CouncilRunPanel({
@@ -55,7 +55,7 @@ export function CouncilRunPanel({
   const budget = maxCostUsd > 0 ? maxCostUsd : 1;
   const precheck = councilPreflight({ task, artifacts });
   const coverageError = coverageBlocksCouncil(pipeline.coverage);
-  const budgetError = pipeline.pack.ok ? null : "Mandatory context exceeds the Council budget.";
+  const budgetError = pipeline.pack.ok ? null : "Mandatory context exceeds the Council token budget.";
   const canPay = ready && precheck.ok && !busy && !coverageError && !budgetError;
 
   return (
@@ -90,8 +90,8 @@ export function CouncilRunPanel({
 
       {pipeline.pack.omitted.length > 0 ? (
         <p className="mt-3 mb-0 text-sm text-warn">
-          Packed {pipeline.pack.packed.length} claims ({formatChars(estimate.inputChars)} / {formatTokens(CONTEXT_TOKEN_LIMIT)}).
-          Omitted {pipeline.pack.omitted.length} ranked claims after every selected source was extracted.
+          Packed {pipeline.pack.packed.length} claims ({formatTokens(estimate.inputTokens)} / {formatTokens(CONTEXT_TOKEN_LIMIT)}).
+          Omitted {pipeline.pack.omitted.length} ranked claims after every selected chunk was processed.
         </p>
       ) : null}
 

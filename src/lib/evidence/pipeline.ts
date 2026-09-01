@@ -6,9 +6,10 @@ import { chunkSelectedSources } from "./chunk.ts";
 import { extractChunks, memoryCache } from "./extract.ts";
 import { cacheFingerprint, extractorFingerprint } from "./hash.ts";
 import { packEvidence } from "./pack.ts";
-import { CHUNKER_VERSION, PACKER_VERSION } from "./types.ts";
+import { CHUNKER_VERSION, COVERAGE_COMPLETE_MEANING, PACKER_VERSION } from "./types.ts";
 import type {
   CacheStore,
+  CoverageAudit,
   CoverageReport,
   CoverageStatus,
   EvidenceChunk,
@@ -54,6 +55,49 @@ function coverageStatus(sources: SourceCoverage[]): CoverageStatus {
   if (sources.some((row) => row.status === "FAILED")) return "FAILED";
   if (sources.some((row) => row.status === "PARTIAL")) return "PARTIAL";
   return "COMPLETE";
+}
+
+function emptySource(
+  sourceId: string,
+  sourceKind: SourceKind,
+  sourceHash: string,
+  status: SourceCoverage["status"],
+  omittedReason: string,
+): SourceCoverage {
+  return {
+    sourceId,
+    sourceKind,
+    sourceHash,
+    status,
+    chunkCount: 0,
+    processedChunks: 0,
+    chunksWithEvidence: 0,
+    chunksWithoutEvidence: 0,
+    evidenceCount: 0,
+    cacheHits: 0,
+    omittedReason,
+  };
+}
+
+function buildAudit(
+  chunks: EvidenceChunk[],
+  sources: SourceCoverage[],
+  entries: LedgerEntry[],
+  packedCount: number,
+  omittedCount: number,
+): CoverageAudit {
+  const chunksProcessed = sources.reduce((sum, row) => sum + row.processedChunks, 0);
+  const chunksWithEvidence = sources.reduce((sum, row) => sum + row.chunksWithEvidence, 0);
+  const chunksWithoutEvidence = sources.reduce((sum, row) => sum + row.chunksWithoutEvidence, 0);
+  return {
+    chunksTotal: chunks.length,
+    chunksProcessed,
+    chunksWithEvidence,
+    chunksWithoutEvidence,
+    evidenceCount: entries.length,
+    packedEvidence: packedCount,
+    omittedEvidence: omittedCount,
+  };
 }
 
 export function runEvidencePipeline(input: {
@@ -106,33 +150,13 @@ export function runEvidencePipeline(input: {
           messages: messageCount,
         })
       ) {
-        sources.push({
-          sourceId: source.id,
-          sourceKind: "CHAT",
-          sourceHash: source.contentHash,
-          status: "REIMPORT_REQUIRED",
-          chunkCount: 0,
-          processedChunks: 0,
-          evidenceCount: 0,
-          cacheHits: 0,
-          omittedReason: "REIMPORT_REQUIRED",
-        });
+        sources.push(emptySource(source.id, "CHAT", source.contentHash, "REIMPORT_REQUIRED", "REIMPORT_REQUIRED"));
         continue;
       }
     } else {
       const file = selectedSource.file;
       if (sourceNeedsReimport({ kind: "FILE", extractedText: file.extractedText, notes: file.notes, messages: 0 })) {
-        sources.push({
-          sourceId: file.id,
-          sourceKind: "FILE",
-          sourceHash: selectedSource.hash,
-          status: "REIMPORT_REQUIRED",
-          chunkCount: 0,
-          processedChunks: 0,
-          evidenceCount: 0,
-          cacheHits: 0,
-          omittedReason: "REIMPORT_REQUIRED",
-        });
+        sources.push(emptySource(file.id, "FILE", selectedSource.hash, "REIMPORT_REQUIRED", "REIMPORT_REQUIRED"));
         continue;
       }
     }
@@ -152,42 +176,24 @@ export function runEvidencePipeline(input: {
       chunks.push(...sourceChunks);
       entries.push(...extracted.entries);
       const hit = extracted.cacheHits > 0;
-      cacheHits += extracted.cacheHits > 0 ? 1 : 0;
+      cacheHits += hit ? 1 : 0;
       sources.push({
         sourceId: selectedSource.id,
         sourceKind: selectedSource.kind,
         sourceHash: selectedSource.hash,
         status: hit ? "CACHE_HIT" : "COMPLETE",
         chunkCount: sourceChunks.length,
-        processedChunks: hit ? 0 : extracted.processed,
+        processedChunks: extracted.processed,
+        chunksWithEvidence: extracted.chunksWithEvidence,
+        chunksWithoutEvidence: extracted.chunksWithoutEvidence,
         evidenceCount: extracted.entries.length,
         cacheHits: hit ? 1 : 0,
         omittedReason: null,
       });
     } catch {
-      sources.push({
-        sourceId: selectedSource.id,
-        sourceKind: selectedSource.kind,
-        sourceHash: selectedSource.hash,
-        status: "FAILED",
-        chunkCount: 0,
-        processedChunks: 0,
-        evidenceCount: 0,
-        cacheHits: 0,
-        omittedReason: "FAILED",
-      });
+      sources.push(emptySource(selectedSource.id, selectedSource.kind, selectedSource.hash, "FAILED", "FAILED"));
     }
   }
-
-  const coverage: CoverageReport = {
-    status: coverageStatus(sources),
-    sources,
-    chunkCount: chunks.length,
-    evidenceCount: entries.length,
-    cacheHits,
-    extractorFingerprint: extractorFingerprint(),
-    chunkerVersion: CHUNKER_VERSION,
-  };
 
   if (!assertEvidenceNonCanonical(entries)) {
     throw new Error("Ledger evidence must stay non-canonical.");
@@ -199,7 +205,22 @@ export function runEvidencePipeline(input: {
     frozen: input.frozen.filter((row) => row.kind !== "RAW_HISTORY"),
     entries,
     candidateText: input.candidateText,
+    selectedSourceCount: selected.length,
   });
+
+  const status = coverageStatus(sources);
+  const audit = buildAudit(chunks, sources, entries, pack.packed.length, pack.omitted.length);
+  const coverage: CoverageReport = {
+    status,
+    meaning: COVERAGE_COMPLETE_MEANING,
+    sources,
+    audit,
+    chunkCount: chunks.length,
+    evidenceCount: entries.length,
+    cacheHits,
+    extractorFingerprint: extractorFingerprint(),
+    chunkerVersion: CHUNKER_VERSION,
+  };
 
   const ledgerHash = hashContent(entries.map((row) => `${row.citation}:${row.claim}`).sort().join("\n"));
   const contextHash = hashContent(pack.text);
@@ -208,6 +229,7 @@ export function runEvidencePipeline(input: {
     chunkerVersion: CHUNKER_VERSION,
     packerVersion: PACKER_VERSION,
     coverageStatus: coverage.status,
+    coverageMeaning: COVERAGE_COMPLETE_MEANING,
     ledgerHash,
     contextHash,
     selectedSourceHashes: selected.map((row) => ({
@@ -218,10 +240,11 @@ export function runEvidencePipeline(input: {
     sources,
     packedCitations: pack.packed.map((row) => row.citation),
     omitted: pack.omitted,
+    audit,
     evidenceCount: entries.length,
     chunkCount: chunks.length,
     cacheHits,
-    processedChunks: sources.reduce((sum, row) => sum + row.processedChunks, 0),
+    processedChunks: audit.chunksProcessed,
   };
 
   return { chunks, entries, coverage, pack, manifest };
@@ -235,5 +258,5 @@ export function coverageBlocksCouncil(coverage: CoverageReport): string | null {
   if (coverage.status === "FAILED") {
     return "Evidence extraction failed for one or more selected sources. Coverage is not complete.";
   }
-  return "Evidence coverage is partial. Council will not run until every selected source is processed.";
+  return "Evidence coverage is partial. Council will not run until every selected chunk is processed.";
 }

@@ -16,7 +16,9 @@ export const PROTECTED_INVARIANTS = [
 export type ProtectedInvariant = (typeof PROTECTED_INVARIANTS)[number];
 
 export const CURRENT_CONTEXT_PACKER = "evidenceLedgerPacker";
-export const CURRENT_CONTEXT_CHAR_LIMIT = 24000;
+/** Canonical Council packet budget. Packing and estimates use countTokens(). */
 export const CURRENT_CONTEXT_TOKEN_LIMIT = 6000;
+/** Diagnostic only. Not the packer budget. */
+export const CURRENT_CONTEXT_CHAR_LIMIT = 24000;
 export const COUNCIL_ORCHESTRATOR_PATH = "src/lib/council/orchestrate.ts";
 export const SUPERSEDED_PYTHON_TREE = "conversation-bot";

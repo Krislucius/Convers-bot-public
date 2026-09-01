@@ -17,6 +17,8 @@ import type {
 import { filterCreateBlockers, normalizeTaskMode } from "./task-mode.ts";
 import { parseSynthesizedArtifact } from "./artifact.ts";
 import { buildMandatoryContext } from "../evidence/pack.ts";
+import { CURRENT_CONTEXT_TOKEN_LIMIT } from "../architecture/contracts.ts";
+import { countTokens } from "../evidence/tokens.ts";
 
 export const AGENTS: AgentKey[] = ["GPT", "GROK", "CLAUDE"];
 
@@ -274,15 +276,16 @@ export const SYNTH_MAX = 4000;
 export const CREATE_SYNTH_MAX = 8000;
 export const TYPICAL_AGENT_OUT = 1500;
 export const TYPICAL_SYNTH_OUT = 800;
-export const CONTEXT_CHAR_LIMIT = 24000;
-export const CONTEXT_TOKEN_LIMIT = Math.floor(CONTEXT_CHAR_LIMIT / 4);
+export const CONTEXT_TOKEN_LIMIT = CURRENT_CONTEXT_TOKEN_LIMIT;
+/** Diagnostic only. Packing and boundContext use CONTEXT_TOKEN_LIMIT. */
+export const CONTEXT_CHAR_LIMIT = CONTEXT_TOKEN_LIMIT * 4;
 
 export function nid(): string {
   return crypto.randomUUID().replaceAll("-", "").slice(0, 32);
 }
 
-export function estimateCost(inputChars: number, maxOut: number): number {
-  return Math.max(1, Math.floor(inputChars / 4)) * PROMPT_RATE + maxOut * COMPLETION_RATE;
+export function estimateCost(inputTokens: number, maxOut: number): number {
+  return Math.max(1, inputTokens) * PROMPT_RATE + maxOut * COMPLETION_RATE;
 }
 
 export function modelFor(creds: ProviderCreds): Record<AgentKey, string> {
@@ -309,9 +312,9 @@ export function buildContext(
   return mandatory;
 }
 
-/** Safety check only. The ledger packer already enforces the budget; this must not slice sources. */
+/** Safety check only. The ledger packer already enforces the token budget; this must not slice. */
 export function boundContext(ctx: string): string {
-  if (ctx.length > CONTEXT_CHAR_LIMIT) {
+  if (countTokens(ctx) > CONTEXT_TOKEN_LIMIT) {
     throw new Error("CONTEXT_BUDGET_EXCEEDED");
   }
   return ctx;
@@ -329,36 +332,39 @@ export function estimateCouncilRun(
   costUsd: number;
   overBudget: boolean;
 } {
+  const uncappedTokens = countTokens(ctx);
   const uncappedChars = ctx.length;
-  if (uncappedChars > CONTEXT_CHAR_LIMIT) {
+  if (uncappedTokens > CONTEXT_TOKEN_LIMIT) {
     return {
       inputChars: 0,
       inputTokens: 0,
       uncappedChars,
-      uncappedTokens: Math.max(0, Math.ceil(uncappedChars / 4)),
+      uncappedTokens,
       capped: true,
       costUsd: 0,
       overBudget: true,
     };
   }
   const sent = ctx;
-  const r1OutChars = TYPICAL_AGENT_OUT * 4;
-  const r2OutChars = TYPICAL_AGENT_OUT * 4;
+  const sentTokens = uncappedTokens;
   let costUsd = 0;
   for (const agent of AGENTS) {
-    costUsd += estimateCost(ROLES[agent].length + sent.length, TYPICAL_AGENT_OUT);
+    costUsd += estimateCost(countTokens(ROLES[agent]) + sentTokens, TYPICAL_AGENT_OUT);
   }
   for (const agent of AGENTS) {
-    costUsd += estimateCost(ROLES[agent].length + ROUND2.length + sent.length + 4 * r1OutChars, TYPICAL_AGENT_OUT);
+    costUsd += estimateCost(
+      countTokens(ROLES[agent] + ROUND2) + sentTokens + 4 * TYPICAL_AGENT_OUT,
+      TYPICAL_AGENT_OUT,
+    );
   }
-  costUsd += estimateCost(SYNTHESIS.length + sent.length + 3 * r2OutChars, TYPICAL_SYNTH_OUT);
+  costUsd += estimateCost(countTokens(SYNTHESIS) + sentTokens + 3 * TYPICAL_AGENT_OUT, TYPICAL_SYNTH_OUT);
   const budget = maxCostUsd > 0 ? maxCostUsd : 1;
   return {
     inputChars: sent.length,
-    inputTokens: Math.max(0, Math.ceil(sent.length / 4)),
+    inputTokens: sentTokens,
     uncappedChars,
-    uncappedTokens: Math.max(0, Math.ceil(uncappedChars / 4)),
-    capped: uncappedChars > CONTEXT_CHAR_LIMIT,
+    uncappedTokens,
+    capped: false,
     costUsd,
     overBudget: costUsd > budget,
   };

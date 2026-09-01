@@ -22,6 +22,7 @@ import {
 import { sanitizeApiKey } from "./api-key";
 import { councilPreflight } from "./task-mode";
 import { CONTEXT_BUDGET_EXCEEDED, coverageBlocksCouncil, runEvidencePipeline } from "@/lib/evidence/pipeline";
+import { countTokens } from "@/lib/evidence/tokens";
 import type {
   AgentKey,
   AgentResponse,
@@ -119,8 +120,8 @@ export async function runCouncil(input: {
   const budget = input.creds.maxCostUsd > 0 ? input.creds.maxCostUsd : 1;
   let spent = 0;
 
-  const spend = (chars: number, maxOut: number, stage: string) => {
-    const est = estimateCost(chars, maxOut);
+  const spend = (text: string, maxOut: number, stage: string) => {
+    const est = estimateCost(countTokens(text), maxOut);
     if (spent + est > budget) {
       throw new Error("Council stopped because the configured cost limit was reached. (" + stage + ")");
     }
@@ -136,7 +137,7 @@ export async function runCouncil(input: {
     temperature: number,
     responseFormat?: Record<string, unknown>,
   ): Promise<AgentResponse> => {
-    const est = spend(system.length + user.length, maxTokens, `${agent} round ${round}`);
+    const est = spend(`${system}${user}`, maxTokens, `${agent} round ${round}`);
     const out = await completeChat({
       provider: input.creds.provider,
       apiKey: key,

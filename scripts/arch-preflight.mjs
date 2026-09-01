@@ -60,11 +60,18 @@ export function criticalContractHash(root) {
   const identity = read(root, "src/lib/architecture/identity.ts");
   const packPath = join(root, "src/lib/evidence/pack.ts");
   const pipelinePath = join(root, "src/lib/evidence/pipeline.ts");
+  const tokensPath = join(root, "src/lib/evidence/tokens.ts");
   const pack = existsSync(packPath) ? read(root, "src/lib/evidence/pack.ts") : "";
   const pipeline = existsSync(pipelinePath) ? read(root, "src/lib/evidence/pipeline.ts") : "";
-  const limit = protocol.match(/export const CONTEXT_CHAR_LIMIT = (\d+);/)?.[1] ?? "";
+  const tokens = existsSync(tokensPath) ? read(root, "src/lib/evidence/tokens.ts") : "";
+  const contracts = read(root, "src/lib/architecture/contracts.ts");
+  const tokenLimit = contracts.match(/export const CURRENT_CONTEXT_TOKEN_LIMIT = (\d+);/)?.[1] ?? "";
+  const tokenBound = protocol.includes("countTokens(ctx)") && protocol.includes("CONTEXT_TOKEN_LIMIT");
   const packer =
-    pack.includes("export function packEvidence") && pipeline.includes("export function runEvidencePipeline")
+    pack.includes("export function packEvidence") &&
+    pack.includes("countTokens") &&
+    tokens.includes("export function countTokens") &&
+    pipeline.includes("export function runEvidencePipeline")
       ? "evidenceLedgerPacker"
       : "UNKNOWN";
   const modes = taskMode.includes('"CREATE"') && taskMode.includes('"REVIEW"') && taskMode.includes('"DECIDE"');
@@ -74,11 +81,15 @@ export function criticalContractHash(root) {
       project: PROJECT_ID,
       host: PRODUCTION_HOST,
       revision: ARCHITECTURE_REVISION,
-      CONTEXT_CHAR_LIMIT: limit,
+      CONTEXT_TOKEN_LIMIT: tokenLimit,
+      tokenBound,
       packer,
       modes,
       singleOrch,
       identity,
+      tokens,
+      pack,
+      pipeline,
     }),
   );
 }
