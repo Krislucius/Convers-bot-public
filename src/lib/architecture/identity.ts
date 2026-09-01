@@ -3,8 +3,8 @@
 export const PROJECT_ID = "01a048b8-c1f7-7382-9dfd-fb30bff7137d";
 export const PRODUCTION_HOST = "https://swift-lake-solar-cosmic.grok.me";
 export const ARCHITECTURE_REVISION = "CB-ARCH-20260829-001";
-export const BUILD_ID = "CB-BUILD-20260830-003";
-export const BUILD_TIMESTAMP = "2026-08-30T05:10:00.000Z";
+export const BUILD_ID = "CB-BUILD-20260831-001";
+export const BUILD_TIMESTAMP = "2026-08-31T00:00:00.000Z";
 export const SCHEMA_VERSION = "0004_project_files";
 export const SOURCE_ROOT = "src";
 export const LOCK_PATH = "docs/ARCHITECTURE_LOCK.json";
@@ -53,6 +53,16 @@ function bakedEnv(): Record<string, string | undefined> {
 
 export function sourceCommit(): string {
   return resolveSourceCommit(bakedEnv());
+}
+
+/** BUILD_ID is the deployed release. SOURCE_COMMIT is diagnostic and never required for health. */
+export function isReleaseHealthy(id: Pick<SystemIdentity, "buildId" | "architectureRevision">): boolean {
+  return id.buildId === BUILD_ID && id.architectureRevision === ARCHITECTURE_REVISION;
+}
+
+/** PROD_SYNC: production BUILD_ID matches this git release. SOURCE_COMMIT is ignored. */
+export function productionSync(productionBuildId: string, expectedBuildId = BUILD_ID): boolean {
+  return productionBuildId === expectedBuildId;
 }
 
 export function systemIdentity(): SystemIdentity {

@@ -5,7 +5,7 @@ export function SystemRevisionLine({ className = "" }: { className?: string }) {
   const id = systemIdentity();
   return (
     <p className={`m-0 font-mono text-xs text-muted ${className}`.trim()}>
-      {id.architectureRevision} · {id.buildId} · {id.sourceCommit} · schema {id.schemaVersion}
+      {id.architectureRevision} · {id.buildId} · schema {id.schemaVersion}
     </p>
   );
 }
@@ -17,7 +17,7 @@ export function SystemInfoPanel() {
     ["Production host", id.productionHost],
     ["Architecture revision", id.architectureRevision],
     ["Build ID", id.buildId],
-    ["Source commit", id.sourceCommit],
+    ["Source commit (diagnostic)", id.sourceCommit],
     ["Build timestamp", id.buildTimestamp],
     ["Schema version", id.schemaVersion],
   ];
