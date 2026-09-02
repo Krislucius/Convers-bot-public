@@ -15,9 +15,15 @@ SERVICE STATUS reports must use exactly:
 ```
 FUNCTIONALITY
 STATUS:
+BROWSER_SMOKE:
+HYDRATION:
+AUTH_BOOTSTRAP:
+CONSOLE_ERRORS:
 FUNCTION BLOCKERS:
 BUILD WORKFLOW
 STATUS:
+PRODUCTION_BUILD:
+PROD_SYNC:
 WORKFLOW BLOCKERS:
 RELEASE
 LOCAL:
@@ -25,3 +31,5 @@ REMOTE:
 PRODUCTION:
 SYNC:
 ```
+
+Production FUNCTIONALITY may be READY only after a real browser smoke reaches an interactive UI. HTTP 200, healthy bundles, readable release identity, and auth-health endpoints are necessary but not sufficient. If those pass but the browser UI does not become interactive: FUNCTIONALITY FAILED/DEGRADED and FUNCTION BLOCKER = CLIENT_HYDRATION_OR_BOOTSTRAP_FAILURE. BUILD WORKFLOW may still be READY when deploy and PROD_SYNC succeeded.

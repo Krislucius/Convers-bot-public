@@ -1,7 +1,7 @@
 # Current system state
 
 Revision: CB-ARCH-20260901-002
-Recorded: 2026-09-02T12:30:00.000Z
+Recorded: 2026-09-02T14:25:00.000Z
 
 Factual state of the authoritative tree. Not a backlog.
 
@@ -23,7 +23,7 @@ Postgres tables from migrations `0001`–`0006`: Better Auth identity; `account_
 
 ## CURRENT AUTHENTICATION
 
-Auth is ON. Better Auth + Grok broker. Google, X, email/password. Session required for account data. `VITE_AUTH_ENABLED` is `"true"` in `.grok/app-env.json`.
+Auth is ON. Better Auth + Grok broker. Google, X, email/password. Session required for account data. `VITE_AUTH_ENABLED` is `"true"` in `.grok/app-env.json`. Root `beforeLoad` never awaits the session RPC on the client; SSR session fetch is capped at 4s. Client `useSession().isPending` expires after 5s so a hung `/api/auth/get-session` becomes the guest shell. Any React-mounted shell (guest / boot / app / error) marks the client ready so the boot watchdog cannot overlay a started UI.
 
 ## CURRENT PROVIDER
 
@@ -57,5 +57,6 @@ FUNCTION BLOCKERS: none.
 
 ### BUILD WORKFLOW
 
-- Production Publish is a user action; git `CB-BUILD-20260902-009` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
+- Production Publish is a user action; git `CB-BUILD-20260902-010` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
+- Production FUNCTIONALITY READY requires a real browser smoke to an interactive UI. HTTP 200 / bundles / identity / auth-health are necessary but not sufficient.
 - Nitro Vercel SSR barrels that re-export undefined `ssr_exports` are patched in the nitro `compiled` and `close` hooks during `vite build` (`scripts/patch-nitro-ssr.mjs`), then again from `npm run build`. The same hook writes missing Vercel `config.json` / `.vc-config.json` (the user compiled hook replaces Nitro's generateFunctionFiles). PGLite `pglite.data`, `pglite.wasm`, and `initdb.wasm` are staged next to the bundled driver. Eager PGLite bootstrap failures are logged and do not kill the isolate. Production uses Neon.

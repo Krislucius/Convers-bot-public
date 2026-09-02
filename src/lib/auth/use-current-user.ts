@@ -1,3 +1,6 @@
+import { useEffect, useState } from "react";
+import { SESSION_WAIT_MS } from "@/lib/auth-loop";
+import { boundAuthPending } from "./session-bootstrap";
 import { authClient, authEnabled } from "./client";
 
 /** Normalized user shape used across the app, auth on or off. */
@@ -13,9 +16,9 @@ export type AppUser = {
 /**
  * Stable fallback user, used ONLY when auth is disabled
  * (`VITE_AUTH_ENABLED=false`, the shipped default). With auth on, the sandbox
- * live preview does real sign-in via the baked preview client. Its id is
- * `"dev-user"` — the SAME id `verify.server.ts` returns server-side — so per-user
- * rows written in that mode belong to one consistent owner.
+ * live preview does real sign-in. Its id is `"dev-user"` — the SAME id
+ * `verify.server.ts` returns server-side — so per-user rows written in that
+ * mode belong to one consistent owner.
  */
 export const DEV_USER: AppUser = {
   id: "dev-user",
@@ -53,12 +56,26 @@ export type CurrentUserState = {
  *
  * `authEnabled` is a module-level constant fixed at load, so the guarded hook
  * call keeps a stable hook order across every render of a given component.
+ *
+ * `isPending` is bounded. A hung `/api/auth/get-session` becomes signed-out
+ * after `SESSION_WAIT_MS` so the guest shell always appears.
  */
 export function useCurrentUserState(): CurrentUserState {
   if (!authEnabled) return { user: DEV_USER, isPending: false };
+  const session = authClient.useSession();
   // eslint-disable-next-line react-hooks/rules-of-hooks -- authEnabled is constant for the app's lifetime
-  const { data, isPending } = authClient.useSession();
-  const user = data?.user;
+  const [expired, setExpired] = useState(false);
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  useEffect(() => {
+    if (!session.isPending) {
+      setExpired(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setExpired(true), SESSION_WAIT_MS);
+    return () => window.clearTimeout(timer);
+  }, [session.isPending]);
+  const user = session.data?.user;
+  const failed = Boolean(session.error);
   return {
     user: user
       ? {
@@ -69,7 +86,11 @@ export function useCurrentUserState(): CurrentUserState {
           isDevFallback: false,
         }
       : null,
-    isPending,
+    isPending: boundAuthPending({
+      isPending: Boolean(session.isPending),
+      elapsedMs: expired ? SESSION_WAIT_MS : 0,
+      failed,
+    }),
   };
 }
 

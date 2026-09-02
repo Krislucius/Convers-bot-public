@@ -121,6 +121,29 @@ try {
       const el = document.documentElement;
       return el.scrollWidth > el.clientWidth + 1;
     });
+    const boot = await page.evaluate(() => {
+      const fail = document.getElementById("cb-boot-fail");
+      const guest = Boolean(document.querySelector('[data-cb-shell="guest"]'));
+      const app = Boolean(document.querySelector('[data-cb-shell="app"]'));
+      const bootShell = Boolean(document.querySelector('[data-cb-shell="boot"]'));
+      const errorShell = Boolean(document.querySelector('[data-cb-shell="error"]'));
+      const oauth = Boolean(document.querySelector('a[href*="/api/oauth-start/"]'));
+      const clickable = [...document.querySelectorAll("a[href], button, input, textarea")].some((el) => {
+        const node = /** @type {HTMLElement} */ (el);
+        const style = window.getComputedStyle(node);
+        return style.visibility !== "hidden" && style.display !== "none";
+      });
+      return {
+        bootFail: Boolean(fail),
+        clientReady: Boolean(window.__CB_CLIENT_READY),
+        guest,
+        app,
+        bootShell,
+        errorShell,
+        oauth,
+        interactive: clickable,
+      };
+    });
     await page.screenshot({ path: vp.screenshot, fullPage: false });
     await page.close();
 
@@ -137,6 +160,7 @@ try {
       consoleErrors: errors.consoleErrors,
       pageErrors: errors.pageErrors,
       screenshot: vp.screenshot,
+      ...boot,
     };
   }
 

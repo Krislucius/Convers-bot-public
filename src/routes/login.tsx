@@ -51,7 +51,11 @@ function Login() {
 
   if (user) {
     return (
-      <div className="relative z-20" style={{ minHeight: "100dvh", background: "#0c0c0d", color: "#f1f1ef" }}>
+      <div
+        data-cb-shell="boot"
+        className="relative z-20"
+        style={{ minHeight: "100dvh", background: "#0c0c0d", color: "#f1f1ef" }}
+      >
         <Page>
           <PageHeader title="Opening projects…">
             <p className="max-w-measure text-muted">Signed in. Loading your workspace.</p>

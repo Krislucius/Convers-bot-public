@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Page, PageHeader } from "@/components/council-ui";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import { SESSION_WAIT_MS, isAuthReturning, markAuthReturning, resetAuthHops } from "@/lib/auth-loop";
+import { markClientReady } from "@/lib/boot-watchdog";
 
 export const Route = createFileRoute("/signed-in")({ component: SignedInLanding });
 
@@ -11,6 +12,7 @@ function SignedInLanding() {
   const [giveUp, setGiveUp] = useState(false);
 
   useEffect(() => {
+    markClientReady();
     markAuthReturning();
   }, []);
 
@@ -33,7 +35,11 @@ function SignedInLanding() {
   }, [giveUp, user]);
 
   return (
-    <div className="relative z-20" style={{ minHeight: "100dvh", background: "#0c0c0d", color: "#f1f1ef" }}>
+    <div
+      data-cb-shell={giveUp ? "guest" : "boot"}
+      className="relative z-20"
+      style={{ minHeight: "100dvh", background: "#0c0c0d", color: "#f1f1ef" }}
+    >
       <Page>
         <PageHeader title={giveUp ? "Opening the app…" : "Finishing sign-in…"}>
           <p className="max-w-measure text-muted">

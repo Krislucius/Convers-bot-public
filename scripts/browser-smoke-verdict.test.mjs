@@ -414,3 +414,14 @@ test("browser-smoke file I/O only touches guarded paths", () => {
   const stats = [...src.matchAll(/statSync\(\s*([A-Za-z_$][\w$.]*)/g)].map((m) => m[1]);
   assert.deepEqual(stats, ["baselinePath"]);
 });
+
+test("boot watchdog overlay fails the smoke even on HTTP 200", () => {
+  assert.equal(exitCodeFor({ desktop: viewport({ status: 200, bootFail: true }), mobile: viewport() }), 1);
+  assert.equal(
+    exitCodeFor({
+      desktop: viewport({ status: 200, bootFail: false }),
+      mobile: viewport({ bootFail: false }),
+    }),
+    0,
+  );
+});

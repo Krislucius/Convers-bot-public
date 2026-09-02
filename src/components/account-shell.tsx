@@ -27,8 +27,15 @@ const BOOT_STYLE: CSSProperties = {
 };
 
 export function BootScreen({ label }: { label: string }) {
+  useEffect(() => {
+    markClientReady();
+  }, []);
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-4 px-4 py-16" style={BOOT_STYLE}>
+    <div
+      data-cb-shell="boot"
+      className="flex flex-1 flex-col items-center justify-center gap-4 px-4 py-16"
+      style={BOOT_STYLE}
+    >
       <div className="h-10 w-40 animate-pulse rounded-md bg-subtle" />
       <p className="text-sm text-muted">{label}</p>
       <SystemRevisionLine className="text-center" />
@@ -186,7 +193,11 @@ function AccountHydrator({
   if (!ready) return <BootScreen label="Loading your projects…" />;
   if (error) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 py-16" style={BOOT_STYLE}>
+      <div
+        data-cb-shell="error"
+        className="flex flex-1 flex-col items-center justify-center gap-3 px-4 py-16"
+        style={BOOT_STYLE}
+      >
         <p className="text-danger">{error}</p>
         <p className="max-w-md text-center text-sm text-muted">
           Sign-in worked. Loading projects from the account database did not finish. Retry, or sign out and

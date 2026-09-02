@@ -4,6 +4,7 @@ import { AccountChip, SignedInApp } from "@/components/account-shell";
 import { CouncilChrome } from "@/components/council-chrome";
 import { PreviewHostBridge } from "@/components/preview-host-bridge";
 import { AuthProvider } from "@/lib/auth/provider";
+import { resolveRootSessionUser, type SessionUser } from "@/lib/auth/session-bootstrap";
 import { SessionProvider } from "@/lib/council/session";
 import { BOOT_WATCHDOG_INLINE } from "@/lib/boot-watchdog";
 import appCss from "../styles.css?url";
@@ -12,8 +13,6 @@ const APP_NAME = "Conversation Bot";
 
 const CRITICAL_CSS =
   "html,body{background:#0c0c0d;color:#f1f1ef;margin:0;min-height:100%}";
-
-type SessionUser = { id: string; email: string | null } | null;
 
 const SESSION_COOKIE_RE = /(?:__Host-)?grok-auth\.session_token=/;
 
@@ -50,26 +49,12 @@ function isPublicPath(pathname: string) {
 export const Route = createRootRoute({
   beforeLoad: async ({ context }): Promise<{ sessionUser: SessionUser }> => {
     const previous = (context as { sessionUser?: SessionUser }).sessionUser ?? null;
-    if (typeof window !== "undefined") {
-      if (previous) return { sessionUser: previous };
-      try {
-        const sessionUser = await fetchSessionUser();
-        return { sessionUser: sessionUser ?? previous };
-      } catch {
-        return { sessionUser: previous };
-      }
-    }
-    try {
-      const sessionUser = await Promise.race([
-        fetchSessionUser(),
-        new Promise<null>((resolve) => {
-          setTimeout(() => resolve(null), 4000);
-        }),
-      ]);
-      return { sessionUser: sessionUser ?? previous };
-    } catch {
-      return { sessionUser: previous };
-    }
+    const sessionUser = await resolveRootSessionUser({
+      isClient: typeof window !== "undefined",
+      previous,
+      fetchUser: fetchSessionUser,
+    });
+    return { sessionUser };
   },
   head: () => ({
     meta: [

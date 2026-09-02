@@ -1,9 +1,17 @@
+import { useEffect } from "react";
 import type { ErrorComponentProps } from "@tanstack/react-router";
 import { TriangleAlert } from "lucide-react";
+import { markClientReady } from "@/lib/boot-watchdog";
 
 export function AppErrorComponent({ error }: ErrorComponentProps) {
+  useEffect(() => {
+    markClientReady();
+  }, []);
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-3 bg-bg px-6 text-center text-fg">
+    <main
+      data-cb-shell="error"
+      className="flex min-h-screen flex-col items-center justify-center gap-3 bg-bg px-6 text-center text-fg"
+    >
       <span className="text-danger" aria-hidden="true">
         <TriangleAlert className="size-10" strokeWidth={2} />
       </span>

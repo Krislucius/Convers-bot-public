@@ -19,6 +19,7 @@ async function collectAuthReport(extra: Record<string, unknown>) {
     const response = await fetch("/api/auth-report", {
       credentials: "include",
       headers,
+      signal: AbortSignal.timeout(4_000),
     });
     server = await response.json().catch(() => null);
     if (!response.ok) serverError = `http_${response.status}`;

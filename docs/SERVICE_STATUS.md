@@ -43,6 +43,35 @@ If a signed-in user would see a wrong Council/auth/ledger result on a correctly
 deployed build → FUNCTION. If the agent cannot implement, test, commit, push,
 publish, or recover → WORKFLOW.
 
+## Production FUNCTIONALITY readiness
+
+Production FUNCTIONALITY may be **READY only after a real browser smoke
+reaches an interactive UI state**.
+
+HTTP 200, healthy bundles, readable release identity, and auth-health endpoints
+are **necessary but not sufficient**.
+
+Required browser smoke (guest, and authenticated when a session exists):
+
+- guest cold load
+- reload
+- login screen becomes interactive
+- authenticated bootstrap resolves when a session exists
+- no infinite loading / watchdog overlay (“The app did not finish loading”)
+- no uncaught browser console errors
+- no blocking failed network requests
+- route hydration completes
+- primary UI controls are clickable
+
+Classification:
+
+- Server/routes/chunks healthy but browser UI does not become interactive →
+  FUNCTIONALITY = `FAILED` or `DEGRADED`
+  FUNCTION BLOCKER = `CLIENT_HYDRATION_OR_BOOTSTRAP_FAILURE`
+- BUILD WORKFLOW may still be `READY` if deploy and `PROD_SYNC` succeeded.
+
+Never report production FUNCTIONALITY READY from HTTP/chunk checks alone.
+
 ## Required SERVICE STATUS format
 
 Copy this shape. Do not merge the blocker lists. Do not omit a track because
@@ -51,10 +80,16 @@ the other is failing.
 ```
 FUNCTIONALITY
 STATUS:
+BROWSER_SMOKE:
+HYDRATION:
+AUTH_BOOTSTRAP:
+CONSOLE_ERRORS:
 FUNCTION BLOCKERS:
 
 BUILD WORKFLOW
 STATUS:
+PRODUCTION_BUILD:
+PROD_SYNC:
 WORKFLOW BLOCKERS:
 
 RELEASE
