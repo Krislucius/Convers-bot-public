@@ -6,8 +6,11 @@
  * The result is HTTP 500 `{error:true,status:500,unhandled:true}` on every
  * SSR route. Production 001 was built before this split. Do not touch
  * Council/Evidence code here.
+ *
+ * Runs from the nitro `compiled` hook (inside `vite build`) and again from
+ * `npm run build` as a second pass. Both are idempotent.
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -36,13 +39,36 @@ function __exportAll$1(all, no_symbols) {
 }
 `;
 
+function walkForSsr(dir, depth) {
+  if (depth < 0 || !existsSync(dir)) return undefined;
+  if (existsSync(join(dir, "ssr.mjs"))) return dir;
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return undefined;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (entry.name === "node_modules") continue;
+    const found = walkForSsr(join(dir, entry.name), depth - 1);
+    if (found) return found;
+  }
+  return undefined;
+}
+
 export function findSsrDir(root) {
+  if (!root) return undefined;
   const candidates = [
+    join(root, "_ssr"),
     join(root, ".vercel", "output", "functions", "__server.func", "_ssr"),
     join(root, "functions", "__server.func", "_ssr"),
+    join(root, "__server.func", "_ssr"),
     root,
   ];
-  return candidates.find((dir) => existsSync(join(dir, "ssr.mjs")));
+  const hit = candidates.find((dir) => existsSync(join(dir, "ssr.mjs")));
+  if (hit) return hit;
+  return walkForSsr(root, 5);
 }
 
 export function patchSsrBarrel(source) {
@@ -96,6 +122,17 @@ export function patchNitroSsr(ssrDir) {
     patched.push("ssr2.mjs");
   }
   return { ok: true, dir, patched };
+}
+
+/** Nitro `compiled` hook: patch barrels in the Vercel function output. */
+export function patchNitroCompiled(nitro) {
+  const serverDir = nitro?.options?.output?.serverDir;
+  const rootDir = nitro?.options?.rootDir;
+  const dir = (serverDir && findSsrDir(serverDir)) || (rootDir && findSsrDir(rootDir));
+  if (!dir) {
+    return { ok: false, error: "no ssr.mjs in nitro output", patched: [] };
+  }
+  return patchNitroSsr(dir);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

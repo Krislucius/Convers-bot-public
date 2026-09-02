@@ -1,7 +1,7 @@
 # Current system state
 
 Revision: CB-ARCH-20260901-002
-Recorded: 2026-09-02T09:32:00.000Z
+Recorded: 2026-09-02T09:45:00.000Z
 
 Factual state of the authoritative tree. Not a backlog.
 
@@ -57,5 +57,5 @@ FUNCTION BLOCKERS: none.
 
 ### BUILD WORKFLOW
 
-- Production Publish is a user action; git `CB-BUILD-20260902-004` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
-- Nitro Vercel SSR barrels that re-export undefined `ssr_exports` are patched after `vite build` (`scripts/patch-nitro-ssr.mjs`). Local built-output preview still omits PGLite wasm/data from the Vercel function output. Production uses Neon.
+- Production Publish is a user action; git `CB-BUILD-20260902-005` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
+- Nitro Vercel SSR barrels that re-export undefined `ssr_exports` are patched in the nitro `compiled` hook during `vite build` (`scripts/patch-nitro-ssr.mjs`), then again from `npm run build`. Local built-output preview still omits PGLite wasm/data from the Vercel function output. Production uses Neon.

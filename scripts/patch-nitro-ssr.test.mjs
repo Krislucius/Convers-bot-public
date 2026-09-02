@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { patchNitroSsr, patchSsrBarrel, patchSsr2Circular } from "./patch-nitro-ssr.mjs";
+import {
+  findSsrDir,
+  patchNitroCompiled,
+  patchNitroSsr,
+  patchSsrBarrel,
+  patchSsr2Circular,
+} from "./patch-nitro-ssr.mjs";
 
 const BROKEN_SSR = `import { a as getRequest, c as server_exports, s as server_default } from "./ssr2.mjs";
 export { getServerFnById as a, __exportAll as c, createServerEntry, server_default as default, TSS_SERVER_FUNCTION as i, createMiddleware as n, getRequest as o, createServerFn as r, ssr_exports as s, server_exports as t };
@@ -45,5 +51,27 @@ describe("patch-nitro-ssr", () => {
     const ssr2 = readFileSync(join(dir, "ssr2.mjs"), "utf8");
     assert.match(ssr, /const ssr_exports/);
     assert.equal(ssr2.includes('from "./ssr.mjs"'), false);
+  });
+
+  it("finds _ssr under a Vercel __server.func directory", () => {
+    const root = mkdtempSync(join(tmpdir(), "nitro-ssr-find-"));
+    const ssrDir = join(root, "_ssr");
+    mkdirSync(ssrDir);
+    writeFileSync(join(ssrDir, "ssr.mjs"), BROKEN_SSR);
+    assert.equal(findSsrDir(root), ssrDir);
+  });
+
+  it("patches from the nitro compiled hook using output.serverDir", () => {
+    const root = mkdtempSync(join(tmpdir(), "nitro-ssr-compiled-"));
+    const serverDir = join(root, "functions", "__server.func");
+    const ssrDir = join(serverDir, "_ssr");
+    mkdirSync(ssrDir, { recursive: true });
+    writeFileSync(join(ssrDir, "ssr.mjs"), BROKEN_SSR);
+    writeFileSync(join(ssrDir, "ssr2.mjs"), BROKEN_SSR2);
+    const result = patchNitroCompiled({
+      options: { output: { serverDir }, rootDir: root },
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.patched.sort(), ["ssr.mjs", "ssr2.mjs"]);
   });
 });

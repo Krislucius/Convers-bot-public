@@ -12,6 +12,8 @@ import { grokPwaPlugin } from "./scripts/grok-pwa-plugin.mjs";
 import { appEnvPlugin } from "./scripts/app-env-plugin.mjs";
 // @ts-expect-error JS plugin alongside the TS vite config
 import { sourceCommitPlugin } from "./scripts/source-commit.mjs";
+// @ts-expect-error JS plugin alongside the TS vite config
+import { patchNitroCompiled } from "./scripts/patch-nitro-ssr.mjs";
 import { isMigrationFile } from "./scripts/migration-plan.mjs";
 
 /** The files `src/lib/db.ts` globs — same directory, same non-recursive scope. */
@@ -179,6 +181,19 @@ export default defineConfig(({ command, isPreview }) => ({
             // manifest + head-tag middleware). Nitro v3 defaults serverDir to
             // false, so removing this silently unwires /?install=1 on deploys.
             serverDir: "./server",
+            hooks: {
+              compiled(nitroInstance: { options: { output: { serverDir: string }; rootDir: string } }) {
+                const result = patchNitroCompiled(nitroInstance);
+                if (!result.ok) {
+                  throw new Error(`[patch-nitro-ssr] ${result.error}`);
+                }
+                console.log(
+                  result.patched.length
+                    ? `[patch-nitro-ssr] compiled patched ${result.patched.join(", ")} in ${result.dir}`
+                    : `[patch-nitro-ssr] compiled already patched ${result.dir}`,
+                );
+              },
+            },
           }),
         ]
       : []),
