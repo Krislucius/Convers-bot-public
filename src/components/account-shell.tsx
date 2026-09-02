@@ -3,9 +3,10 @@ import { UserButton } from "@/lib/auth/gates";
 import { useCurrentUserState, type AppUser } from "@/lib/auth/use-current-user";
 import { authTrace } from "@/lib/auth-trace";
 import { importAccountSnapshot, loadAccountHydrate } from "@/lib/council/account";
-import { loadHydratePayload, withTimeout } from "@/lib/council/hydrate";
+import { loadHydratePayload, withTimeout, HYDRATE_TIMEOUT_MS } from "@/lib/council/hydrate";
 import { useSession } from "@/lib/council/session";
 import { bindAccountStore, hydrateStore, readLegacyLocalStore } from "@/lib/council/store";
+import { signOut } from "@/lib/auth/client";
 import {
   accountShellKind,
   clearAuthReturning,
@@ -21,6 +22,25 @@ import { readBakedSessionUser } from "@/lib/auth/session-bootstrap";
 
 export type SsrSessionUser = { id: string; email: string | null } | null;
 export { markAuthReturning, clearAuthReturning, isAuthReturning } from "@/lib/auth-loop";
+
+const EMPTY_SNAPSHOT = {
+  projects: [],
+  context: [],
+  tasks: [],
+  responses: [],
+  results: [],
+  chatSources: [],
+  historyMessages: [],
+  projectFiles: [],
+  artifacts: [],
+  manifests: [],
+  packets: [],
+};
+
+function initialBakedUser(): SsrSessionUser {
+  if (typeof window === "undefined") return null;
+  return readBakedSessionUser();
+}
 
 const BOOT_STYLE: CSSProperties = {
   minHeight: "100dvh",
@@ -98,7 +118,7 @@ export function SignedInApp({
   children: ReactNode;
 }) {
   const { user, isPending } = useCurrentUserState();
-  const [bakedUser, setBakedUser] = useState<SsrSessionUser>(null);
+  const [bakedUser, setBakedUser] = useState<SsrSessionUser>(initialBakedUser);
   const ssrUser = sessionUser ?? bakedUser;
   const authed = user ?? fromSsr(ssrUser);
   const [clientWait, setClientWait] = useState(false);
@@ -172,8 +192,22 @@ function AccountHydrator({
 
   useEffect(() => {
     let cancelled = false;
+    let settled = false;
     setReady(false);
     setError("");
+
+    const failOpen = (message: string) => {
+      if (cancelled || settled) return;
+      settled = true;
+      authTrace("app.hydrate-fail", { message });
+      setError(message);
+      markClientReady();
+      setReady(true);
+    };
+
+    const timer = window.setTimeout(() => {
+      failOpen(`Timed out after ${Math.round(HYDRATE_TIMEOUT_MS / 1000)}s while loading this account.`);
+    }, HYDRATE_TIMEOUT_MS);
 
     (async () => {
       const { snapshot, settings } = await loadHydratePayload({
@@ -186,23 +220,24 @@ function AccountHydrator({
           next = await withTimeout(importAccountSnapshot({ data: legacy }), 4_000);
         }
       }
-      if (cancelled) return;
+      if (cancelled || settled) return;
+      settled = true;
+      window.clearTimeout(timer);
       hydrateStore(next);
       bindAccountStore();
       hydrateFromAccount(settings);
       onReady?.();
       authTrace("app.hydrated", { userId });
       markClientReady();
+      setError("");
       setReady(true);
     })().catch((err) => {
-      if (cancelled) return;
-      authTrace("app.hydrate-fail", { message: err instanceof Error ? err.message : String(err) });
-      setError(err instanceof Error ? err.message : "Could not load this account.");
-      markClientReady();
-      setReady(true);
+      window.clearTimeout(timer);
+      failOpen(err instanceof Error ? err.message : "Could not load this account.");
     });
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, [attempt, hydrateFromAccount, onReady, userId]);
 
@@ -231,6 +266,28 @@ function AccountHydrator({
           }}
         >
           Retry
+        </button>
+        <button
+          type="button"
+          className="min-h-11 rounded-sm border border-line px-4 font-semibold"
+          onClick={() => {
+            hydrateStore(EMPTY_SNAPSHOT);
+            bindAccountStore();
+            setError("");
+            onReady?.();
+            setReady(true);
+          }}
+        >
+          Open workspace anyway
+        </button>
+        <button
+          type="button"
+          className="min-h-11 rounded-sm border border-line px-4 font-semibold"
+          onClick={() => {
+            void signOut("/login");
+          }}
+        >
+          Sign out
         </button>
       </div>
     );

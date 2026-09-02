@@ -24,6 +24,7 @@ async function shellSnapshot(page) {
     return {
       ready: Boolean(window.__CB_CLIENT_READY),
       bootFail: Boolean(fail),
+      bootStuck: Boolean(document.getElementById("cb-boot-stuck")),
       watchdogText: fail ? fail.innerText.slice(0, 160) : "",
       guest: Boolean(document.querySelector('[data-cb-shell="guest"]')),
       app: Boolean(document.querySelector('[data-cb-shell="app"]')),
@@ -149,8 +150,8 @@ try {
     const { page } = await openPage();
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
     const watchdog = await page.evaluate(() => {
-      const s = [...document.scripts].find((x) => (x.textContent || "").includes("__CB_CLIENT_READY"));
-      return s ? s.textContent : "";
+      const scripts = [...document.scripts].map((x) => x.textContent || "").filter(Boolean);
+      return scripts.find((t) => t.includes("cb-boot-fail") && t.includes("setTimeout")) || scripts.find((t) => t.includes("__CB_CLIENT_READY")) || "";
     });
     await page.close();
     if (!watchdog) fail("boot-shell-only: watchdog script missing from SSR HTML");
@@ -186,6 +187,67 @@ try {
     if (!snap.guest && !snap.app && !snap.error) fail("hydration-exception: shell gone", { snap });
     results.hydrationException = { ...snap, pageErrors: errors.pageErrors };
     await page.close();
+  }
+
+  {
+    const sessionBody = JSON.stringify({
+      user: { id: "u-boot-stress", name: "Boot", email: "boot@example.com" },
+      session: { id: "s-boot-stress", token: "tok" },
+    });
+    const baked = 'window.__CB_SSR_SESSION={"id":"u-boot-stress","email":"boot@example.com"};';
+    const { page, errors } = await openPage(async (page) => {
+      await page.route("**/*", async (route) => {
+        const req = route.request();
+        if (req.resourceType() === "document") {
+          const resp = await route.fetch();
+          let body = await resp.text();
+          body = body.replace(/window\.__CB_SSR_SESSION=null;?/, baked);
+          return route.fulfill({ response: resp, body });
+        }
+        if (req.url().includes("/api/auth/get-session")) {
+          return route.fulfill({ status: 200, contentType: "application/json", body: sessionBody });
+        }
+        if (req.method() === "POST" && !req.url().includes("/api/auth/")) {
+          await new Promise((resolve) => setTimeout(resolve, 20_000));
+          return route.abort();
+        }
+        return route.continue();
+      });
+    });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    await page.waitForTimeout(9500);
+    const snap = await shellSnapshot(page);
+    if (snap.bootFail || /did not finish loading/i.test(snap.body) || /did not finish loading/i.test(snap.watchdogText)) {
+      fail("authed-hydrate-hang: blank watchdog overlay", { snap, errors });
+    }
+    if (snap.boot && !snap.error && !snap.app) {
+      fail("authed-hydrate-hang: still Loading your projects", { snap, errors });
+    }
+    results.authedHydrateHang = snap;
+    await page.close();
+  }
+
+  {
+    const { page } = await openPage();
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    const watchdog = await page.evaluate(() => {
+      const scripts = [...document.scripts].map((x) => x.textContent || "").filter(Boolean);
+      return scripts.find((t) => t.includes("cb-boot-fail") && t.includes("setTimeout")) || scripts.find((t) => t.includes("__CB_CLIENT_READY")) || "";
+    });
+    await page.close();
+    if (!watchdog) fail("boot-stuck: watchdog script missing from SSR HTML");
+    const isolated = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    await isolated.setContent(
+      `<!doctype html><html><body><script>${watchdog}</script><div data-cb-shell="boot"><p>Loading your projects…</p></div></body></html>`,
+    );
+    await isolated.waitForTimeout(12_500);
+    const snap = await shellSnapshot(isolated);
+    if (snap.bootFail || /did not finish loading/i.test(snap.watchdogText)) {
+      fail("boot-stuck: blank overlay on SSR boot shell", { snap });
+    }
+    if (!snap.bootStuck && !snap.error) fail("boot-stuck: no hydrate timeout recovery", { snap });
+    results.bootStuck = snap;
+    await isolated.close();
   }
 
   console.log(JSON.stringify({ ok: true, url, results }, null, 2));

@@ -22,7 +22,7 @@ const files = uniqueShellFiles(spec);
 
 describe("runtime shell inventory", () => {
   it("lists the protected routing, auth, and deploy files", () => {
-    assert.equal(spec.id, "CB-SHELL-20260902-001");
+    assert.equal(spec.id, "CB-SHELL-20260903-001");
     for (const required of [
       "src/router.tsx",
       "src/routes/__root.tsx",
