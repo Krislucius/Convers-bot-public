@@ -83,12 +83,13 @@ export const Route = createRootRoute({
       <body
         className="flex min-h-dvh flex-col bg-bg text-fg antialiased"
         style={{ background: "#0c0c0d", color: "#f1f1ef" }}
+        suppressHydrationWarning
       >
         <PreviewHostBridge />
-        <script dangerouslySetInnerHTML={{ __html: BOOT_WATCHDOG_INLINE }} />
         <AuthProvider>
           <RootBody />
         </AuthProvider>
+        <script dangerouslySetInnerHTML={{ __html: BOOT_WATCHDOG_INLINE }} />
         <Scripts />
       </body>
     </html>
@@ -100,7 +101,7 @@ function RootBody() {
   const sessionUser = Route.useRouteContext({ select: (ctx) => ctx.sessionUser }) ?? null;
   return (
     <SessionProvider>
-      <script dangerouslySetInnerHTML={{ __html: bakeSessionUserScript(sessionUser) }} />
+      <script suppressHydrationWarning dangerouslySetInnerHTML={{ __html: bakeSessionUserScript(sessionUser) }} />
       {isPublicPath(pathname) ? (
         <Outlet />
       ) : (

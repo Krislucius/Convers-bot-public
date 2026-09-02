@@ -130,6 +130,64 @@ try {
     await page.close();
   }
 
+  {
+    const { page, errors } = await openPage(async (page) => {
+      await page.route("**/assets/**", (route) => route.abort());
+    });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    await page.waitForTimeout(8500);
+    const snap = await shellSnapshot(page);
+    if (snap.bootFail || /did not finish loading/i.test(snap.body) || /did not finish loading/i.test(snap.watchdogText)) {
+      fail("ssr-without-js: watchdog overlay", { snap, errors });
+    }
+    if (!snap.guest || !snap.oauth) fail("ssr-without-js: guest shell missing", { snap });
+    results.ssrWithoutJs = snap;
+    await page.close();
+  }
+
+  {
+    const { page } = await openPage();
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    const watchdog = await page.evaluate(() => {
+      const s = [...document.scripts].find((x) => (x.textContent || "").includes("__CB_CLIENT_READY"));
+      return s ? s.textContent : "";
+    });
+    await page.close();
+    if (!watchdog) fail("boot-shell-only: watchdog script missing from SSR HTML");
+    const isolated = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    await isolated.setContent(
+      `<!doctype html><html><body><script>${watchdog}</script><div data-cb-shell="boot"><p>Loading your projects…</p></div></body></html>`,
+    );
+    await isolated.waitForTimeout(8500);
+    const snap = await shellSnapshot(isolated);
+    if (snap.bootFail || /did not finish loading/i.test(snap.watchdogText)) {
+      fail("boot-shell-only: watchdog overlay on SSR boot shell", { snap });
+    }
+    if (!snap.boot) fail("boot-shell-only: boot shell missing", { snap });
+    if (!snap.ready) fail("boot-shell-only: ready flag not set from rendered shell", { snap });
+    results.bootShellOnly = snap;
+    await isolated.close();
+  }
+
+  {
+    const { page, errors } = await openPage();
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    await page.waitForTimeout(800);
+    await page.evaluate(() => {
+      queueMicrotask(() => {
+        throw new Error("hydration-client-exception");
+      });
+    });
+    await page.waitForTimeout(500);
+    const snap = await shellSnapshot(page);
+    if (snap.bootFail || /did not finish loading/i.test(snap.body)) {
+      fail("hydration-exception: watchdog overlay", { snap, errors });
+    }
+    if (!snap.guest && !snap.app && !snap.error) fail("hydration-exception: shell gone", { snap });
+    results.hydrationException = { ...snap, pageErrors: errors.pageErrors };
+    await page.close();
+  }
+
   console.log(JSON.stringify({ ok: true, url, results }, null, 2));
 } catch (err) {
   fail(String(err?.message || err));

@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { UserButton } from "@/lib/auth/gates";
 import { useCurrentUserState, type AppUser } from "@/lib/auth/use-current-user";
 import { authTrace } from "@/lib/auth-trace";
@@ -13,10 +13,11 @@ import {
   resetAuthHops,
   SESSION_WAIT_MS,
 } from "@/lib/auth-loop";
-import { markClientReady } from "@/lib/boot-watchdog";
+import { BOOT_READY_SCRIPT, markClientReady } from "@/lib/boot-watchdog";
 import { LoginForm } from "@/components/login-form";
 import { SystemRevisionLine } from "@/components/system-info";
 import { readBakedSessionUser } from "@/lib/auth/session-bootstrap";
+
 
 export type SsrSessionUser = { id: string; email: string | null } | null;
 export { markAuthReturning, clearAuthReturning, isAuthReturning } from "@/lib/auth-loop";
@@ -27,8 +28,12 @@ const BOOT_STYLE: CSSProperties = {
   color: "#9a9a94",
 };
 
+function ShellReadyScript() {
+  return <script dangerouslySetInnerHTML={{ __html: BOOT_READY_SCRIPT }} />;
+}
+
 export function BootScreen({ label }: { label: string }) {
-  useEffect(() => {
+  useLayoutEffect(() => {
     markClientReady();
   }, []);
   return (
@@ -37,6 +42,7 @@ export function BootScreen({ label }: { label: string }) {
       className="flex flex-1 flex-col items-center justify-center gap-4 px-4 py-16"
       style={BOOT_STYLE}
     >
+      <ShellReadyScript />
       <div className="h-10 w-40 animate-pulse rounded-md bg-subtle" />
       <p className="text-sm text-muted">{label}</p>
       <SystemRevisionLine className="text-center" />
@@ -45,7 +51,7 @@ export function BootScreen({ label }: { label: string }) {
 }
 
 function GuestGate() {
-  useEffect(() => {
+  useLayoutEffect(() => {
     markClientReady();
     authTrace("guest-gate", {});
   }, []);
@@ -55,6 +61,7 @@ function GuestGate() {
       className="flex flex-1 flex-col items-center justify-center gap-5 px-4 py-16"
       style={BOOT_STYLE}
     >
+      <ShellReadyScript />
       <div className="grid w-full max-w-md gap-3">
         <h1
           className="font-display text-center text-display font-semibold"
@@ -91,11 +98,18 @@ export function SignedInApp({
   children: ReactNode;
 }) {
   const { user, isPending } = useCurrentUserState();
-  const ssrUser = sessionUser ?? readBakedSessionUser();
+  const [bakedUser, setBakedUser] = useState<SsrSessionUser>(null);
+  const ssrUser = sessionUser ?? bakedUser;
   const authed = user ?? fromSsr(ssrUser);
   const [clientWait, setClientWait] = useState(false);
   const returning = isAuthReturning();
   const kind = accountShellKind({ sessionUser: ssrUser, user });
+
+  useLayoutEffect(() => {
+    markClientReady();
+    const baked = readBakedSessionUser();
+    if (baked) setBakedUser(baked);
+  }, []);
 
   useEffect(() => {
     authTrace("app.mount", {
@@ -200,6 +214,7 @@ function AccountHydrator({
         className="flex flex-1 flex-col items-center justify-center gap-3 px-4 py-16"
         style={BOOT_STYLE}
       >
+        <ShellReadyScript />
         <p className="text-danger">{error}</p>
         <p className="max-w-md text-center text-sm text-muted">
           Sign-in worked. Loading projects from the account database did not finish. Retry, or sign out and
@@ -222,6 +237,7 @@ function AccountHydrator({
   }
   return (
     <div className="flex flex-1 flex-col" data-cb-shell="app">
+      <ShellReadyScript />
       {children}
     </div>
   );

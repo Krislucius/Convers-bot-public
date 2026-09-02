@@ -1,10 +1,10 @@
-import { useEffect } from "react";
+import { useLayoutEffect } from "react";
 import type { ErrorComponentProps } from "@tanstack/react-router";
 import { TriangleAlert } from "lucide-react";
-import { markClientReady } from "@/lib/boot-watchdog";
+import { BOOT_READY_SCRIPT, markClientReady } from "@/lib/boot-watchdog";
 
 export function AppErrorComponent({ error }: ErrorComponentProps) {
-  useEffect(() => {
+  useLayoutEffect(() => {
     markClientReady();
   }, []);
   return (
@@ -12,6 +12,7 @@ export function AppErrorComponent({ error }: ErrorComponentProps) {
       data-cb-shell="error"
       className="flex min-h-screen flex-col items-center justify-center gap-3 bg-bg px-6 text-center text-fg"
     >
+      <script dangerouslySetInnerHTML={{ __html: BOOT_READY_SCRIPT }} />
       <span className="text-danger" aria-hidden="true">
         <TriangleAlert className="size-10" strokeWidth={2} />
       </span>
@@ -20,5 +21,21 @@ export function AppErrorComponent({ error }: ErrorComponentProps) {
         {error.message || "An unexpected error occurred. Try reloading the page."}
       </p>
     </main>
+  );
+}
+
+export function DefaultPendingComponent() {
+  useLayoutEffect(() => {
+    markClientReady();
+  }, []);
+  return (
+    <div
+      data-cb-shell="boot"
+      className="flex min-h-dvh flex-col items-center justify-center"
+      style={{ background: "#0c0c0d", color: "#9a9a94" }}
+    >
+      <script dangerouslySetInnerHTML={{ __html: BOOT_READY_SCRIPT }} />
+      <p className="text-sm">Loading…</p>
+    </div>
   );
 }

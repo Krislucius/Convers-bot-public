@@ -1,9 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import { Page, PageHeader } from "@/components/council-ui";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import { SESSION_WAIT_MS, isAuthReturning, markAuthReturning, resetAuthHops } from "@/lib/auth-loop";
-import { markClientReady } from "@/lib/boot-watchdog";
+import { BOOT_READY_SCRIPT, markClientReady } from "@/lib/boot-watchdog";
 
 export const Route = createFileRoute("/signed-in")({ component: SignedInLanding });
 
@@ -11,7 +11,7 @@ function SignedInLanding() {
   const { user, isPending } = useCurrentUserState();
   const [giveUp, setGiveUp] = useState(false);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     markClientReady();
     markAuthReturning();
   }, []);
@@ -40,6 +40,7 @@ function SignedInLanding() {
       className="relative z-20"
       style={{ minHeight: "100dvh", background: "#0c0c0d", color: "#f1f1ef" }}
     >
+      <script dangerouslySetInnerHTML={{ __html: BOOT_READY_SCRIPT }} />
       <Page>
         <PageHeader title={giveUp ? "Opening the app…" : "Finishing sign-in…"}>
           <p className="max-w-measure text-muted">

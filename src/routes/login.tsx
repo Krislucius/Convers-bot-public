@@ -1,11 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { useEffect, useLayoutEffect } from "react";
 import { LoginForm, StaySignedIn } from "@/components/login-form";
 import { Page, PageHeader, Panel } from "@/components/council-ui";
 import { SystemRevisionLine } from "@/components/system-info";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 import { beginAutoLand, shouldAutoLand } from "@/lib/auth-loop";
-import { markClientReady } from "@/lib/boot-watchdog";
+import { BOOT_READY_SCRIPT, markClientReady } from "@/lib/boot-watchdog";
 
 export const Route = createFileRoute("/login")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -18,7 +18,7 @@ function Login() {
   const { user } = useCurrentUserState();
   const searchError = Route.useSearch({ select: (s) => s.error });
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     markClientReady();
   }, []);
 
@@ -37,6 +37,7 @@ function Login() {
   if (user && !shouldAutoLand()) {
     return (
       <div className="relative z-20" style={{ minHeight: "100dvh", background: "#0c0c0d", color: "#f1f1ef" }}>
+        <script dangerouslySetInnerHTML={{ __html: BOOT_READY_SCRIPT }} />
         <Page>
           <PageHeader title="Signed in">
             <p className="max-w-measure text-muted">Stop the sign-in loop and open your projects.</p>
@@ -56,6 +57,7 @@ function Login() {
         className="relative z-20"
         style={{ minHeight: "100dvh", background: "#0c0c0d", color: "#f1f1ef" }}
       >
+        <script dangerouslySetInnerHTML={{ __html: BOOT_READY_SCRIPT }} />
         <Page>
           <PageHeader title="Opening projects…">
             <p className="max-w-measure text-muted">Signed in. Loading your workspace.</p>
@@ -71,6 +73,7 @@ function Login() {
       className="relative z-20"
       style={{ minHeight: "100dvh", background: "#0c0c0d", color: "#f1f1ef" }}
     >
+      <script dangerouslySetInnerHTML={{ __html: BOOT_READY_SCRIPT }} />
       <Page>
         <PageHeader title="Sign in">
           <p className="max-w-measure text-muted">

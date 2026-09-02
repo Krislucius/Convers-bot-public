@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { BOOT_READY_FLAG, BOOT_WATCHDOG_INLINE, BOOT_WATCHDOG_MS } from "./boot-watchdog.ts";
+import {
+  BOOT_READY_FLAG,
+  BOOT_READY_SCRIPT,
+  BOOT_WATCHDOG_INLINE,
+  BOOT_WATCHDOG_MS,
+} from "./boot-watchdog.ts";
 
 describe("boot watchdog", () => {
   it("inlines a bounded reload overlay and asset-error listener", () => {
@@ -13,8 +18,9 @@ describe("boot watchdog", () => {
     assert.ok(!BOOT_WATCHDOG_INLINE.includes("</script>"));
   });
 
-  it("treats a rendered guest shell as already recovered", () => {
-    assert.match(BOOT_WATCHDOG_INLINE, /data-cb-shell="guest"/);
-    assert.match(BOOT_WATCHDOG_INLINE, /data-cb-shell="app"/);
+  it("treats any rendered shell as already started, including boot and error", () => {
+    assert.match(BOOT_WATCHDOG_INLINE, /\[data-cb-shell\]/);
+    assert.match(BOOT_WATCHDOG_INLINE, /DOMContentLoaded/);
+    assert.match(BOOT_READY_SCRIPT, new RegExp(BOOT_READY_FLAG));
   });
 });
