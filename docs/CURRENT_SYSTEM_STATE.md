@@ -1,7 +1,7 @@
 # Current system state
 
 Revision: CB-ARCH-20260901-002
-Recorded: 2026-09-02T11:10:00.000Z
+Recorded: 2026-09-02T11:25:00.000Z
 
 Factual state of the authoritative tree. Not a backlog.
 
@@ -57,5 +57,5 @@ FUNCTION BLOCKERS: none.
 
 ### BUILD WORKFLOW
 
-- Production Publish is a user action; git `CB-BUILD-20260902-007` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
-- Nitro Vercel SSR barrels that re-export undefined `ssr_exports` are patched in the nitro `compiled` and `close` hooks during `vite build` (`scripts/patch-nitro-ssr.mjs`), then again from `npm run build`. PGLite `pglite.data`, `pglite.wasm`, and `initdb.wasm` are staged next to the bundled driver. Eager PGLite bootstrap failures are logged and do not kill the isolate. Production uses Neon.
+- Production Publish is a user action; git `CB-BUILD-20260902-008` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
+- Nitro Vercel SSR barrels that re-export undefined `ssr_exports` are patched in the nitro `compiled` and `close` hooks during `vite build` (`scripts/patch-nitro-ssr.mjs`), then again from `npm run build`. The same hook writes missing Vercel `config.json` / `.vc-config.json` (the user compiled hook replaces Nitro's generateFunctionFiles). PGLite `pglite.data`, `pglite.wasm`, and `initdb.wasm` are staged next to the bundled driver. Eager PGLite bootstrap failures are logged and do not kill the isolate. Production uses Neon.

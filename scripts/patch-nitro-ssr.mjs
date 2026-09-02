@@ -7,8 +7,9 @@
  * SSR route. Production 001 was built before this split. Do not touch
  * Council/Evidence code here.
  *
- * Also copies PGLite wasm/data next to the bundled driver so a missing
- * DATABASE_URL cannot crash the isolate with ENOENT pglite.data.
+ * Also copies PGLite wasm/data/initdb.wasm next to the bundled driver and
+ * writes Vercel Build Output config.json / .vc-config.json (the user compiled
+ * hook replaces Nitro's generateFunctionFiles).
  *
  * Runs from the nitro `compiled` and `close` hooks (inside `vite build`)
  * and again from `npm run build`. All passes are idempotent.
@@ -20,6 +21,7 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_SSR_DIR = join(here, "..", ".vercel", "output", "functions", "__server.func", "_ssr");
 export const DEFAULT_FUNC_DIR = join(here, "..", ".vercel", "output", "functions", "__server.func");
+export const DEFAULT_OUTPUT_DIR = join(here, "..", ".vercel", "output");
 const PGLITE_DIST = join(here, "..", "node_modules", "@electric-sql", "pglite", "dist");
 
 const SSR_EXPORTS_STUB = `const ssr_exports = {
@@ -170,6 +172,53 @@ export function stagePgliteAssets(funcDir) {
   return { ok: true, dir, copied };
 }
 
+const VC_CONFIG = {
+  runtime: "nodejs22.x",
+  handler: "index.mjs",
+  launcherType: "Nodejs",
+  shouldAddHelpers: false,
+  supportsResponseStreaming: true,
+};
+
+const VERCEL_ROUTES = {
+  version: 3,
+  routes: [
+    {
+      src: "/assets/(.*)",
+      headers: { "cache-control": "public,max-age=31536000,immutable" },
+      continue: true,
+    },
+    { handle: "filesystem" },
+    { src: "/(.*)", dest: "/__server" },
+  ],
+};
+
+/**
+ * The nitro({ hooks.compiled }) in vite.config replaces the vercel preset's
+ * compiled hook, so generateFunctionFiles never writes config.json /
+ * .vc-config.json. Without them a prebuilt deploy cannot replace the live
+ * function and production stays on the broken 003 isolate.
+ */
+export function writeVercelOutputConfig(outputDir) {
+  const dir = outputDir ?? DEFAULT_OUTPUT_DIR;
+  const funcDir = join(dir, "functions", "__server.func");
+  const written = [];
+  if (!existsSync(join(funcDir, "index.mjs"))) {
+    return { ok: false, error: `missing __server.func/index.mjs in ${dir}`, written };
+  }
+  const vcPath = join(funcDir, ".vc-config.json");
+  if (!existsSync(vcPath)) {
+    writeFileSync(vcPath, `${JSON.stringify(VC_CONFIG, null, 2)}\n`);
+    written.push(".vc-config.json");
+  }
+  const configPath = join(dir, "config.json");
+  if (!existsSync(configPath)) {
+    writeFileSync(configPath, `${JSON.stringify(VERCEL_ROUTES, null, 2)}\n`);
+    written.push("config.json");
+  }
+  return { ok: true, dir, written };
+}
+
 function funcDirFromSsr(ssrDir) {
   if (!ssrDir) return undefined;
   if (ssrDir.endsWith("_ssr")) return dirname(ssrDir);
@@ -196,6 +245,8 @@ export async function patchNitroCompiled(nitro) {
         const staged = stagePgliteAssets(funcDirFromSsr(dir));
         if (staged.copied.length) patched.push(...staged.copied);
       }
+      const vercel = writeVercelOutputConfig(join(here, "..", ".vercel", "output"));
+      if (vercel.written?.length) patched.push(...vercel.written);
       if (last.ok) {
         last = { ...last, patched, dirs: unique };
         return last;
@@ -232,6 +283,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     if (staged.copied.length) {
       console.log(`[patch-nitro-ssr] staged ${staged.copied.join(", ")} in ${staged.dir}`);
     }
+  }
+  const vercel = writeVercelOutputConfig(join(root, ".vercel", "output"));
+  if (vercel.ok && vercel.written.length) {
+    console.log(`[patch-nitro-ssr] wrote ${vercel.written.join(", ")}`);
+  } else if (!vercel.ok) {
+    console.error(`[patch-nitro-ssr] ${vercel.error}`);
+    failed = true;
   }
   if (failed) process.exit(1);
 }

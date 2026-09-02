@@ -10,6 +10,7 @@ import {
   patchSsrBarrel,
   patchSsr2Circular,
   stagePgliteAssets,
+  writeVercelOutputConfig,
 } from "./patch-nitro-ssr.mjs";
 
 const BROKEN_SSR = `import { a as getRequest, c as server_exports, s as server_default } from "./ssr2.mjs";
@@ -99,5 +100,24 @@ export { server_default as default, ssr_exports as s, server_exports as t };
     assert.equal(existsSync(join(libs, "pglite.data")), true);
     assert.equal(existsSync(join(libs, "pglite.wasm")), true);
     assert.equal(existsSync(join(libs, "initdb.wasm")), true);
+  });
+
+  it("writes Vercel Build Output config.json and .vc-config.json", () => {
+    const output = mkdtempSync(join(tmpdir(), "nitro-vercel-output-"));
+    const func = join(output, "functions", "__server.func");
+    mkdirSync(func, { recursive: true });
+    writeFileSync(join(func, "index.mjs"), "export {}\n");
+    const result = writeVercelOutputConfig(output);
+    assert.equal(result.ok, true);
+    assert.ok(result.written.includes("config.json"));
+    assert.ok(result.written.includes(".vc-config.json"));
+    const config = JSON.parse(readFileSync(join(output, "config.json"), "utf8"));
+    assert.equal(config.version, 3);
+    assert.ok(config.routes.some((row) => row.handle === "filesystem"));
+    assert.ok(config.routes.some((row) => row.dest === "/__server"));
+    const vc = JSON.parse(readFileSync(join(func, ".vc-config.json"), "utf8"));
+    assert.equal(vc.handler, "index.mjs");
+    assert.equal(vc.launcherType, "Nodejs");
+    assert.equal(writeVercelOutputConfig(output).written.length, 0);
   });
 });
