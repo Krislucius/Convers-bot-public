@@ -10,7 +10,7 @@ import { patchTask } from "@/lib/council/store";
 import { councilPreflight } from "@/lib/council/task-mode";
 import type { Artifact, ContextItem, Project, ProjectFile, Task } from "@/lib/council/types";
 import { coverageBlocksCouncil } from "@/lib/evidence/pipeline";
-import { cachedEvidencePipeline } from "@/lib/evidence/pipeline-cache";
+import { cachedEvidencePipeline, type EvidencePipelineResult } from "@/lib/evidence/pipeline-cache";
 import { ledgerFoldLabelFromManifest } from "@/lib/evidence/preview";
 import { formatTokens, formatUsd } from "@/lib/history/format";
 import type { ChatSource, HistoryMessage } from "@/lib/history/types";
@@ -41,7 +41,7 @@ export function CouncilRunPanel({
   providerLabel: string;
   busy: boolean;
   message: string;
-  onRun: () => void;
+  onRun: (pipeline: EvidencePipelineResult) => void;
   projectFiles?: ProjectFile[];
 }) {
   const candidate = artifacts.find((row) => row.id === task.candidateArtifactId) ?? null;
@@ -132,7 +132,7 @@ export function CouncilRunPanel({
                 </li>
               </ul>
             </div>
-            <PrimaryButton type="button" className="w-full sm:w-auto" disabled={!canPay} onClick={onRun}>
+            <PrimaryButton type="button" className="w-full sm:w-auto" disabled={!canPay} onClick={() => onRun(pipeline)}>
               Run Council
             </PrimaryButton>
           </div>

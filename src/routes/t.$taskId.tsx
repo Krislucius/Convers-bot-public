@@ -14,6 +14,7 @@ import { applyCouncilOutput, markTaskFailed, patchTask, rememberManifest, rememb
 import { councilPreflight } from "@/lib/council/task-mode";
 import { useSession } from "@/lib/council/session";
 import type { AgentKey, AgentProgress } from "@/lib/council/types";
+import type { EvidencePipelineResult } from "@/lib/evidence/pipeline-cache";
 import { selectedChatsToContext } from "@/lib/history/provenance";
 import { formatCouncilOpLog, formatExceptionLog, formatOpLog } from "@/lib/op-log";
 
@@ -88,7 +89,7 @@ function TaskPage() {
       ? store.packets.filter((row) => row.projectId === currentProject.id && row.status === "READY").at(-1) ?? null
       : store.packets.find((row) => row.reviewTaskId === currentTask.id) ?? null;
 
-  async function onRun() {
+  async function onRun(prepared?: EvidencePipelineResult) {
     const gate = councilPreflight({ task: currentTask, artifacts: projectArtifacts });
     if (!gate.ok) {
       setMsg(gate.error ?? "");
@@ -146,6 +147,7 @@ function TaskPage() {
         artifacts: projectArtifacts,
         projectFiles: store.projectFiles,
         parentPacket,
+        pipeline: prepared,
         onProgress: (progress) => {
           if (progress.manifest) rememberManifest(currentTask.id, progress.manifest);
           if (progress.responses?.length) rememberResponses(currentTask.id, progress.responses);
@@ -225,7 +227,7 @@ function TaskPage() {
           providerLabel={providerName(config.provider)}
           busy={busy}
           message={msg}
-          onRun={() => void onRun()}
+          onRun={(prepared) => void onRun(prepared)}
         />
       ) : null}
 

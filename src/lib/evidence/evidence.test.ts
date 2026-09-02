@@ -8,7 +8,7 @@ import { parseCitation } from "./extract.ts";
 import { memoryCache } from "./extract.ts";
 import { packEvidence, SOURCE_CAP_RATIO, assemblePackedContext, OMITTED_CLAIM_CHARS, claimLine } from "./pack.ts";
 import { coverageBlocksCouncil, runEvidencePipeline, sourceNeedsReimport } from "./pipeline.ts";
-import { cachedEvidencePipeline, clearEvidencePipelineCache } from "./pipeline-cache.ts";
+import { cachedEvidencePipeline, clearEvidencePipelineCache, evidencePipelineKey } from "./pipeline-cache.ts";
 import { persistableManifest } from "../council/manifest.ts";
 import { OMITTED_PERSIST_MAX } from "./types.ts";
 import {
@@ -752,5 +752,25 @@ describe("packer performance and pipeline cache", () => {
       task: task({ selectedChatSourceIds: ["c1"], prompt: "changed prompt for clocks" }),
     });
     assert.notEqual(third, first);
+  });
+
+  it("matches cache keys for setup preview files-all vs Run selected-files", () => {
+    clearEvidencePipelineCache();
+    const taskRow = task({ selectedChatSourceIds: ["c1"], selectedFileIds: ["file1"] });
+    const selected = file("file1", "Clocks stay distinct under matching load.");
+    const extra = file("file2", "Unrelated extra source stays out of the selected set.");
+    const base = {
+      project,
+      task: taskRow,
+      frozen: [] as ContextItem[],
+      chatSources: [chat("c1", "chat", "Clocks stay distinct and inventory stays isolated.")],
+      historyMessages: [message("c1", 1, "Clocks stay distinct and inventory stays isolated.")],
+    };
+    const panel = { ...base, projectFiles: [selected, extra] };
+    const run = { ...base, projectFiles: [selected] };
+    assert.equal(evidencePipelineKey(panel), evidencePipelineKey(run));
+    const prepared = cachedEvidencePipeline(panel);
+    const reused = cachedEvidencePipeline(run);
+    assert.equal(prepared, reused);
   });
 });

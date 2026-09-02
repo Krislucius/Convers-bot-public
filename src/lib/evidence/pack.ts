@@ -157,8 +157,13 @@ export function packEvidence(input: {
       omitted.push(compactOmission(entry, "DUPLICATE"));
       continue;
     }
+    const remaining = budget - used;
+    if (remaining <= 0) {
+      omitted.push(compactOmission(entry, "BUDGET"));
+      continue;
+    }
     const lineTokens = tokensFor(entry);
-    if (lineTokens > budget - used) {
+    if (lineTokens > remaining) {
       omitted.push(compactOmission(entry, "BUDGET"));
       continue;
     }

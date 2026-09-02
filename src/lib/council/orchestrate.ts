@@ -191,8 +191,11 @@ export async function runCouncil(input: {
     } catch (err) {
       const message = err instanceof Error ? err.message : "Council stopped because the configured cost limit was reached.";
       agents[agent] = { state: "FAILED", attempt: 0, maxAttempts: PROVIDER_ATTEMPTS, error: message };
-      emit(round === 3 ? "SYNTHESIS" : round === 2 ? "COUNCIL_ROUND_2" : "COUNCIL_ROUND_1", round === 3 ? "SYNTHESIS" : round === 2 ? "ROUND_2" : "ROUND_1", message);
-      return responseFromError(input.task.id, agent, round, models[agent], system, user, message, manifest);
+      const errRow = responseFromError(input.task.id, agent, round, models[agent], system, user, message, manifest);
+      emit(round === 3 ? "SYNTHESIS" : round === 2 ? "COUNCIL_ROUND_2" : "COUNCIL_ROUND_1", round === 3 ? "SYNTHESIS" : round === 2 ? "ROUND_2" : "ROUND_1", message, {
+        responses: [errRow],
+      });
+      return errRow;
     }
     let lastFailure: ProviderFailure | null = null;
     for (let attempt = 1; attempt <= PROVIDER_ATTEMPTS; attempt += 1) {
@@ -217,12 +220,14 @@ export async function runCouncil(input: {
         if (out.ok) {
           spent += out.completion.cost ?? est;
           agents[agent] = { state: "DONE", attempt, maxAttempts: PROVIDER_ATTEMPTS, error: null };
+          const row = responseFromCompletion(input.task.id, agent, round, system, user, out.completion, manifest);
           emit(
             round === 3 ? "SYNTHESIS" : round === 2 ? "COUNCIL_ROUND_2" : "COUNCIL_ROUND_1",
             round === 3 ? "SYNTHESIS" : round === 2 ? "ROUND_2" : "ROUND_1",
             `${agent} finished.`,
+            { responses: [row] },
           );
-          return responseFromCompletion(input.task.id, agent, round, system, user, out.completion, manifest);
+          return row;
         }
         lastFailure =
           out.failure ??
@@ -260,12 +265,14 @@ export async function runCouncil(input: {
           });
       failure.message = formatProviderFailure(failure);
       agents[agent] = { state: "FAILED", attempt, maxAttempts: PROVIDER_ATTEMPTS, error: failure.message };
+      const errRow = responseFromError(input.task.id, agent, round, models[agent], system, user, failure.message, manifest);
       emit(
         round === 3 ? "SYNTHESIS" : round === 2 ? "COUNCIL_ROUND_2" : "COUNCIL_ROUND_1",
         round === 3 ? "SYNTHESIS" : round === 2 ? "ROUND_2" : "ROUND_1",
         failure.message,
+        { responses: [errRow] },
       );
-      return responseFromError(input.task.id, agent, round, models[agent], system, user, failure.message, manifest);
+      return errRow;
     }
     const fallback = providerFailure({
       provider: input.creds.provider,
@@ -274,7 +281,14 @@ export async function runCouncil(input: {
       retryExhausted: true,
     });
     agents[agent] = { state: "FAILED", attempt: PROVIDER_ATTEMPTS, maxAttempts: PROVIDER_ATTEMPTS, error: fallback.message };
-    return responseFromError(input.task.id, agent, round, models[agent], system, user, fallback.message, manifest);
+    const errRow = responseFromError(input.task.id, agent, round, models[agent], system, user, fallback.message, manifest);
+    emit(
+      round === 3 ? "SYNTHESIS" : round === 2 ? "COUNCIL_ROUND_2" : "COUNCIL_ROUND_1",
+      round === 3 ? "SYNTHESIS" : round === 2 ? "ROUND_2" : "ROUND_1",
+      fallback.message,
+      { responses: [errRow] },
+    );
+    return errRow;
   };
 
   try {
