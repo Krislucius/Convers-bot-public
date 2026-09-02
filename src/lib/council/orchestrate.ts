@@ -1,16 +1,15 @@
-import { completeChat, testProvider } from "./openrouter";
-import { nextArtifactStatus, normalizeEvidenceLabels } from "./artifact";
-import { persistableManifest } from "./manifest";
+import { nextArtifactStatus, normalizeEvidenceLabels } from "./artifact.ts";
+import { persistableManifest } from "./manifest.ts";
 import {
   AGENT_MAX,
   AGENTS,
   applyGate,
+  cancelledOutput,
   chat,
   completeOutput,
   estimateCost,
   failedOutput,
   modelFor,
-  nid,
   parseJson,
   precheckOutput,
   responseFromCompletion,
@@ -18,16 +17,16 @@ import {
   ROUND2,
   rolesForMode,
   synthesisForMode,
-} from "./protocol";
-import { sanitizeApiKey } from "./api-key";
-import { councilPreflight } from "./task-mode";
-import { CONTEXT_BUDGET_EXCEEDED, coverageBlocksCouncil } from "@/lib/evidence/pipeline";
-import { cachedEvidencePipeline, type EvidencePipelineResult } from "@/lib/evidence/pipeline-cache";
-import { countTokens } from "@/lib/evidence/tokens";
-import { councilAgentFailure, failedResponses, survivingResponses, synthesizerAgent } from "./agents";
-import { sanitizeEvidenceLabels } from "./citations";
-import { buildImplementationPacket } from "./packet";
-import { artifactStatusForReview, reviewVerdictFromStatus } from "./review";
+} from "./protocol.ts";
+import { sanitizeApiKey } from "./api-key.ts";
+import { councilPreflight } from "./task-mode.ts";
+import { CONTEXT_BUDGET_EXCEEDED, coverageBlocksCouncil } from "../evidence/pipeline.ts";
+import { cachedEvidencePipeline, type EvidencePipelineResult } from "../evidence/pipeline-cache.ts";
+import { countTokens } from "../evidence/tokens.ts";
+import { councilAgentFailure, failedResponses, survivingResponses, synthesizerAgent } from "./agents.ts";
+import { sanitizeEvidenceLabels } from "./citations.ts";
+import { buildImplementationPacket } from "./packet.ts";
+import { artifactStatusForReview, reviewVerdictFromStatus } from "./review.ts";
 import {
   PROVIDER_ATTEMPTS,
   formatProviderFailure,
@@ -36,24 +35,36 @@ import {
   retryDelayMs,
   toProviderFailure,
   type ProviderFailure,
-} from "./provider-error";
+} from "./provider-error.ts";
+import {
+  CouncilCancelled,
+  archiveRuns,
+  isCancelledSignal,
+  throwIfCancelled,
+  type CouncilRunSnapshot,
+  type CouncilStageName,
+} from "./run-control.ts";
+import { providerName } from "./providers.ts";
 import type {
   AgentKey,
   AgentProgress,
   AgentResponse,
   Artifact,
+  ChatMessage,
+  Completion,
   ContextItem,
   ContextManifest,
   ImplementationPacket,
   ProviderCreds,
+  ProviderId,
   RunCouncilOutput,
   Task,
   TaskStatus,
-} from "./types";
-import type { ChatSource, HistoryMessage } from "@/lib/history/types";
-import type { ProjectFile } from "./types";
+  ProjectFile,
+} from "./types.ts";
+import type { ChatSource, HistoryMessage } from "../history/types.ts";
 
-export type CouncilStage = "PREPARING" | "ROUND_1" | "ROUND_2" | "SYNTHESIS";
+export type CouncilStage = CouncilStageName;
 
 export type CouncilProgress = {
   status: TaskStatus;
@@ -62,13 +73,63 @@ export type CouncilProgress = {
   stage?: CouncilStage;
   agents?: Partial<Record<AgentKey, AgentProgress>>;
   responses?: AgentResponse[];
+  runId?: string;
+  generation?: number;
+  snapshot?: CouncilRunSnapshot;
 };
+
+export type CouncilCompleteChat = (opts: {
+  provider?: ProviderId;
+  apiKey: string;
+  model: string;
+  messages: ChatMessage[];
+  maxTokens: number;
+  temperature: number;
+  responseFormat?: Record<string, unknown>;
+  signal?: AbortSignal;
+}) => Promise<{ ok: true; completion: Completion } | { ok: false; error: string; failure?: ProviderFailure }>;
+
+export type CouncilRuntime = {
+  completeChat: CouncilCompleteChat;
+  now?: () => string;
+  yieldFn?: () => Promise<void>;
+};
+
+const defaultYield = () =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, 0);
+  });
+
+async function defaultCompleteChat(
+  opts: Parameters<CouncilCompleteChat>[0],
+): ReturnType<CouncilCompleteChat> {
+  const mod = await import("./openrouter.ts");
+  return mod.completeChat(opts);
+}
 
 function waitingAgents(): Record<AgentKey, AgentProgress> {
   return {
     GPT: { state: "WAITING", attempt: 0, maxAttempts: PROVIDER_ATTEMPTS, error: null },
     GROK: { state: "WAITING", attempt: 0, maxAttempts: PROVIDER_ATTEMPTS, error: null },
     CLAUDE: { state: "WAITING", attempt: 0, maxAttempts: PROVIDER_ATTEMPTS, error: null },
+  };
+}
+
+export function assertRunCredentials(creds: ProviderCreds): string | null {
+  const key = sanitizeApiKey(creds.apiKey, creds.provider);
+  const who = providerName(creds.provider);
+  if (!key) return `${who} is not connected. Connect your API key before running the Council.`;
+  if (!creds.gptModel.trim() || !creds.grokModel.trim() || !creds.claudeModel.trim()) {
+    return "Choose GPT, Grok, and Claude models in API Settings.";
+  }
+  return null;
+}
+
+function tagRun(row: AgentResponse, runId: string): AgentResponse {
+  return {
+    ...row,
+    runId,
+    structured: { ...(row.structured ?? {}), __runId: runId },
   };
 }
 
@@ -83,8 +144,18 @@ export async function runCouncil(input: {
   artifacts?: Artifact[];
   parentPacket?: ImplementationPacket | null;
   pipeline?: EvidencePipelineResult;
+  runId?: string;
+  generation?: number;
+  signal?: AbortSignal;
+  runtime?: CouncilRuntime;
   onProgress?: (progress: CouncilProgress) => void;
 }): Promise<RunCouncilOutput> {
+  const runtime = input.runtime ?? { completeChat: defaultCompleteChat };
+  const yieldFn = runtime.yieldFn ?? defaultYield;
+  const now = () => runtime.now?.() ?? new Date().toISOString();
+  const runId = input.runId ?? crypto.randomUUID().replaceAll("-", "").slice(0, 32);
+  const generation = input.generation ?? 1;
+  const signal = input.signal;
   const artifacts = input.artifacts ?? [];
   const precheck = councilPreflight({ task: input.task, artifacts });
   if (!precheck.ok) {
@@ -92,209 +163,305 @@ export async function runCouncil(input: {
   }
 
   const key = sanitizeApiKey(input.creds.apiKey, input.creds.provider);
-  const providerName = input.creds.provider === "openrusrouter" ? "OpenRusRouter" : "OpenRouter";
   const mode = input.task.mode;
   const roles = rolesForMode(mode);
   const candidate = input.task.candidateArtifactId
     ? artifacts.find((row) => row.id === input.task.candidateArtifactId) ?? null
     : null;
   const agents = waitingAgents();
-
-  input.onProgress?.({
-    status: "PREPARING",
-    stage: "PREPARING",
-    agents,
-    message: "Preparing the evidence packet…",
-  });
-
-  const pipelineInput = {
-    project: input.project,
-    task: input.task,
-    frozen: input.context.filter((row) => row.kind !== "RAW_HISTORY"),
-    chatSources: input.chatSources ?? [],
-    historyMessages: input.historyMessages ?? [],
-    projectFiles: (input.projectFiles ?? []).filter((file) => (input.task.selectedFileIds ?? []).includes(file.id)),
-    candidateText: candidate ? `# ${candidate.title} v${candidate.version}\n\n${candidate.content}` : null,
-  };
-  const pipeline = input.pipeline ?? cachedEvidencePipeline(pipelineInput);
-  const coverageError = coverageBlocksCouncil(pipeline.coverage);
-  if (coverageError) {
-    return precheckOutput(input.task, coverageError);
-  }
-  if (!pipeline.pack.ok) {
-    return precheckOutput(input.task, CONTEXT_BUDGET_EXCEEDED);
-  }
-  const ctx = pipeline.pack.text;
-  const packedCitations = pipeline.manifest.packedCitations;
-  const manifest: ContextManifest = persistableManifest({
-    project: { id: input.project.id, name: input.project.name, description: input.project.description, createdAt: "" },
-    task: input.task,
-    context: input.context,
-    chatSources: input.chatSources ?? [],
-    historyMessages: input.historyMessages ?? [],
-    artifacts,
-    projectFiles: input.projectFiles ?? [],
-    contextText: ctx,
-    evidence: pipeline.manifest,
-  });
-
-  input.onProgress?.({
-    status: "COUNCIL_ROUND_1",
-    stage: "ROUND_1",
-    agents,
-    message: `Checking ${providerName} and the three review models…`,
-    manifest,
-  });
-
-  const pre = await testProvider({
-    provider: input.creds.provider,
-    apiKey: key,
-    gptModel: input.creds.gptModel,
-    grokModel: input.creds.grokModel,
-    claudeModel: input.creds.claudeModel,
-    maxCostUsd: input.creds.maxCostUsd,
-  });
-  if (!pre.ok) {
-    return failedOutput(input.task, [], pre.error ?? `${providerName} is not connected.`, { manifest });
-  }
+  const startedAt = now();
+  let stageStartedAt = startedAt;
 
   const models = modelFor(input.creds);
+  let manifest: ContextManifest | null = null;
   const responses: AgentResponse[] = [];
   const budget = input.creds.maxCostUsd > 0 ? input.creds.maxCostUsd : 1;
   let spent = 0;
 
-  const spend = (text: string, maxOut: number, stage: string) => {
-    const est = estimateCost(countTokens(text), maxOut);
-    if (spent + est > budget) {
-      throw new Error("Council stopped because the configured cost limit was reached. (" + stage + ")");
-    }
-    return est;
+  const snapshot = (stage: CouncilStageName, status: TaskStatus, message: string): CouncilRunSnapshot => ({
+    runId,
+    generation,
+    stage,
+    status,
+    startedAt,
+    stageStartedAt,
+    updatedAt: now(),
+    agents: { ...agents },
+    message,
+  });
+
+  const emit = (status: TaskStatus, stage: CouncilStageName, message: string, extra?: Partial<CouncilProgress>) => {
+    const snap = snapshot(stage, status, message);
+    input.onProgress?.({
+      status,
+      stage,
+      agents: { ...agents },
+      message,
+      runId,
+      generation,
+      snapshot: snap,
+      ...extra,
+    });
   };
 
-  const emit = (status: TaskStatus, stage: CouncilStage, message: string, extra?: Partial<CouncilProgress>) => {
-    input.onProgress?.({ status, stage, agents: { ...agents }, message, ...extra });
+  const finishCancelled = (message = "Council run stopped.") => {
+    for (const agent of AGENTS) {
+      if (agents[agent].state === "WAITING" || agents[agent].state === "RUNNING") {
+        agents[agent] = { ...agents[agent], state: "FAILED", error: message };
+      }
+    }
+    emit("CANCELLED", "CANCELLED", message, { responses: [...responses] });
+    const out = cancelledOutput(input.task, responses, { manifest, message });
+    const snap = snapshot("CANCELLED", "CANCELLED", message);
+    out.task.diagnostics = {
+      ...(out.task.diagnostics ?? {}),
+      run: snap,
+      runs: archiveRuns(input.task.diagnostics?.runs as CouncilRunSnapshot[] | undefined, snap),
+    };
+    return out;
   };
 
-  const ask = async (
-    agent: AgentKey,
-    round: 1 | 2 | 3,
-    system: string,
-    user: string,
-    maxTokens: number,
-    temperature: number,
-    responseFormat?: Record<string, unknown>,
-  ): Promise<AgentResponse> => {
-    const stage = `${agent} round ${round}`;
-    let est = 0;
-    try {
-      est = spend(`${system}${user}`, maxTokens, stage);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Council stopped because the configured cost limit was reached.";
-      agents[agent] = { state: "FAILED", attempt: 0, maxAttempts: PROVIDER_ATTEMPTS, error: message };
-      const errRow = responseFromError(input.task.id, agent, round, models[agent], system, user, message, manifest);
-      emit(round === 3 ? "SYNTHESIS" : round === 2 ? "COUNCIL_ROUND_2" : "COUNCIL_ROUND_1", round === 3 ? "SYNTHESIS" : round === 2 ? "ROUND_2" : "ROUND_1", message, {
-        responses: [errRow],
-      });
-      return errRow;
+  emit("PREPARING", "PREPARING", "Preparing the evidence packet…");
+
+  try {
+    await yieldFn();
+    throwIfCancelled(runId, signal);
+
+    const credsError = assertRunCredentials(input.creds);
+    if (credsError) {
+      return precheckOutput(input.task, credsError);
     }
-    let lastFailure: ProviderFailure | null = null;
-    for (let attempt = 1; attempt <= PROVIDER_ATTEMPTS; attempt += 1) {
-      agents[agent] = { state: "RUNNING", attempt, maxAttempts: PROVIDER_ATTEMPTS, error: null };
-      emit(
-        round === 3 ? "SYNTHESIS" : round === 2 ? "COUNCIL_ROUND_2" : "COUNCIL_ROUND_1",
-        round === 3 ? "SYNTHESIS" : round === 2 ? "ROUND_2" : "ROUND_1",
-        attempt > 1
-          ? `${agent} retry ${attempt}/${PROVIDER_ATTEMPTS} after ${lastFailure?.httpClass ?? "error"}.`
-          : `${agent} is running (${attempt}/${PROVIDER_ATTEMPTS}).`,
-      );
+
+    const pipelineInput = {
+      project: input.project,
+      task: input.task,
+      frozen: input.context.filter((row) => row.kind !== "RAW_HISTORY"),
+      chatSources: input.chatSources ?? [],
+      historyMessages: input.historyMessages ?? [],
+      projectFiles: (input.projectFiles ?? []).filter((file) => (input.task.selectedFileIds ?? []).includes(file.id)),
+      candidateText: candidate ? `# ${candidate.title} v${candidate.version}\n\n${candidate.content}` : null,
+    };
+    const pipeline = input.pipeline ?? cachedEvidencePipeline(pipelineInput);
+    const coverageError = coverageBlocksCouncil(pipeline.coverage);
+    if (coverageError) {
+      return precheckOutput(input.task, coverageError);
+    }
+    if (!pipeline.pack.ok) {
+      return precheckOutput(input.task, CONTEXT_BUDGET_EXCEEDED);
+    }
+    const ctx = pipeline.pack.text;
+    const packedCitations = pipeline.manifest.packedCitations;
+    manifest = persistableManifest({
+      project: { id: input.project.id, name: input.project.name, description: input.project.description, createdAt: "" },
+      task: input.task,
+      context: input.context,
+      chatSources: input.chatSources ?? [],
+      historyMessages: input.historyMessages ?? [],
+      artifacts,
+      projectFiles: input.projectFiles ?? [],
+      contextText: ctx,
+      evidence: pipeline.manifest,
+    });
+
+    throwIfCancelled(runId, signal);
+
+    const spend = (text: string, maxOut: number, stage: string) => {
+      const est = estimateCost(countTokens(text), maxOut);
+      if (spent + est > budget) {
+        throw new Error("Council stopped because the configured cost limit was reached. (" + stage + ")");
+      }
+      return est;
+    };
+
+    const ask = async (
+      agent: AgentKey,
+      round: 1 | 2 | 3,
+      system: string,
+      user: string,
+      maxTokens: number,
+      temperature: number,
+      responseFormat?: Record<string, unknown>,
+    ): Promise<AgentResponse> => {
+      const stage = `${agent} round ${round}`;
+      if (isCancelledSignal(signal)) {
+        agents[agent] = {
+          state: "FAILED",
+          attempt: agents[agent].attempt,
+          maxAttempts: PROVIDER_ATTEMPTS,
+          error: "Council run stopped.",
+        };
+        return tagRun(
+          responseFromError(input.task.id, agent, round, models[agent], system, user, "Council run stopped.", manifest),
+          runId,
+        );
+      }
+      let est = 0;
       try {
-        const out = await completeChat({
-          provider: input.creds.provider,
-          apiKey: key,
-          model: models[agent],
-          messages: chat(system, user),
-          maxTokens,
-          temperature,
-          responseFormat,
-        });
-        if (out.ok) {
-          spent += out.completion.cost ?? est;
-          agents[agent] = { state: "DONE", attempt, maxAttempts: PROVIDER_ATTEMPTS, error: null };
-          const row = responseFromCompletion(input.task.id, agent, round, system, user, out.completion, manifest);
-          emit(
-            round === 3 ? "SYNTHESIS" : round === 2 ? "COUNCIL_ROUND_2" : "COUNCIL_ROUND_1",
-            round === 3 ? "SYNTHESIS" : round === 2 ? "ROUND_2" : "ROUND_1",
-            `${agent} finished.`,
-            { responses: [row] },
-          );
-          return row;
-        }
-        lastFailure =
-          out.failure ??
-          toProviderFailure(out.error, {
-            provider: input.creds.provider,
-            model: models[agent],
-            stage,
-          });
+        est = spend(`${system}${user}`, maxTokens, stage);
       } catch (err) {
-        lastFailure = toProviderFailure(err, {
-          provider: input.creds.provider,
-          model: models[agent],
-          stage,
-        });
+        const message =
+          err instanceof Error ? err.message : "Council stopped because the configured cost limit was reached.";
+        agents[agent] = { state: "FAILED", attempt: 0, maxAttempts: PROVIDER_ATTEMPTS, error: message };
+        const errRow = tagRun(
+          responseFromError(input.task.id, agent, round, models[agent], system, user, message, manifest),
+          runId,
+        );
+        emit(
+          round === 3 ? "SYNTHESIS" : round === 2 ? "COUNCIL_ROUND_2" : "COUNCIL_ROUND_1",
+          round === 3 ? "SYNTHESIS" : round === 2 ? "ROUND_2" : "ROUND_1",
+          message,
+          { responses: [errRow] },
+        );
+        return errRow;
       }
-      const retryable = isRetryableFailure(lastFailure);
-      if (retryable && attempt < PROVIDER_ATTEMPTS) {
-        await new Promise((r) => setTimeout(r, retryDelayMs(attempt)));
-        continue;
-      }
-      const failure = lastFailure
-        ? {
-            ...lastFailure,
+      let lastFailure: ProviderFailure | null = null;
+      for (let attempt = 1; attempt <= PROVIDER_ATTEMPTS; attempt += 1) {
+        if (isCancelledSignal(signal)) {
+          agents[agent] = { state: "FAILED", attempt, maxAttempts: PROVIDER_ATTEMPTS, error: "Council run stopped." };
+          return tagRun(
+            responseFromError(input.task.id, agent, round, models[agent], system, user, "Council run stopped.", manifest),
+            runId,
+          );
+        }
+        agents[agent] = { state: "RUNNING", attempt, maxAttempts: PROVIDER_ATTEMPTS, error: null };
+        emit(
+          round === 3 ? "SYNTHESIS" : round === 2 ? "COUNCIL_ROUND_2" : "COUNCIL_ROUND_1",
+          round === 3 ? "SYNTHESIS" : round === 2 ? "ROUND_2" : "ROUND_1",
+          attempt > 1
+            ? `${agent} retry ${attempt}/${PROVIDER_ATTEMPTS} after ${lastFailure?.httpClass ?? "error"}.`
+            : `${agent} is running (${attempt}/${PROVIDER_ATTEMPTS}).`,
+        );
+        try {
+          const out = await runtime.completeChat({
             provider: input.creds.provider,
+            apiKey: key,
             model: models[agent],
-            stage,
-            retryExhausted: retryable,
-            message: "",
-          }
-        : providerFailure({
-            provider: input.creds.provider,
-            model: models[agent],
-            stage,
-            retryExhausted: retryable,
+            messages: chat(system, user),
+            maxTokens,
+            temperature,
+            responseFormat,
+            signal,
           });
-      failure.message = formatProviderFailure(failure);
-      agents[agent] = { state: "FAILED", attempt, maxAttempts: PROVIDER_ATTEMPTS, error: failure.message };
-      const errRow = responseFromError(input.task.id, agent, round, models[agent], system, user, failure.message, manifest);
+          if (isCancelledSignal(signal) || (!out.ok && out.error === "Council run stopped.")) {
+            agents[agent] = { state: "FAILED", attempt, maxAttempts: PROVIDER_ATTEMPTS, error: "Council run stopped." };
+            return tagRun(
+              responseFromError(input.task.id, agent, round, models[agent], system, user, "Council run stopped.", manifest),
+              runId,
+            );
+          }
+          if (out.ok) {
+            spent += out.completion.cost ?? est;
+            agents[agent] = { state: "DONE", attempt, maxAttempts: PROVIDER_ATTEMPTS, error: null };
+            const row = tagRun(
+              responseFromCompletion(input.task.id, agent, round, system, user, out.completion, manifest),
+              runId,
+            );
+            emit(
+              round === 3 ? "SYNTHESIS" : round === 2 ? "COUNCIL_ROUND_2" : "COUNCIL_ROUND_1",
+              round === 3 ? "SYNTHESIS" : round === 2 ? "ROUND_2" : "ROUND_1",
+              `${agent} finished.`,
+              { responses: [row] },
+            );
+            return row;
+          }
+          lastFailure =
+            out.failure ??
+            toProviderFailure(out.error, {
+              provider: input.creds.provider,
+              model: models[agent],
+              stage,
+            });
+        } catch (err) {
+          if (err instanceof CouncilCancelled || isCancelledSignal(signal)) {
+            agents[agent] = { state: "FAILED", attempt, maxAttempts: PROVIDER_ATTEMPTS, error: "Council run stopped." };
+            return tagRun(
+              responseFromError(input.task.id, agent, round, models[agent], system, user, "Council run stopped.", manifest),
+              runId,
+            );
+          }
+          lastFailure = toProviderFailure(err, {
+            provider: input.creds.provider,
+            model: models[agent],
+            stage,
+          });
+        }
+        const retryable = isRetryableFailure(lastFailure);
+        if (retryable && attempt < PROVIDER_ATTEMPTS) {
+          if (isCancelledSignal(signal)) {
+            agents[agent] = { state: "FAILED", attempt, maxAttempts: PROVIDER_ATTEMPTS, error: "Council run stopped." };
+            return tagRun(
+              responseFromError(input.task.id, agent, round, models[agent], system, user, "Council run stopped.", manifest),
+              runId,
+            );
+          }
+          await new Promise((r) => setTimeout(r, retryDelayMs(attempt)));
+          continue;
+        }
+        const failure = lastFailure
+          ? {
+              ...lastFailure,
+              provider: input.creds.provider,
+              model: models[agent],
+              stage,
+              retryExhausted: retryable,
+              message: "",
+            }
+          : providerFailure({
+              provider: input.creds.provider,
+              model: models[agent],
+              stage,
+              retryExhausted: retryable,
+            });
+        failure.message = formatProviderFailure(failure);
+        agents[agent] = { state: "FAILED", attempt, maxAttempts: PROVIDER_ATTEMPTS, error: failure.message };
+        const errRow = tagRun(
+          responseFromError(input.task.id, agent, round, models[agent], system, user, failure.message, manifest),
+          runId,
+        );
+        emit(
+          round === 3 ? "SYNTHESIS" : round === 2 ? "COUNCIL_ROUND_2" : "COUNCIL_ROUND_1",
+          round === 3 ? "SYNTHESIS" : round === 2 ? "ROUND_2" : "ROUND_1",
+          failure.message,
+          { responses: [errRow] },
+        );
+        return errRow;
+      }
+      const fallback = providerFailure({
+        provider: input.creds.provider,
+        model: models[agent],
+        stage,
+        retryExhausted: true,
+      });
+      agents[agent] = {
+        state: "FAILED",
+        attempt: PROVIDER_ATTEMPTS,
+        maxAttempts: PROVIDER_ATTEMPTS,
+        error: fallback.message,
+      };
+      const errRow = tagRun(
+        responseFromError(input.task.id, agent, round, models[agent], system, user, fallback.message, manifest),
+        runId,
+      );
       emit(
         round === 3 ? "SYNTHESIS" : round === 2 ? "COUNCIL_ROUND_2" : "COUNCIL_ROUND_1",
         round === 3 ? "SYNTHESIS" : round === 2 ? "ROUND_2" : "ROUND_1",
-        failure.message,
+        fallback.message,
         { responses: [errRow] },
       );
       return errRow;
-    }
-    const fallback = providerFailure({
-      provider: input.creds.provider,
-      model: models[agent],
-      stage,
-      retryExhausted: true,
-    });
-    agents[agent] = { state: "FAILED", attempt: PROVIDER_ATTEMPTS, maxAttempts: PROVIDER_ATTEMPTS, error: fallback.message };
-    const errRow = responseFromError(input.task.id, agent, round, models[agent], system, user, fallback.message, manifest);
-    emit(
-      round === 3 ? "SYNTHESIS" : round === 2 ? "COUNCIL_ROUND_2" : "COUNCIL_ROUND_1",
-      round === 3 ? "SYNTHESIS" : round === 2 ? "ROUND_2" : "ROUND_1",
-      fallback.message,
-      { responses: [errRow] },
-    );
-    return errRow;
-  };
+    };
 
-  try {
-    emit("COUNCIL_ROUND_1", "ROUND_1", "Round 1 — GPT, Grok, and Claude.");
+    stageStartedAt = now();
+    for (const agent of AGENTS) {
+      agents[agent] = { state: "RUNNING", attempt: 1, maxAttempts: PROVIDER_ATTEMPTS, error: null };
+    }
+    emit("COUNCIL_ROUND_1", "ROUND_1", "Round 1 — GPT, Grok, and Claude.", { manifest });
+    await yieldFn();
+    throwIfCancelled(runId, signal);
+
     const round1 = await Promise.all(AGENTS.map((agent) => ask(agent, 1, roles[agent], ctx, AGENT_MAX, 0.2)));
     responses.push(...round1);
+    if (isCancelledSignal(signal)) return finishCancelled();
     emit("COUNCIL_ROUND_1", "ROUND_1", "Round 1 complete.", { responses: [...responses] });
     const fail1 = councilAgentFailure(round1);
     if (fail1) {
@@ -302,6 +469,8 @@ export async function runCouncil(input: {
     }
     const alive = survivingResponses(round1).map((row) => row.agent);
 
+    throwIfCancelled(runId, signal);
+    stageStartedAt = now();
     emit(
       "COUNCIL_ROUND_2",
       "ROUND_2",
@@ -323,14 +492,17 @@ export async function runCouncil(input: {
       }),
     );
     responses.push(...round2);
+    if (isCancelledSignal(signal)) return finishCancelled();
     emit("COUNCIL_ROUND_2", "ROUND_2", "Round 2 complete.", { responses: [...responses] });
     const fail2 = councilAgentFailure([...survivingResponses(round1), ...round2]);
     if (fail2) {
       return failedOutput(input.task, responses, fail2, { manifest });
     }
 
+    throwIfCancelled(runId, signal);
     const synthSpec = synthesisForMode(mode);
     const synthAgent = synthesizerAgent(round2);
+    stageStartedAt = now();
     emit(
       "SYNTHESIS",
       "SYNTHESIS",
@@ -345,6 +517,7 @@ export async function runCouncil(input: {
     ].join("\n\n");
     const synth = await ask(synthAgent, 3, synthSpec.prompt, synthUser, synthSpec.max, 0, synthSpec.schema);
     responses.push(synth);
+    if (isCancelledSignal(signal)) return finishCancelled();
     emit("SYNTHESIS", "SYNTHESIS", "Synthesis complete.", { responses: [...responses] });
     if (synth.error) {
       return failedOutput(input.task, responses, synth.error, { manifest });
@@ -373,7 +546,7 @@ export async function runCouncil(input: {
         packedCitations,
       );
       artifact = {
-        id: nid(),
+        id: crypto.randomUUID().replaceAll("-", "").slice(0, 32),
         projectId: input.project.id,
         taskId: input.task.id,
         type: drafted.type,
@@ -409,14 +582,26 @@ export async function runCouncil(input: {
         iteration: input.parentPacket ? input.parentPacket.iteration + 1 : 1,
       });
     }
-    return completeOutput(input.task, responses, parsed, gated, {
+    const out = completeOutput(input.task, responses, parsed, gated, {
       artifact,
       manifest,
       packet,
       packedCitations,
       failedAgents,
     });
+    stageStartedAt = now();
+    const snap = snapshot("COMPLETE", "COMPLETE", "Council complete.");
+    out.task.diagnostics = {
+      ...(out.task.diagnostics ?? {}),
+      run: snap,
+      runs: archiveRuns(input.task.diagnostics?.runs as CouncilRunSnapshot[] | undefined, snap),
+    };
+    emit("COMPLETE", "COMPLETE", "Council complete.", { responses: [...responses] });
+    return out;
   } catch (err) {
+    if (err instanceof CouncilCancelled || isCancelledSignal(signal)) {
+      return finishCancelled();
+    }
     const message =
       err instanceof Error && err.message.toLowerCase().includes("cost limit")
         ? "Council stopped because the configured cost limit was reached."

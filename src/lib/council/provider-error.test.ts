@@ -33,6 +33,7 @@ function response(agent: AgentResponse["agent"], error: string | null = null): A
     error,
     contextManifestId: null,
     contextHash: null,
+    runId: null,
   };
 }
 

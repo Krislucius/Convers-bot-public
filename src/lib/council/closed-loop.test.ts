@@ -156,6 +156,7 @@ function response(agent: AgentResponse["agent"], extra: Partial<AgentResponse> =
     error: extra.error ?? null,
     contextManifestId: null,
     contextHash: "h",
+    runId: null,
     ...extra,
   };
 }

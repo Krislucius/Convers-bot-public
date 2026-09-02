@@ -22,7 +22,8 @@ export type TaskStatus =
   | "COUNCIL_ROUND_2"
   | "SYNTHESIS"
   | "COMPLETE"
-  | "FAILED";
+  | "FAILED"
+  | "CANCELLED";
 
 export type AgentRunState = "WAITING" | "RUNNING" | "DONE" | "FAILED";
 
@@ -203,6 +204,7 @@ export type AgentResponse = {
   error: string | null;
   contextManifestId: string | null;
   contextHash: string | null;
+  runId: string | null;
 };
 
 export type CouncilResult = {
@@ -302,6 +304,28 @@ export type Task = {
     structured_output?: string;
     round1_independent?: boolean;
     precheck?: string;
+    run?: {
+      runId: string;
+      generation: number;
+      stage: "PREPARING" | "ROUND_1" | "ROUND_2" | "SYNTHESIS" | "COMPLETE" | "CANCELLED";
+      status: TaskStatus;
+      startedAt: string;
+      stageStartedAt: string;
+      updatedAt: string;
+      agents: Partial<Record<AgentKey, AgentProgress>>;
+      message: string;
+    } | null;
+    runs?: Array<{
+      runId: string;
+      generation: number;
+      stage: "PREPARING" | "ROUND_1" | "ROUND_2" | "SYNTHESIS" | "COMPLETE" | "CANCELLED";
+      status: TaskStatus;
+      startedAt: string;
+      stageStartedAt: string;
+      updatedAt: string;
+      agents: Partial<Record<AgentKey, AgentProgress>>;
+      message: string;
+    }>;
   } | null;
   selectedChatSourceIds: string[];
   selectedFileIds: string[];

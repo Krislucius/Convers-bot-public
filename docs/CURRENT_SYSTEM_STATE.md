@@ -1,7 +1,7 @@
 # Current system state
 
 Revision: CB-ARCH-20260901-002
-Recorded: 2026-09-02T11:25:00.000Z
+Recorded: 2026-09-02T12:30:00.000Z
 
 Factual state of the authoritative tree. Not a backlog.
 
@@ -31,7 +31,7 @@ OpenRouter (`sk-or-…`) and OpenRusRouter (`orr_live_…`). Keys persist on `ac
 
 ## CURRENT COUNCIL FLOW
 
-`src/routes/t.$taskId.tsx` → `runCouncil` in `src/lib/council/orchestrate.ts` only. CREATE / REVIEW / DECIDE. Round 1, Round 2, structured synthesis. Two surviving agents are enough. CREATE APPROVED writes an Implementation Packet. REVIEW returns PASS / PATCH / BLOCKED. DECIDE disagreements or CONFLICTED evidence require USER_DECISION_REQUIRED.
+`src/routes/t.$taskId.tsx` → `runCouncil` in `src/lib/council/orchestrate.ts` only. CREATE / REVIEW / DECIDE. Round 1, Round 2, structured synthesis. Two surviving agents are enough. CREATE APPROVED writes an Implementation Packet. REVIEW returns PASS / PATCH / BLOCKED. DECIDE disagreements or CONFLICTED evidence require USER_DECISION_REQUIRED. Progress is persisted on `tasks.diagnostics.run` (stage, timestamps, per-agent state, `run_id`). Stop marks `CANCELLED` and keeps partial agent rows. Restart issues a new `run_id` and drops stale writes from the previous generation.
 
 ## CURRENT CONTEXT PIPELINE
 
@@ -57,5 +57,5 @@ FUNCTION BLOCKERS: none.
 
 ### BUILD WORKFLOW
 
-- Production Publish is a user action; git `CB-BUILD-20260902-008` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
+- Production Publish is a user action; git `CB-BUILD-20260902-009` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
 - Nitro Vercel SSR barrels that re-export undefined `ssr_exports` are patched in the nitro `compiled` and `close` hooks during `vite build` (`scripts/patch-nitro-ssr.mjs`), then again from `npm run build`. The same hook writes missing Vercel `config.json` / `.vc-config.json` (the user compiled hook replaces Nitro's generateFunctionFiles). PGLite `pglite.data`, `pglite.wasm`, and `initdb.wasm` are staged next to the bundled driver. Eager PGLite bootstrap failures are logged and do not kill the isolate. Production uses Neon.

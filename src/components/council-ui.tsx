@@ -127,7 +127,8 @@ export function StatusPill({ status }: { status: TaskStatus | CouncilStatus | st
             status === "REVIEW_OPEN" ||
             status === "PREPARING" ||
             status === "WAITING" ||
-            status === "RUNNING"
+            status === "RUNNING" ||
+            status === "CANCELLED"
           ? "text-warn"
           : status === "ARCHIVED"
             ? "text-faint"

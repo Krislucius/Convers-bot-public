@@ -653,6 +653,7 @@ export function responseFromCompletion(
       error: null,
       contextManifestId: null,
       contextHash: null,
+      runId: null,
     },
     manifest,
   );
@@ -689,6 +690,7 @@ export function responseFromError(
       error,
       contextManifestId: null,
       contextHash: null,
+      runId: null,
     },
     manifest,
   );
@@ -714,6 +716,29 @@ export function failedOutput(
     artifact: extras?.artifact ?? null,
     manifest: extras?.manifest ?? null,
     packet: extras?.packet ?? null,
+  };
+}
+
+export function cancelledOutput(
+  task: Task,
+  responses: AgentResponse[],
+  extras?: { manifest?: ContextManifest | null; message?: string },
+): RunCouncilOutput {
+  const message = extras?.message ?? "Council run stopped.";
+  return {
+    task: {
+      ...task,
+      status: "CANCELLED",
+      error: message,
+      completedAt: new Date().toISOString(),
+      contextManifestId: extras?.manifest?.id ?? task.contextManifestId,
+      contextHash: extras?.manifest?.hash ?? task.contextHash,
+    },
+    responses,
+    result: null,
+    artifact: null,
+    manifest: extras?.manifest ?? null,
+    packet: null,
   };
 }
 
@@ -793,7 +818,11 @@ export function completeOutput(
       totalOutputTokens: outs.length ? outs.reduce((a, b) => a + b, 0) : null,
       totalCostUsd: costs.length ? costs.reduce((a, b) => a + b, 0) : null,
       totalLatencyMs: lats.length ? lats.reduce((a, b) => a + b, 0) : null,
-      diagnostics: { structured_output: "json_schema", round1_independent: true },
+      diagnostics: {
+        ...(task.diagnostics ?? {}),
+        structured_output: "json_schema",
+        round1_independent: true,
+      },
       contextManifestId: extras?.manifest?.id ?? task.contextManifestId,
       contextHash: extras?.manifest?.hash ?? task.contextHash,
     },

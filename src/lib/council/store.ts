@@ -37,6 +37,7 @@ import type {
   TaskMode,
   AgentResponse,
 } from "./types";
+import { archiveRuns, ownedResponses, shouldAcceptRunWrite, type CouncilRunSnapshot } from "./run-control";
 
 export const LEGACY_STORE_KEY = "conversation-bot:v012";
 
@@ -92,10 +93,15 @@ function normalizeTask(task: Task): Task {
 }
 
 function normalizeResponse(row: AgentResponse): AgentResponse {
+  const structured = row.structured ?? null;
+  const runId =
+    row.runId ??
+    (structured && typeof structured.__runId === "string" ? structured.__runId : null);
   return {
     ...row,
     contextManifestId: row.contextManifestId ?? null,
     contextHash: row.contextHash ?? null,
+    runId,
   };
 }
 
@@ -283,13 +289,19 @@ export function createTask(input: CreateTaskInput): Task {
   return task;
 }
 
-export function rememberResponses(taskId: string, rows: AgentResponse[]) {
+function currentRunId(taskId: string): string | null {
+  return memory.tasks.find((row) => row.id === taskId)?.diagnostics?.run?.runId ?? null;
+}
+
+export function rememberResponses(taskId: string, rows: AgentResponse[], owner?: { runId: string }) {
   if (!rows.length) return;
+  const accepted = ownedResponses(rows, currentRunId(taskId), owner?.runId);
+  if (!accepted.length) return;
   persist({
     ...memory,
     responses: [
-      ...memory.responses.filter((row) => row.taskId !== taskId || !rows.some((next) => next.id === row.id)),
-      ...rows,
+      ...memory.responses.filter((row) => row.taskId !== taskId || !accepted.some((next) => next.id === row.id)),
+      ...accepted,
     ],
   });
   const task = memory.tasks.find((row) => row.id === taskId);
@@ -308,6 +320,67 @@ export function rememberResponses(taskId: string, rows: AgentResponse[]) {
       }),
     );
   }
+}
+
+export function rememberCouncilProgress(
+  taskId: string,
+  snapshot: CouncilRunSnapshot,
+  extras?: { error?: string | null; archive?: boolean },
+) {
+  persist({
+    ...memory,
+    tasks: memory.tasks.map((task) => {
+      if (task.id !== taskId) return task;
+      const prev = task.diagnostics ?? {};
+      const current = prev.run ?? null;
+      const startedAt = current?.runId === snapshot.runId ? (current?.startedAt ?? snapshot.startedAt) : snapshot.startedAt;
+      const stageStartedAt =
+        current?.runId === snapshot.runId && current?.stage === snapshot.stage
+          ? current.stageStartedAt
+          : snapshot.stageStartedAt;
+      const runs =
+        current?.runId && current.runId !== snapshot.runId
+          ? archiveRuns(prev.runs, current)
+          : extras?.archive
+            ? archiveRuns(prev.runs, { ...snapshot, startedAt, stageStartedAt })
+            : prev.runs;
+      return {
+        ...task,
+        status: snapshot.status,
+        error: extras?.error !== undefined ? extras.error : task.error,
+        diagnostics: {
+          ...prev,
+          run: { ...snapshot, startedAt, stageStartedAt },
+          runs,
+        },
+      };
+    }),
+  });
+  const task = memory.tasks.find((row) => row.id === taskId);
+  if (task) enqueue(() => persistAccountTask({ data: task }));
+}
+
+export function markTaskCancelled(taskId: string, error = "Council run stopped.") {
+  persist({
+    ...memory,
+    tasks: memory.tasks.map((t) => {
+      if (t.id !== taskId) return t;
+      const now = new Date().toISOString();
+      const prev = t.diagnostics ?? {};
+      const run = prev.run
+        ? { ...prev.run, stage: "CANCELLED" as const, status: "CANCELLED" as const, updatedAt: now, message: error }
+        : prev.run;
+      return {
+        ...t,
+        status: "CANCELLED",
+        error,
+        completedAt: now,
+        diagnostics: { ...prev, run, runs: archiveRuns(prev.runs, run ?? undefined) },
+      };
+    }),
+  });
+  const task = memory.tasks.find((row) => row.id === taskId);
+  if (task) enqueue(() => persistAccountTask({ data: task }));
 }
 
 export function rememberManifest(taskId: string, manifest: ContextManifest) {
@@ -362,6 +435,9 @@ export function applyCouncilOutput(
   },
 ) {
   const existing = memory.tasks.find((t) => t.id === taskId);
+  const currentRun = existing?.diagnostics?.run?.runId;
+  const incomingRun = patch.task.diagnostics?.run?.runId ?? patch.responses.find((row) => row.runId)?.runId ?? null;
+  if (!shouldAcceptRunWrite(currentRun ?? null, incomingRun ?? null)) return;
   const mergedTask = {
     ...patch.task,
     selectedChatSourceIds: existing?.selectedChatSourceIds ?? patch.task.selectedChatSourceIds,
@@ -370,6 +446,7 @@ export function applyCouncilOutput(
     requiresHistoricalContext: existing?.requiresHistoricalContext ?? patch.task.requiresHistoricalContext,
     candidateArtifactId: existing?.candidateArtifactId ?? patch.task.candidateArtifactId,
     decisionQuestion: existing?.decisionQuestion ?? patch.task.decisionQuestion,
+    diagnostics: patch.task.diagnostics ?? existing?.diagnostics ?? null,
   };
   let artifacts = memory.artifacts;
   if (patch.artifact) {
@@ -399,10 +476,18 @@ export function applyCouncilOutput(
       });
     }
   }
+  const incoming = patch.responses.filter((row) => !incomingRun || !row.runId || row.runId === incomingRun);
+  const incomingIds = new Set(incoming.map((row) => row.id));
+  const kept = memory.responses.filter((row) => {
+    if (row.taskId !== taskId) return true;
+    if (incomingRun && row.runId && row.runId !== incomingRun) return true;
+    if (incomingIds.has(row.id)) return false;
+    return Boolean(incomingRun);
+  });
   persist({
     ...memory,
     tasks: memory.tasks.map((t) => (t.id === taskId ? mergedTask : t)),
-    responses: [...memory.responses.filter((r) => r.taskId !== taskId), ...patch.responses],
+    responses: [...kept, ...incoming],
     results: patch.result
       ? [...memory.results.filter((r) => r.taskId !== taskId), patch.result]
       : memory.results.filter((r) => r.taskId !== taskId),

@@ -196,6 +196,12 @@ function mapTask(row: Record<string, unknown>): Task {
 }
 
 function mapResponse(row: Record<string, unknown>): AgentResponse {
+  const structured = asJson(row.structured, null) as Record<string, string> | null;
+  const runId = structured && typeof structured.__runId === "string" ? structured.__runId : null;
+  const visible =
+    structured == null
+      ? null
+      : Object.fromEntries(Object.entries(structured).filter(([key]) => key !== "__runId"));
   return {
     id: asString(row.id),
     taskId: asString(row.task_id),
@@ -205,7 +211,7 @@ function mapResponse(row: Record<string, unknown>): AgentResponse {
     provider: row.provider == null ? null : asString(row.provider),
     promptSnapshot: asString(row.prompt_snapshot),
     responseText: asString(row.response_text),
-    structured: asJson(row.structured, null),
+    structured: visible && Object.keys(visible).length ? visible : null,
     inputTokens: asNum(row.input_tokens),
     cachedInputTokens: asNum(row.cached_input_tokens),
     outputTokens: asNum(row.output_tokens),
@@ -216,6 +222,7 @@ function mapResponse(row: Record<string, unknown>): AgentResponse {
     error: row.error == null ? null : asString(row.error),
     contextManifestId: row.context_manifest_id == null ? null : asString(row.context_manifest_id),
     contextHash: row.context_hash == null ? null : asString(row.context_hash),
+    runId,
   };
 }
 
