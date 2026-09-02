@@ -4,7 +4,7 @@ import { AccountChip, SignedInApp } from "@/components/account-shell";
 import { CouncilChrome } from "@/components/council-chrome";
 import { PreviewHostBridge } from "@/components/preview-host-bridge";
 import { AuthProvider } from "@/lib/auth/provider";
-import { resolveRootSessionUser, type SessionUser } from "@/lib/auth/session-bootstrap";
+import { resolveRootSessionUser, bakeSessionUserScript, type SessionUser } from "@/lib/auth/session-bootstrap";
 import { SessionProvider } from "@/lib/council/session";
 import { BOOT_WATCHDOG_INLINE } from "@/lib/boot-watchdog";
 import appCss from "../styles.css?url";
@@ -100,6 +100,7 @@ function RootBody() {
   const sessionUser = Route.useRouteContext({ select: (ctx) => ctx.sessionUser }) ?? null;
   return (
     <SessionProvider>
+      <script dangerouslySetInnerHTML={{ __html: bakeSessionUserScript(sessionUser) }} />
       {isPublicPath(pathname) ? (
         <Outlet />
       ) : (

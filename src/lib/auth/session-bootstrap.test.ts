@@ -4,6 +4,7 @@ import { SESSION_WAIT_MS } from "../auth-loop.ts";
 import {
   SSR_SESSION_MS,
   authBootstrapState,
+  bakeSessionUserScript,
   boundAuthPending,
   clientExceptionOutcome,
   resolveRootSessionUser,
@@ -42,6 +43,13 @@ describe("resolveRootSessionUser", () => {
     });
     assert.equal(user, previous);
     assert.equal(called, 0);
+  });
+
+  it("bakes a session script without HTML breakouts", () => {
+    const script = bakeSessionUserScript({ id: "u1", email: "a<b>@c.d" });
+    assert.match(script, /window\.__CB_SSR_SESSION=/);
+    assert.equal(script.includes("<"), false);
+    assert.match(script, /u003c/);
   });
 
   it("SSR times out a hanging provider and returns guest", async () => {

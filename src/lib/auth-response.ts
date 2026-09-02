@@ -177,7 +177,26 @@ export function isOAuthStartPath(pathname: string): boolean {
   return pathname.startsWith("/api/oauth-start/");
 }
 
+export function isPopupHandoffPath(location: string | null | undefined): boolean {
+  if (!location) return false;
+  try {
+    const url = new URL(location, "https://local.invalid");
+    return url.pathname === "/auth/popup" || url.pathname.startsWith("/auth/popup/");
+  } catch {
+    const path = location.split("?")[0] ?? "";
+    return path === "/auth/popup" || path.startsWith("/auth/popup/");
+  }
+}
+
 export function safeNextPath(location: string | null, hasSession: boolean): string {
+  if (isPopupHandoffPath(location)) {
+    try {
+      const url = new URL(location || "", "https://local.invalid");
+      return `${url.pathname}${url.search}`;
+    } catch {
+      return location && location.startsWith("/") ? location : "/auth/popup";
+    }
+  }
   if (hasSession) return "/";
   if (!location) return "/login";
   try {
@@ -303,6 +322,20 @@ function authBounceHtml(
     if (data.token && data.bearerKey) {
       try { sessionStorage.setItem(data.bearerKey, data.token); } catch (e) {}
     }
+    var handed = false;
+    try {
+      if (window.opener && !window.opener.closed) {
+        window.opener.postMessage(
+          { source: "grok-auth-popup", token: data.token || null, error: data.mode === "next" ? "signin-failed" : undefined },
+          window.location.origin
+        );
+        handed = true;
+      }
+    } catch (e) {}
+    if (handed) {
+      try { window.close(); } catch (e) {}
+      return;
+    }
     window.setTimeout(function () {
       location.replace(data.next || "/");
     }, 50);
@@ -376,6 +409,14 @@ export async function finalizeAuthResponse(
   headers.append("set-cookie", debugCookieLine(hop, request));
   if (!headers.has("cache-control")) headers.set("cache-control", "no-store");
   console.log("[auth-hop]", JSON.stringify(hop));
+
+  if (callback && isRedirect && isPopupHandoffPath(locationHeader)) {
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
 
   if (bounce === "confirm") {
     return authBounceHtml(headers, hop, "confirm", "/", sessionToken);

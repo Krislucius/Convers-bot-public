@@ -1,9 +1,9 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { AuthReportPanel } from "@/components/auth-report-panel";
 import { Field, PrimaryButton, TextInput } from "@/components/council-ui";
 import { GROK_PROVIDERS, authClient, authEnabled, signIn, signOut } from "@/lib/auth/client";
 import { emailAndPasswordEnabled } from "@/lib/auth/email-password";
-import { captureSessionToken, markAuthReturning } from "@/lib/auth-loop";
+import { captureSessionToken, markAuthReturning, shouldPopupOAuth, waitForAuthPopup, withDeadline, GET_SESSION_WAIT_MS } from "@/lib/auth-loop";
 
 const OAUTH_BTN =
   "inline-flex min-h-11 w-full cursor-pointer items-center justify-center rounded-sm border border-accent bg-accent px-3.5 py-2.5 font-semibold text-accent-fg no-underline";
@@ -62,6 +62,11 @@ export function LoginForm({
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [popupAuth, setPopupAuth] = useState(false);
+
+  useEffect(() => {
+    setPopupAuth(shouldPopupOAuth());
+  }, []);
 
   async function onOAuth(providerId: string) {
     setError("");
@@ -69,6 +74,45 @@ export function LoginForm({
     markAuthReturning();
     try {
       await signIn(providerId, { callbackURL: "/", errorCallbackURL: "/login?error=oauth" });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Sign-in failed.");
+      setBusy(false);
+    }
+  }
+
+  function startPopup(providerId: string) {
+    markAuthReturning();
+    if (inLivePreview()) {
+      void onOAuth(providerId);
+      return;
+    }
+    const popup = window.open(
+      `/api/oauth-start/${providerId}`,
+      `grok-signin-${Date.now()}`,
+      "popup,width=500,height=650",
+    );
+    void onFramedOAuth(popup);
+  }
+
+  async function onFramedOAuth(popup: Window | null) {
+    setError("");
+    setBusy(true);
+    markAuthReturning();
+    if (!popup) {
+      setError("Pop-up blocked — allow pop-ups for sign-in");
+      setBusy(false);
+      return;
+    }
+    try {
+      const token = await waitForAuthPopup(popup);
+      if (!token) throw new Error("Sign-in was cancelled or failed");
+      captureSessionToken({ token });
+      try {
+        await withDeadline(authClient.getSession(), GET_SESSION_WAIT_MS, "signin-timeout");
+      } catch {
+        /* bearer is stored; useSession will catch up or expire to guest */
+      }
+      onSignedIn?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign-in failed.");
       setBusy(false);
@@ -98,7 +142,11 @@ export function LoginForm({
         if (result.error) throw new Error(result.error.message || "Could not sign in.");
         captureSessionToken(result);
       }
-      await authClient.getSession();
+      try {
+        await withDeadline(authClient.getSession(), GET_SESSION_WAIT_MS, "signin-timeout");
+      } catch {
+        /* land with the captured token even if get-session is slow */
+      }
       onSignedIn?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign-in failed.");
@@ -114,25 +162,39 @@ export function LoginForm({
 
   return (
     <div className="grid gap-3">
-      {GROK_PROVIDERS.map((provider) => (
-        <a
-          key={provider.providerId}
-          href={`/api/oauth-start/${provider.providerId}`}
-          className={OAUTH_BTN}
-          style={{ background: "#d7d4cc", color: "#0c0c0d" }}
-          onClick={(e) => {
-            markAuthReturning();
-            if (inLivePreview()) {
-              e.preventDefault();
-              void onOAuth(provider.providerId);
-              return;
-            }
-            setBusy(true);
-          }}
-        >
-          Continue with {provider.label}
-        </a>
-      ))}
+      {GROK_PROVIDERS.map((provider) =>
+        popupAuth ? (
+          <button
+            key={provider.providerId}
+            type="button"
+            className={OAUTH_BTN}
+            style={{ background: "#d7d4cc", color: "#0c0c0d" }}
+            disabled={busy}
+            onClick={() => startPopup(provider.providerId)}
+          >
+            Continue with {provider.label}
+          </button>
+        ) : (
+          <a
+            key={provider.providerId}
+            href={`/api/oauth-start/${provider.providerId}`}
+            className={OAUTH_BTN}
+            style={{ background: "#d7d4cc", color: "#0c0c0d" }}
+            onClick={(e) => {
+              if (shouldPopupOAuth()) {
+                e.preventDefault();
+                e.stopPropagation();
+                startPopup(provider.providerId);
+                return;
+              }
+              markAuthReturning();
+              setBusy(true);
+            }}
+          >
+            Continue with {provider.label}
+          </a>
+        ),
+      )}
       {emailAndPasswordEnabled ? (
         <>
           <p className="mt-2 mb-0 text-sm text-faint">Or use email</p>

@@ -4,6 +4,27 @@ export const SSR_SESSION_MS = 4_000;
 
 export type SessionUser = { id: string; email: string | null } | null;
 
+export const BAKED_SESSION_FLAG = "__CB_SSR_SESSION";
+
+export function readBakedSessionUser(): SessionUser {
+  if (typeof window === "undefined") return null;
+  try {
+    const baked = (window as Window & { [BAKED_SESSION_FLAG]?: unknown })[BAKED_SESSION_FLAG];
+    if (!baked || typeof baked !== "object") return null;
+    const id = (baked as { id?: unknown }).id;
+    if (typeof id !== "string" || !id.trim()) return null;
+    const email = (baked as { email?: unknown }).email;
+    return { id, email: typeof email === "string" ? email : null };
+  } catch {
+    return null;
+  }
+}
+
+export function bakeSessionUserScript(user: SessionUser): string {
+  const payload = JSON.stringify(user).replace(/</g, "\\u003c");
+  return `window.${BAKED_SESSION_FLAG}=${payload};`;
+}
+
 export type AuthBootstrapStatus = "RESOLVING" | "READY" | "ERROR";
 
 export type ClientShell = "guest" | "app" | "boot" | "error" | "none";
@@ -34,7 +55,7 @@ export async function resolveRootSessionUser(input: {
   fetchUser: () => Promise<SessionUser>;
   timeoutMs?: number;
 }): Promise<SessionUser> {
-  if (input.isClient) return input.previous ?? null;
+  if (input.isClient) return input.previous ?? readBakedSessionUser();
   const timeoutMs = input.timeoutMs ?? SSR_SESSION_MS;
   const timeout = delay(timeoutMs);
   try {

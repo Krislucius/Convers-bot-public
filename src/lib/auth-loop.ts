@@ -112,3 +112,93 @@ export function accountShellKind(input: {
   if (input.user || input.sessionUser) return "hydrator";
   return "guest";
 }
+
+export const AUTH_POPUP_SOURCE = "grok-auth-popup";
+export const AUTH_POPUP_WAIT_MS = 120_000;
+export const GET_SESSION_WAIT_MS = 5_000;
+
+export function isAuthFramed(win?: { self: unknown; top: unknown } | null): boolean {
+  const target = win ?? (typeof window === "undefined" ? null : window);
+  if (!target) return false;
+  try {
+    return target.self !== target.top;
+  } catch {
+    return true;
+  }
+}
+
+/** Sandbox iframe and any framed production preview must not navigate this window to the broker. */
+export function shouldPopupOAuth(input: { hostname?: string; framed?: boolean } = {}): boolean {
+  const hostname = input.hostname ?? (typeof window === "undefined" ? "" : window.location.hostname);
+  const framed = input.framed ?? isAuthFramed();
+  return framed || hostname.endsWith(".grok-sandbox.com");
+}
+
+export type AuthPopupMessage = { source: string; token?: string | null; error?: string };
+
+/** `undefined` = ignore; `null` = explicit failure; string = session token. */
+export function tokenFromAuthPopupMessage(
+  data: unknown,
+  expectedOrigin: string,
+  eventOrigin: string,
+): string | null | undefined {
+  if (eventOrigin !== expectedOrigin) return undefined;
+  if (!data || typeof data !== "object") return undefined;
+  const msg = data as AuthPopupMessage;
+  if (msg.source !== AUTH_POPUP_SOURCE) return undefined;
+  if (typeof msg.token === "string" && msg.token.trim()) return msg.token.trim();
+  return null;
+}
+
+export function withDeadline<T>(promise: Promise<T>, ms: number, message = "Timed out"): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
+export function waitForAuthPopup(
+  popup: Window,
+  opts: { origin?: string; timeoutMs?: number } = {},
+): Promise<string | null> {
+  const origin = opts.origin ?? window.location.origin;
+  const timeoutMs = opts.timeoutMs ?? AUTH_POPUP_WAIT_MS;
+  return new Promise((resolve) => {
+    let settled = false;
+    let closeTimer: number | undefined;
+    const settle = (token: string | null) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(token);
+    };
+    const onMessage = (event: MessageEvent) => {
+      const token = tokenFromAuthPopupMessage(event.data, origin, event.origin);
+      if (token === undefined) return;
+      settle(token);
+    };
+    const pollTimer = window.setInterval(() => {
+      if (!popup.closed) return;
+      window.clearInterval(pollTimer);
+      closeTimer = window.setTimeout(() => settle(null), 400);
+    }, 300);
+    const timeoutTimer = window.setTimeout(() => settle(null), timeoutMs);
+    function cleanup() {
+      window.clearInterval(pollTimer);
+      window.clearTimeout(timeoutTimer);
+      if (closeTimer !== undefined) window.clearTimeout(closeTimer);
+      window.removeEventListener("message", onMessage);
+    }
+    window.addEventListener("message", onMessage);
+  });
+}
+

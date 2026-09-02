@@ -4,6 +4,7 @@ import {
   finalizeAuthResponse,
   isAuthCallbackPath,
   isOAuthStartPath,
+  isPopupHandoffPath,
   mergeSetCookies,
   safeLeaveUrl,
   safeNextPath,
@@ -64,6 +65,8 @@ test("safeLeaveUrl keeps broker https URLs and rejects javascript", () => {
 test("safeNextPath keeps login error query", () => {
   assert.equal(safeNextPath("/login?error=oauth", false), "/login?error=oauth");
   assert.equal(safeNextPath("https://app.example/signed-in", true), "/");
+  assert.equal(isPopupHandoffPath("https://app.example/auth/popup?done=1"), true);
+  assert.equal(safeNextPath("https://app.example/auth/popup?done=1", true), "/auth/popup?done=1");
 });
 
 test("oauth-start 302 stays a 302 and keeps state cookies", async () => {
@@ -118,8 +121,30 @@ test("oauth callback with session returns HTML handoff to /", async () => {
   const html = await out.text();
   assert.match(html, /sessionStorage\.setItem/);
   assert.match(html, /location\.replace/);
+  assert.match(html, /postMessage/);
+  assert.match(html, /grok-auth-popup/);
   assert.doesNotMatch(html, /get-session/);
   assert.match(html, /http-equiv="refresh"/);
+});
+
+test("popup callback 302 to /auth/popup is not rewritten to bounce HTML", async () => {
+  const request = new Request(
+    "http://127.0.0.1:8080/api/auth/oauth2/callback/grok-google?code=fake",
+  );
+  const response = new Response(null, {
+    status: 302,
+    headers: [
+      ["location", "http://127.0.0.1:8080/auth/popup?done=1"],
+      [
+        "set-cookie",
+        "__Host-grok-auth.session_token=sess.tok; Max-Age=3600; Path=/; HttpOnly; Secure; SameSite=Lax",
+      ],
+      ["set-auth-token", "sess.tok"],
+    ],
+  });
+  const out = await finalizeAuthResponse(request, response, Date.now());
+  assert.equal(out.status, 302);
+  assert.equal(out.headers.get("location"), "http://127.0.0.1:8080/auth/popup?done=1");
 });
 
 test("failed callback 302 goes to login", async () => {

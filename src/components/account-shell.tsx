@@ -16,6 +16,7 @@ import {
 import { markClientReady } from "@/lib/boot-watchdog";
 import { LoginForm } from "@/components/login-form";
 import { SystemRevisionLine } from "@/components/system-info";
+import { readBakedSessionUser } from "@/lib/auth/session-bootstrap";
 
 export type SsrSessionUser = { id: string; email: string | null } | null;
 export { markAuthReturning, clearAuthReturning, isAuthReturning } from "@/lib/auth-loop";
@@ -90,10 +91,11 @@ export function SignedInApp({
   children: ReactNode;
 }) {
   const { user, isPending } = useCurrentUserState();
-  const authed = user ?? fromSsr(sessionUser);
+  const ssrUser = sessionUser ?? readBakedSessionUser();
+  const authed = user ?? fromSsr(ssrUser);
   const [clientWait, setClientWait] = useState(false);
   const returning = isAuthReturning();
-  const kind = accountShellKind({ sessionUser, user });
+  const kind = accountShellKind({ sessionUser: ssrUser, user });
 
   useEffect(() => {
     authTrace("app.mount", {
