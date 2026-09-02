@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runtimeShellHash, readShellSpec } from "./runtime-shell.mjs";
 
 export const PROJECT_ID = "01a048b8-c1f7-7382-9dfd-fb30bff7137d";
 export const PRODUCTION_HOST = "https://swift-lake-solar-cosmic.grok.me";
@@ -119,23 +120,27 @@ export function readRegistry(root) {
 }
 
 export function currentFingerprints(root) {
+  const specPath = join(root, "docs/RUNTIME_SHELL.json");
   return {
     architecture_hash: architectureHash(root),
     module_registry_hash: moduleRegistryHash(root),
     schema_hash: schemaHash(root),
     critical_contract_hash: criticalContractHash(root),
+    runtime_shell_hash: existsSync(specPath) ? runtimeShellHash(root) : "MISSING",
   };
 }
 
 export function writeLock(root) {
   const current = JSON.parse(read(root, "docs/ARCHITECTURE_LOCK.json"));
   const hashes = currentFingerprints(root);
+  const spec = readShellSpec(root);
   const next = {
     ...current,
     project_id: PROJECT_ID,
     production_host: PRODUCTION_HOST,
     architecture_revision: ARCHITECTURE_REVISION,
     ...hashes,
+    runtime_shell_id: spec.id,
   };
   writeFileSync(join(root, "docs/ARCHITECTURE_LOCK.json"), `${JSON.stringify(next, null, 2)}\n`);
   return next;
@@ -177,6 +182,19 @@ export function verifyLock(root, opts = {}) {
   }
   if (hashes.critical_contract_hash !== lock.critical_contract_hash) {
     errors.push({ code: "LOCK_MISMATCH", message: "Critical contract hash does not match ARCHITECTURE_LOCK." });
+  }
+  if (hashes.runtime_shell_hash !== lock.runtime_shell_hash) {
+    errors.push({
+      code: "SHELL_DRIFT",
+      message:
+        "Runtime shell hash does not match ARCHITECTURE_LOCK. Functional patches must not modify the protected shell.",
+    });
+  }
+  if (lock.runtime_shell_id && readShellSpec(root).id !== lock.runtime_shell_id) {
+    errors.push({
+      code: "SHELL_DRIFT",
+      message: `Runtime shell id mismatch. Lock ${lock.runtime_shell_id}, spec ${readShellSpec(root).id}.`,
+    });
   }
   const registry = readRegistry(root);
   const byId = new Map((registry.modules ?? []).map((row) => [row.module_id, row]));

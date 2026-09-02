@@ -131,6 +131,17 @@ describe("architecture patch preflight", () => {
     assert.equal(out.ok, false);
     assert.equal(out.code, "HOST_MISMATCH");
   });
+
+  it("detects runtime shell drift", () => {
+    const out = evaluatePatch({
+      currentProjectId: PROJECT_ID,
+      lock: { ...lock, runtime_shell_hash: "shell" },
+      currentRevision: ARCHITECTURE_REVISION,
+      currentShellHash: "tampered",
+    });
+    assert.equal(out.ok, false);
+    assert.equal(out.code, "SHELL_DRIFT");
+  });
 });
 
 describe("architecture stress: isolation and context packer", () => {

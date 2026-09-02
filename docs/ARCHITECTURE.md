@@ -78,6 +78,10 @@ Canonical path: Better Auth session cookie (deployed) or bearer in preview → `
 
 Do not add a second auth stack.
 
+## Runtime shell
+
+The boot, SSR/client boundary, auth bootstrap, Vite/Nitro config, and deploy entry are a protected shell (`docs/RUNTIME_SHELL.json`). Council, Evidence Ledger, and history patches must not change those files in the same commit. `npm run shell:gate` hashes the shell, rejects mixed product+shell diffs, forbids client `.server` imports, and requires a production build plus built-browser smoke before FUNCTIONALITY may be reported READY.
+
 ## Provider layer
 
 Settings UI writes `account_settings`. Council server functions resolve the stored key for the signed-in user. Client never keeps the secret after save. Empty Save keeps the stored key; Clear Key wipes it.

@@ -23,6 +23,8 @@ export type ArchitectureLock = {
   created_at?: string;
   build_id?: string;
   schema_version?: string;
+  runtime_shell_hash?: string;
+  runtime_shell_id?: string;
   protected_invariants?: string[];
 };
 
@@ -34,7 +36,9 @@ export type PatchPreflightCode =
   | "UNKNOWN_MODULE"
   | "SCHEMA_DRIFT"
   | "LOCK_MISMATCH"
-  | "HOST_MISMATCH";
+  | "HOST_MISMATCH"
+  | "SHELL_DRIFT"
+  | "SHELL_SCOPE_VIOLATION";
 
 export type PatchPreflightResult = {
   ok: boolean;
@@ -54,6 +58,7 @@ export function evaluatePatch(input: {
   currentArchitectureHash?: string;
   currentRegistryHash?: string;
   currentContractHash?: string;
+  currentShellHash?: string;
 }): PatchPreflightResult {
   if (!input.currentProjectId || input.currentProjectId !== input.lock.project_id) {
     return fail(
@@ -94,6 +99,12 @@ export function evaluatePatch(input: {
   }
   if (input.currentContractHash && input.currentContractHash !== input.lock.critical_contract_hash) {
     return fail("LOCK_MISMATCH", "Critical contract hash does not match ARCHITECTURE_LOCK.");
+  }
+  if (input.currentShellHash && input.lock.runtime_shell_hash && input.currentShellHash !== input.lock.runtime_shell_hash) {
+    return fail(
+      "SHELL_DRIFT",
+      "Runtime shell hash does not match ARCHITECTURE_LOCK. Functional patches must not modify the protected shell.",
+    );
   }
   const registry = input.registry ?? [];
   const byId = new Map(registry.map((row) => [row.module_id, row]));

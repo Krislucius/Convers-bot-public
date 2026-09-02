@@ -11,6 +11,20 @@
       "supersedes": []
     },
     {
+      "module_id": "runtime.shell-gate",
+      "status": "ACTIVE",
+      "implementation_path": "docs/RUNTIME_SHELL.json",
+      "architecture_revision": "CB-ARCH-20260901-002",
+      "responsibilities": [
+        "protected runtime shell inventory",
+        "shell vs product patch scope",
+        "built-browser smoke gate",
+        "no client .server imports"
+      ],
+      "dependencies": ["app.shell", "auth.session"],
+      "supersedes": []
+    },
+    {
       "module_id": "auth.session",
       "status": "ACTIVE",
       "implementation_path": "src/lib/auth",

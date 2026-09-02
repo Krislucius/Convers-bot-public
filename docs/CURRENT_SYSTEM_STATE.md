@@ -1,13 +1,13 @@
 # Current system state
 
 Revision: CB-ARCH-20260901-002
-Recorded: 2026-09-02T20:40:00.000Z
+Recorded: 2026-09-02T20:55:00.000Z
 
 Factual state of the authoritative tree. Not a backlog.
 
 ## ACTIVE MODULES
 
-- app.shell, auth.session, auth.loop-breaker
+- app.shell, auth.session, auth.loop-breaker, runtime.shell-gate
 - persist.postgres, account.persistence
 - history.ingest, files.ingest
 - council.task-mode, council.protocol, council.orchestrator, council.manifest, council.artifact, council.providers
@@ -57,6 +57,7 @@ FUNCTION BLOCKERS: none.
 
 ### BUILD WORKFLOW
 
-- Production Publish is a user action; git `CB-BUILD-20260902-012` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
+- Production Publish is a user action; git `CB-BUILD-20260902-013` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
 - Production FUNCTIONALITY READY requires a real browser smoke to an interactive UI. HTTP 200 / bundles / identity / auth-health are necessary but not sufficient.
+- The protected runtime shell is `docs/RUNTIME_SHELL.json`. `npm run shell:gate` (hash, product-vs-shell scope, no client `.server` imports, production build, built-browser smoke) must pass before a release. Functional Council/evidence/history patches that also change shell files fail with `SHELL_SCOPE_VIOLATION`.
 - Nitro Vercel SSR barrels that re-export undefined `ssr_exports` are patched in the nitro `compiled` and `close` hooks during `vite build` (`scripts/patch-nitro-ssr.mjs`), then again from `npm run build`. The same hook writes missing Vercel `config.json` / `.vc-config.json` (the user compiled hook replaces Nitro's generateFunctionFiles). PGLite `pglite.data`, `pglite.wasm`, and `initdb.wasm` are staged next to the bundled driver. Eager PGLite bootstrap failures are logged and do not kill the isolate. Production uses Neon.

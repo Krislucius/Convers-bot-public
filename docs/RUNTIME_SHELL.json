@@ -1,0 +1,45 @@
+{
+  "id": "CB-SHELL-20260902-001",
+  "architecture_revision": "CB-ARCH-20260901-002",
+  "purpose": "Protected runtime shell. Functional Council/evidence/history patches must not change these files.",
+  "groups": {
+    "root_routing": ["src/router.tsx", "src/routes/__root.tsx"],
+    "ssr_client_boundary": [
+      "src/lib/auth/session-bootstrap.ts",
+      "src/lib/boot-watchdog.ts",
+      "src/lib/error-component.tsx"
+    ],
+    "auth_bootstrap": [
+      "src/lib/auth/use-current-user.ts",
+      "src/lib/auth/provider.tsx",
+      "src/lib/auth/client.ts",
+      "src/lib/auth-loop.ts",
+      "src/components/account-shell.tsx",
+      "src/routes/login.tsx",
+      "src/routes/signed-in.tsx"
+    ],
+    "nitro_vite_config": ["vite.config.ts", "scripts/patch-nitro-ssr.mjs", "scripts/with-app-env.mjs"],
+    "production_entry": ["src/router.tsx", "src/routes/__root.tsx", "startup.sh"],
+    "deployment_config": ["scripts/preview.mjs", "scripts/patch-nitro-ssr.mjs", "scripts/grok-pwa-plugin.mjs"]
+  },
+  "files": [
+    "src/router.tsx",
+    "src/routes/__root.tsx",
+    "src/routes/login.tsx",
+    "src/routes/signed-in.tsx",
+    "src/lib/auth/session-bootstrap.ts",
+    "src/lib/auth/use-current-user.ts",
+    "src/lib/auth/provider.tsx",
+    "src/lib/auth/client.ts",
+    "src/lib/auth-loop.ts",
+    "src/lib/boot-watchdog.ts",
+    "src/lib/error-component.tsx",
+    "src/components/account-shell.tsx",
+    "vite.config.ts",
+    "startup.sh",
+    "scripts/patch-nitro-ssr.mjs",
+    "scripts/with-app-env.mjs",
+    "scripts/preview.mjs",
+    "scripts/grok-pwa-plugin.mjs"
+  ]
+}

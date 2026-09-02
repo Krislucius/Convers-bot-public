@@ -72,6 +72,21 @@ Classification:
 
 Never report production FUNCTIONALITY READY from HTTP/chunk checks alone.
 
+## Runtime shell
+
+The protected runtime shell is listed in `docs/RUNTIME_SHELL.json` (root routing, SSR/client boundary, auth bootstrap, Vite/Nitro, production entry, deploy config).
+
+`npm run shell:gate` is the release gate:
+
+- production build
+- built-browser cold load, reload, interactive login
+- authenticated bootstrap terminates
+- no hydration / watchdog overlay
+- no client import of `.server` modules
+- functional (Council/evidence/history) patches that also touch shell files fail (`SHELL_SCOPE_VIOLATION`)
+
+Shell-gate and publish/deploy failures are **WORKFLOW BLOCKERS**. A deployed build whose browser UI is not interactive is a **FUNCTION BLOCKER**.
+
 ## Required SERVICE STATUS format
 
 Copy this shape. Do not merge the blocker lists. Do not omit a track because

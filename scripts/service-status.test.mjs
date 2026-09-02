@@ -30,5 +30,8 @@ describe("service status tracks", () => {
     assert.match(text, /\bBLOCKED\b/);
     assert.match(text, /\bFAILED\b/);
     assert.equal(text.includes("Never mix them"), true);
+    assert.match(text, /RUNTIME_SHELL/);
+    assert.match(text, /shell:gate/);
+    assert.match(text, /real browser smoke/);
   });
 });
