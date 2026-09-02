@@ -1,0 +1,49 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, it } from "node:test";
+import { patchNitroSsr, patchSsrBarrel, patchSsr2Circular } from "./patch-nitro-ssr.mjs";
+
+const BROKEN_SSR = `import { a as getRequest, c as server_exports, s as server_default } from "./ssr2.mjs";
+export { getServerFnById as a, __exportAll as c, createServerEntry, server_default as default, TSS_SERVER_FUNCTION as i, createMiddleware as n, getRequest as o, createServerFn as r, ssr_exports as s, server_exports as t };
+`;
+
+const BROKEN_SSR2 = `import { c as __exportAll$1 } from "./ssr.mjs";
+import { AsyncLocalStorage } from "node:async_hooks";
+var server_exports = /* @__PURE__ */ __exportAll$1({
+	getRequest: () => getRequest
+});
+export { server_exports as c };
+`;
+
+describe("patch-nitro-ssr", () => {
+  it("defines ssr_exports on the barrel so the module can load", () => {
+    const out = patchSsrBarrel(BROKEN_SSR);
+    assert.equal(out.changed, true);
+    assert.match(out.text, /const ssr_exports = \{/);
+    assert.match(out.text, /ssr_exports as s/);
+    assert.equal(patchSsrBarrel(out.text).changed, false);
+  });
+
+  it("breaks the ssr2 circular import of __exportAll", () => {
+    const out = patchSsr2Circular(BROKEN_SSR2);
+    assert.equal(out.changed, true);
+    assert.equal(out.text.includes('from "./ssr.mjs"'), false);
+    assert.match(out.text, /function __exportAll\$1\(/);
+    assert.equal(patchSsr2Circular(out.text).changed, false);
+  });
+
+  it("patches both files on disk", () => {
+    const dir = mkdtempSync(join(tmpdir(), "nitro-ssr-"));
+    writeFileSync(join(dir, "ssr.mjs"), BROKEN_SSR);
+    writeFileSync(join(dir, "ssr2.mjs"), BROKEN_SSR2);
+    const result = patchNitroSsr(dir);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.patched.sort(), ["ssr.mjs", "ssr2.mjs"]);
+    const ssr = readFileSync(join(dir, "ssr.mjs"), "utf8");
+    const ssr2 = readFileSync(join(dir, "ssr2.mjs"), "utf8");
+    assert.match(ssr, /const ssr_exports/);
+    assert.equal(ssr2.includes('from "./ssr.mjs"'), false);
+  });
+});
