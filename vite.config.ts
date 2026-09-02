@@ -182,9 +182,10 @@ export default defineConfig(({ command, isPreview }) => ({
             // false, so removing this silently unwires /?install=1 on deploys.
             serverDir: "./server",
             hooks: {
-              compiled(nitroInstance: { options: { output: { serverDir: string }; rootDir: string } }) {
-                const result = patchNitroCompiled(nitroInstance);
+              async compiled(nitroInstance: { options: { output: { serverDir: string }; rootDir: string } }) {
+                const result = await patchNitroCompiled(nitroInstance);
                 if (!result.ok) {
+                  console.error(`[patch-nitro-ssr] compiled failed: ${result.error}`);
                   throw new Error(`[patch-nitro-ssr] ${result.error}`);
                 }
                 console.log(

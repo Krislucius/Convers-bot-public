@@ -53,6 +53,16 @@ describe("patch-nitro-ssr", () => {
     assert.equal(ssr2.includes('from "./ssr.mjs"'), false);
   });
 
+  it("injects ssr_exports even when the export list differs", () => {
+    const src = `import { s as server_default, c as server_exports } from "./ssr2.mjs";
+export { server_default as default, ssr_exports as s, server_exports as t };
+`;
+    const out = patchSsrBarrel(src);
+    assert.equal(out.changed, true);
+    assert.match(out.text, /const ssr_exports = \{/);
+    assert.match(out.text, /ssr_exports as s/);
+  });
+
   it("finds _ssr under a Vercel __server.func directory", () => {
     const root = mkdtempSync(join(tmpdir(), "nitro-ssr-find-"));
     const ssrDir = join(root, "_ssr");
@@ -61,14 +71,14 @@ describe("patch-nitro-ssr", () => {
     assert.equal(findSsrDir(root), ssrDir);
   });
 
-  it("patches from the nitro compiled hook using output.serverDir", () => {
+  it("patches from the nitro compiled hook using output.serverDir", async () => {
     const root = mkdtempSync(join(tmpdir(), "nitro-ssr-compiled-"));
     const serverDir = join(root, "functions", "__server.func");
     const ssrDir = join(serverDir, "_ssr");
     mkdirSync(ssrDir, { recursive: true });
     writeFileSync(join(ssrDir, "ssr.mjs"), BROKEN_SSR);
     writeFileSync(join(ssrDir, "ssr2.mjs"), BROKEN_SSR2);
-    const result = patchNitroCompiled({
+    const result = await patchNitroCompiled({
       options: { output: { serverDir }, rootDir: root },
     });
     assert.equal(result.ok, true);

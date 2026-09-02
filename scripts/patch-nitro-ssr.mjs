@@ -74,28 +74,37 @@ export function findSsrDir(root) {
 export function patchSsrBarrel(source) {
   if (!source.includes("ssr_exports as s")) return { text: source, changed: false };
   if (/\bconst ssr_exports\s*=/.test(source)) return { text: source, changed: false };
-  const next = source.replace(
+  const exact = source.replace(
     /export \{ getServerFnById as a, __exportAll as c, createServerEntry, server_default as default, TSS_SERVER_FUNCTION as i, createMiddleware as n, getRequest as o, createServerFn as r, ssr_exports as s, server_exports as t \};/,
     `${SSR_EXPORTS_STUB}export { getServerFnById as a, __exportAll as c, createServerEntry, server_default as default, TSS_SERVER_FUNCTION as i, createMiddleware as n, getRequest as o, createServerFn as r, ssr_exports as s, server_exports as t };`,
   );
-  if (next === source) {
-    throw new Error("ssr.mjs exports ssr_exports but the expected export line was not found");
+  if (exact !== source) return { text: exact, changed: true };
+  const generic = source.replace(/export \{[^}]*ssr_exports as s[^}]*\};/, (block) => `${SSR_EXPORTS_STUB}${block}`);
+  if (generic !== source) return { text: generic, changed: true };
+  const injectAt = source.lastIndexOf("export {");
+  if (injectAt < 0) {
+    throw new Error("ssr.mjs exports ssr_exports but no export block was found");
   }
-  return { text: next, changed: true };
+  return { text: source.slice(0, injectAt) + SSR_EXPORTS_STUB + source.slice(injectAt), changed: true };
 }
 
 export function patchSsr2Circular(source) {
   if (!source.includes('from "./ssr.mjs"')) return { text: source, changed: false };
   if (!source.includes("__exportAll$1")) return { text: source, changed: false };
-  let next = source.replace(/import \{ c as __exportAll\$1 \} from "\.\/ssr\.mjs";\n/, "");
+  let next = source.replace(/import \{ c as __exportAll\$1 \} from "\.\/ssr\.mjs";\n?/, "");
+  if (next === source) {
+    next = source.replace(/import \{[^}]*__exportAll\$1[^}]*\} from "\.\/ssr\.mjs";\n?/, "");
+  }
   if (next === source) {
     throw new Error("ssr2.mjs imports __exportAll from ssr.mjs but the import line was not found");
   }
   if (!next.includes("function __exportAll$1(")) {
-    next = next.replace(
-      /import \{ AsyncLocalStorage \} from "node:async_hooks";\n/,
-      `import { AsyncLocalStorage } from "node:async_hooks";\n${EXPORT_ALL_HELPER}`,
-    );
+    const als = /import \{ AsyncLocalStorage \} from "node:async_hooks";\n/;
+    if (als.test(next)) {
+      next = next.replace(als, `import { AsyncLocalStorage } from "node:async_hooks";\n${EXPORT_ALL_HELPER}`);
+    } else {
+      next = EXPORT_ALL_HELPER + next;
+    }
     if (!next.includes("function __exportAll$1(")) {
       throw new Error("ssr2.mjs could not receive an inlined __exportAll helper");
     }
@@ -124,15 +133,20 @@ export function patchNitroSsr(ssrDir) {
   return { ok: true, dir, patched };
 }
 
-/** Nitro `compiled` hook: patch barrels in the Vercel function output. */
-export function patchNitroCompiled(nitro) {
+/** Nitro `compiled` hook: wait for barrels, then patch. Never throw after a successful write. */
+export async function patchNitroCompiled(nitro) {
   const serverDir = nitro?.options?.output?.serverDir;
   const rootDir = nitro?.options?.rootDir;
-  const dir = (serverDir && findSsrDir(serverDir)) || (rootDir && findSsrDir(rootDir));
-  if (!dir) {
-    return { ok: false, error: "no ssr.mjs in nitro output", patched: [] };
+  let last = { ok: false, error: "no ssr.mjs in nitro output", patched: [] };
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    const dir = (serverDir && findSsrDir(serverDir)) || (rootDir && findSsrDir(rootDir));
+    if (dir) {
+      last = patchNitroSsr(dir);
+      if (last.ok) return last;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  return patchNitroSsr(dir);
+  return last;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
