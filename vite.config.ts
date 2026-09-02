@@ -13,7 +13,7 @@ import { appEnvPlugin } from "./scripts/app-env-plugin.mjs";
 // @ts-expect-error JS plugin alongside the TS vite config
 import { sourceCommitPlugin } from "./scripts/source-commit.mjs";
 // @ts-expect-error JS plugin alongside the TS vite config
-import { patchNitroCompiled } from "./scripts/patch-nitro-ssr.mjs";
+import { patchNitroCompiled, patchNitroClose } from "./scripts/patch-nitro-ssr.mjs";
 import { isMigrationFile } from "./scripts/migration-plan.mjs";
 
 /** The files `src/lib/db.ts` globs — same directory, same non-recursive scope. */
@@ -193,6 +193,16 @@ export default defineConfig(({ command, isPreview }) => ({
                     ? `[patch-nitro-ssr] compiled patched ${result.patched.join(", ")} in ${result.dir}`
                     : `[patch-nitro-ssr] compiled already patched ${result.dir}`,
                 );
+              },
+              async close(nitroInstance: { options: { output: { serverDir: string }; rootDir: string } }) {
+                const result = await patchNitroClose(nitroInstance);
+                if (!result.ok) {
+                  console.error(`[patch-nitro-ssr] close failed: ${result.error}`);
+                  return;
+                }
+                if (result.patched.length) {
+                  console.log(`[patch-nitro-ssr] close patched ${result.patched.join(", ")} in ${result.dir}`);
+                }
               },
             },
           }),

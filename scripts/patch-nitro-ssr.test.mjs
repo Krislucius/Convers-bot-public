@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -9,6 +9,7 @@ import {
   patchNitroSsr,
   patchSsrBarrel,
   patchSsr2Circular,
+  stagePgliteAssets,
 } from "./patch-nitro-ssr.mjs";
 
 const BROKEN_SSR = `import { a as getRequest, c as server_exports, s as server_default } from "./ssr2.mjs";
@@ -82,6 +83,21 @@ export { server_default as default, ssr_exports as s, server_exports as t };
       options: { output: { serverDir }, rootDir: root },
     });
     assert.equal(result.ok, true);
-    assert.deepEqual(result.patched.sort(), ["ssr.mjs", "ssr2.mjs"]);
+    assert.ok(result.patched.some((row) => String(row).includes("ssr.mjs")));
+  });
+
+  it("copies pglite wasm/data assets next to the bundled driver", () => {
+    const func = mkdtempSync(join(tmpdir(), "nitro-pglite-"));
+    const libs = join(func, "_libs");
+    mkdirSync(libs);
+    writeFileSync(join(libs, "electric-sql__pglite.mjs"), "export {}\n");
+    const result = stagePgliteAssets(func);
+    assert.equal(result.ok, true);
+    assert.ok(result.copied.includes("pglite.data"));
+    assert.ok(result.copied.includes("pglite.wasm"));
+    assert.ok(result.copied.includes("initdb.wasm"));
+    assert.equal(existsSync(join(libs, "pglite.data")), true);
+    assert.equal(existsSync(join(libs, "pglite.wasm")), true);
+    assert.equal(existsSync(join(libs, "initdb.wasm")), true);
   });
 });

@@ -7,15 +7,20 @@
  * SSR route. Production 001 was built before this split. Do not touch
  * Council/Evidence code here.
  *
- * Runs from the nitro `compiled` hook (inside `vite build`) and again from
- * `npm run build` as a second pass. Both are idempotent.
+ * Also copies PGLite wasm/data next to the bundled driver so a missing
+ * DATABASE_URL cannot crash the isolate with ENOENT pglite.data.
+ *
+ * Runs from the nitro `compiled` and `close` hooks (inside `vite build`)
+ * and again from `npm run build`. All passes are idempotent.
  */
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_SSR_DIR = join(here, "..", ".vercel", "output", "functions", "__server.func", "_ssr");
+export const DEFAULT_FUNC_DIR = join(here, "..", ".vercel", "output", "functions", "__server.func");
+const PGLITE_DIST = join(here, "..", "node_modules", "@electric-sql", "pglite", "dist");
 
 const SSR_EXPORTS_STUB = `const ssr_exports = {
 	get default() {
@@ -39,22 +44,21 @@ function __exportAll$1(all, no_symbols) {
 }
 `;
 
-function walkForSsr(dir, depth) {
-  if (depth < 0 || !existsSync(dir)) return undefined;
-  if (existsSync(join(dir, "ssr.mjs"))) return dir;
+function walkForSsr(dir, depth, found) {
+  if (depth < 0 || !existsSync(dir)) return found;
+  if (existsSync(join(dir, "ssr.mjs"))) found.push(dir);
   let entries;
   try {
     entries = readdirSync(dir, { withFileTypes: true });
   } catch {
-    return undefined;
+    return found;
   }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     if (entry.name === "node_modules") continue;
-    const found = walkForSsr(join(dir, entry.name), depth - 1);
-    if (found) return found;
+    walkForSsr(join(dir, entry.name), depth - 1, found);
   }
-  return undefined;
+  return found;
 }
 
 export function findSsrDir(root) {
@@ -68,7 +72,21 @@ export function findSsrDir(root) {
   ];
   const hit = candidates.find((dir) => existsSync(join(dir, "ssr.mjs")));
   if (hit) return hit;
-  return walkForSsr(root, 5);
+  return walkForSsr(root, 5, [])[0];
+}
+
+export function findAllSsrDirs(root) {
+  if (!root) return [];
+  const seen = new Set();
+  const out = [];
+  const add = (dir) => {
+    if (!dir || seen.has(dir) || !existsSync(join(dir, "ssr.mjs"))) return;
+    seen.add(dir);
+    out.push(dir);
+  };
+  add(findSsrDir(root));
+  for (const dir of walkForSsr(root, 6, [])) add(dir);
+  return out;
 }
 
 export function patchSsrBarrel(source) {
@@ -133,37 +151,87 @@ export function patchNitroSsr(ssrDir) {
   return { ok: true, dir, patched };
 }
 
-/** Nitro `compiled` hook: wait for barrels, then patch. Never throw after a successful write. */
+export function stagePgliteAssets(funcDir) {
+  const dir = funcDir ?? DEFAULT_FUNC_DIR;
+  const libs = join(dir, "_libs");
+  const copied = [];
+  if (!existsSync(join(libs, "electric-sql__pglite.mjs"))) return { ok: true, dir, copied };
+  // The bundled driver resolves these via `new URL("./<name>", import.meta.url)`.
+  // Missing initdb.wasm still kills the isolate with uncaught ENOENT after
+  // pglite.data/pglite.wasm are present.
+  for (const name of ["pglite.data", "pglite.wasm", "initdb.wasm"]) {
+    const src = join(PGLITE_DIST, name);
+    const dest = join(libs, name);
+    if (!existsSync(src)) continue;
+    if (existsSync(dest)) continue;
+    copyFileSync(src, dest);
+    copied.push(name);
+  }
+  return { ok: true, dir, copied };
+}
+
+function funcDirFromSsr(ssrDir) {
+  if (!ssrDir) return undefined;
+  if (ssrDir.endsWith("_ssr")) return dirname(ssrDir);
+  return ssrDir;
+}
+
+/** Nitro `compiled`/`close` hook: wait for barrels, patch every copy, stage PGLite assets. */
 export async function patchNitroCompiled(nitro) {
   const serverDir = nitro?.options?.output?.serverDir;
-  const rootDir = nitro?.options?.rootDir;
+  const rootDir = nitro?.options?.rootDir ?? join(here, "..");
   let last = { ok: false, error: "no ssr.mjs in nitro output", patched: [] };
   for (let attempt = 0; attempt < 25; attempt += 1) {
-    const dir = (serverDir && findSsrDir(serverDir)) || (rootDir && findSsrDir(rootDir));
-    if (dir) {
-      last = patchNitroSsr(dir);
-      if (last.ok) return last;
+    const dirs = [
+      ...findAllSsrDirs(serverDir),
+      ...findAllSsrDirs(rootDir),
+      ...findAllSsrDirs(join(here, "..")),
+    ];
+    const unique = [...new Set(dirs)];
+    if (unique.length) {
+      const patched = [];
+      for (const dir of unique) {
+        last = patchNitroSsr(dir);
+        if (last.ok) patched.push(...(last.patched ?? []).map((name) => `${dir}/${name}`));
+        const staged = stagePgliteAssets(funcDirFromSsr(dir));
+        if (staged.copied.length) patched.push(...staged.copied);
+      }
+      if (last.ok) {
+        last = { ...last, patched, dirs: unique };
+        return last;
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   return last;
 }
 
+export const patchNitroClose = patchNitroCompiled;
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const root = join(here, "..");
-  const dir = findSsrDir(root);
-  if (!dir) {
+  const dirs = findAllSsrDirs(root);
+  if (!dirs.length) {
     console.error("[patch-nitro-ssr] no ssr.mjs under .vercel/output — run npm run build first");
     process.exit(1);
   }
-  const result = patchNitroSsr(dir);
-  if (!result.ok) {
-    console.error(`[patch-nitro-ssr] ${result.error}`);
-    process.exit(1);
+  let failed = false;
+  for (const dir of dirs) {
+    const result = patchNitroSsr(dir);
+    if (!result.ok) {
+      console.error(`[patch-nitro-ssr] ${result.error}`);
+      failed = true;
+      continue;
+    }
+    const staged = stagePgliteAssets(funcDirFromSsr(dir));
+    console.log(
+      result.patched.length
+        ? `[patch-nitro-ssr] patched ${result.patched.join(", ")} in ${dir}`
+        : `[patch-nitro-ssr] already patched ${dir}`,
+    );
+    if (staged.copied.length) {
+      console.log(`[patch-nitro-ssr] staged ${staged.copied.join(", ")} in ${staged.dir}`);
+    }
   }
-  console.log(
-    result.patched.length
-      ? `[patch-nitro-ssr] patched ${result.patched.join(", ")} in ${dir}`
-      : `[patch-nitro-ssr] already patched ${dir}`,
-  );
+  if (failed) process.exit(1);
 }

@@ -235,6 +235,7 @@ if (typeof window === "undefined" && dbSource === "pglite") {
   globalBoot.__pgBootstrapPromise__ ??= ensureDbReady().catch((err) => {
     globalBoot.__pgBootstrapPromise__ = undefined;
     console.error("[db] PGLite bootstrap failed:", err);
-    throw err;
+    // Never rethrow: an uncaught rejection here kills the Vercel isolate and
+    // every route becomes HTTP 500 `{error:true,unhandled:true}`. getSql() retries.
   });
 }
