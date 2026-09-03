@@ -69,7 +69,7 @@ test("safeNextPath keeps login error query", () => {
   assert.equal(safeNextPath("https://app.example/auth/popup?done=1", true), "/auth/popup?done=1");
 });
 
-test("oauth-start 302 stays a 302 and keeps state cookies", async () => {
+test("oauth-start external 302 becomes same-origin leave HTML", async () => {
   const request = new Request("http://127.0.0.1:8080/api/oauth-start/grok-google");
   const response = new Response(null, {
     status: 302,
@@ -79,10 +79,17 @@ test("oauth-start 302 stays a 302 and keeps state cookies", async () => {
     ],
   });
   const out = await finalizeAuthResponse(request, response, Date.now());
-  assert.equal(out.status, 302);
-  assert.equal(out.headers.get("location"), "https://auth.grok.me/api/auth/oauth2/authorize?idp=google");
+  assert.equal(out.status, 200);
+  assert.match(out.headers.get("content-type") ?? "", /text\/html/);
+  assert.equal(out.headers.get("location"), null);
+  assert.match(out.headers.get("content-security-policy") ?? "", /frame-ancestors/);
   const cookies = out.headers.getSetCookie();
   assert.ok(cookies.some((cookie) => cookie.startsWith("better-auth.state=")));
+  const html = await out.text();
+  assert.match(html, /data-cb-oauth-leave/);
+  assert.match(html, /target="_blank"/);
+  assert.match(html, /auth\.grok\.me/);
+  assert.doesNotMatch(html, /http-equiv="refresh"/i);
 });
 
 test("oauth-start error 302 stays on login", async () => {

@@ -1,3 +1,5 @@
+import { oauthLeaveResponse } from "./auth-loop.ts";
+
 export const AUTH_DEBUG_COOKIE = "grok-auth.debug";
 const BEARER_KEY = "grok-auth.bearer-token";
 
@@ -324,12 +326,18 @@ function authBounceHtml(
     }
     var handed = false;
     try {
+      var msg = { source: "grok-auth-popup", token: data.token || null, error: data.mode === "next" ? "signin-failed" : undefined };
+      try {
+        var ch = new BroadcastChannel("grok-auth-popup");
+        ch.postMessage(msg);
+        ch.close();
+      } catch (e) {}
       if (window.opener && !window.opener.closed) {
-        window.opener.postMessage(
-          { source: "grok-auth-popup", token: data.token || null, error: data.mode === "next" ? "signin-failed" : undefined },
-          window.location.origin
-        );
+        window.opener.postMessage(msg, window.location.origin);
         handed = true;
+      }
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage(msg, window.location.origin);
       }
     } catch (e) {}
     if (handed) {
@@ -420,6 +428,10 @@ export async function finalizeAuthResponse(
 
   if (bounce === "confirm") {
     return authBounceHtml(headers, hop, "confirm", "/", sessionToken);
+  }
+
+  if (bounce === "leave" && leaveUrl && leaveExternal) {
+    return oauthLeaveResponse(leaveUrl, headers);
   }
 
   return new Response(response.body, {

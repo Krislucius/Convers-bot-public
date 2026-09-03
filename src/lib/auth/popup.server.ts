@@ -5,17 +5,19 @@
  * in a top-level popup (first-party cookies). This handler is the ENTIRE popup
  * document — no React shell:
  *
- *   Phase 1 (`?providerId=…`): start OAuth server-side and 302 straight to the
- *     broker / upstream login page. The popup never paints the app.
+ *   Phase 1 (`?providerId=…`): start OAuth server-side and return same-origin
+ *     leave HTML (never 302 this document to Google — Grok preview frames
+ *     `window.open`, and Google's X-Frame-Options then blocks the overlay).
  *   Phase 2 (`?done=1`): after the broker round-trip, emit a tiny HTML page that
- *     posts the session token to the opener and closes. No SPA hydrate, no
- *     server-fn round-trip.
+ *     posts the session token to the opener / BroadcastChannel and closes.
  *
  * Wired automatically by the Vite `authPopupPlugin` in `vite.config.ts` during
  * `npm run dev` (live preview). Do NOT create `src/routes/auth/popup.tsx` — a
  * React route here paints the full app shell in the popup. The opener lives in
  * `client.ts` (`signIn` → `openSignInPopup`).
  */
+import { authPopupHandoffInlineScript, oauthLeaveResponse } from "../auth-loop";
+import { safeLeaveUrl } from "../auth-response";
 import { auth, SESSION_TOKEN_COOKIE } from "./server";
 
 /** Message shape the popup posts to the opener (must match `client.ts`). */
@@ -95,13 +97,21 @@ export async function handleAuthPopupRequest(request: Request): Promise<Response
       });
     }
 
-    // 302 to the broker (which headlessly forwards to Google/X). Forward any
-    // Set-Cookie (OAuth state / PKCE) so the callback can complete in this popup.
-    const headers = new Headers({ location, "cache-control": "no-store" });
+    // Never 302 this document to Google/X. Overlay iframes would follow that
+    // redirect and hit X-Frame-Options. Leave HTML jumps only when top-level.
+    const leave = safeLeaveUrl(location, request.url);
+    if (!leave) {
+      return completionResponse({
+        source: "grok-auth-popup",
+        token: null,
+        error: "oauth_init_bad_url",
+      });
+    }
+    const headers = new Headers({ "cache-control": "no-store" });
     for (const cookie of apiRes.headers.getSetCookie()) {
       headers.append("set-cookie", cookie);
     }
-    return new Response(null, { status: 302, headers });
+    return oauthLeaveResponse(leave, headers);
   } catch (err) {
     const message = err instanceof Error ? err.message : "oauth_init_threw";
     return completionResponse({
@@ -143,15 +153,7 @@ function completionHtml(message: PopupMessage): string {
 <main><p>Signing you in…</p></main>
 <script type="application/json" id="grok-auth-popup-msg">${payload}</script>
 <script>
-(function () {
-  var el = document.getElementById("grok-auth-popup-msg");
-  var msg = { source: "grok-auth-popup", token: null };
-  try { if (el && el.textContent) msg = JSON.parse(el.textContent); } catch (e) {}
-  try {
-    if (window.opener) window.opener.postMessage(msg, window.location.origin);
-  } catch (e) {}
-  try { window.close(); } catch (e) {}
-})();
+${authPopupHandoffInlineScript()}
 </script>
 </body>
 </html>`;
