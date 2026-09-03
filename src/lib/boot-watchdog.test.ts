@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  ASSET_RELOAD_KEY,
   BOOT_READY_FLAG,
   BOOT_READY_SCRIPT,
   BOOT_STUCK_MS,
@@ -9,6 +10,8 @@ import {
   LOGIN_LOG_FLAG,
   REACT_MOUNTED_FLAG,
   SKIP_HYDRATE_KEY,
+  loginSessionPresent,
+  scriptErrorAction,
 } from "./boot-watchdog.ts";
 
 describe("boot watchdog", () => {
@@ -51,5 +54,17 @@ describe("boot watchdog", () => {
     assert.match(BOOT_WATCHDOG_INLINE, /console\.error/);
     assert.match(BOOT_WATCHDOG_INLINE, /react: /);
     assert.match(BOOT_WATCHDOG_INLINE, /\/api\/auth\//);
+  });
+
+  it("auto-reloads once on a hashed /assets/ script error and treats bake as session", () => {
+    assert.match(BOOT_WATCHDOG_INLINE, new RegExp(ASSET_RELOAD_KEY));
+    assert.match(BOOT_WATCHDOG_INLINE, /script-reload/);
+    assert.match(BOOT_WATCHDOG_INLINE, /session: /);
+    assert.equal(scriptErrorAction("https://host/assets/index-4SOrF60E.js", false), "reload");
+    assert.equal(scriptErrorAction("https://host/assets/index-4SOrF60E.js", true), "show");
+    assert.equal(scriptErrorAction("https://host/login", false), "note");
+    assert.equal(loginSessionPresent(true, false), true);
+    assert.equal(loginSessionPresent(false, true), true);
+    assert.equal(loginSessionPresent(false, false), false);
   });
 });

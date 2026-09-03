@@ -9,6 +9,8 @@ import {
   clientExceptionOutcome,
   resolveRootSessionUser,
   shouldMarkClientReady,
+  getBakedSessionServerSnapshot,
+  peekSessionUser,
 } from "./session-bootstrap.ts";
 
 function hang(): Promise<never> {
@@ -166,5 +168,21 @@ describe("auth bootstrap terminates", () => {
     for (const shell of ["guest", "app", "boot", "error"] as const) {
       assert.equal(shouldMarkClientReady(shell), true);
     }
+  });
+});
+
+describe("hydration-safe baked session", () => {
+  it("server snapshot is always null so guest SSR cannot mismatch a bake", () => {
+    assert.equal(getBakedSessionServerSnapshot(), null);
+  });
+
+  it("prefers the SSR prop over bake and never reads bake on the server snapshot", () => {
+    const ssr = { id: "ssr", email: "a@b.c" };
+    const baked = { id: "bake", email: null };
+    assert.equal(peekSessionUser(ssr, baked), ssr);
+    assert.equal(peekSessionUser(null, null), null);
+    assert.equal(peekSessionUser(null, baked), baked);
+    const firstPaint = peekSessionUser(null, getBakedSessionServerSnapshot());
+    assert.equal(firstPaint, null);
   });
 });

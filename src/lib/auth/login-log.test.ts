@@ -24,4 +24,11 @@ describe("login log", () => {
     assert.match(text, /bearer: [01]/);
     assert.match(text, /label: Loading your projects/);
   });
+
+  it("treats a baked SSR user as a session even when the cookie is HttpOnly", () => {
+    const text = formatLoginLog({ stage: "boot-stuck", baked: 1, session: 1, cookie: 0 });
+    assert.match(text, /session: 1/);
+    assert.match(text, /baked: 1/);
+    assert.match(text, /cookie: 0/);
+  });
 });

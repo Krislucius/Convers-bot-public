@@ -187,24 +187,88 @@ const VC_CONFIG = {
   supportsResponseStreaming: true,
 };
 
-const VERCEL_ROUTES = {
+/**
+ * Grok preview iframes grok.me from grok.com. frame-ancestors overrides
+ * X-Frame-Options in Chrome. CORP cross-origin lets the parent fetch the
+ * HTML document. Missing hashed assets MUST 404 instead of falling through
+ * to SSR (HTML as a module script → react:0 / script: index-….js, and the
+ * continue:true immutable cache-control would cache that HTML for a year).
+ */
+export const FRAME_ANCESTORS =
+  "frame-ancestors 'self' https://grok.com https://*.grok.com https://*.grok.me";
+
+export const VERCEL_ROUTES = {
   version: 3,
   routes: [
+    {
+      src: "/(.*)",
+      headers: {
+        "content-security-policy": FRAME_ANCESTORS,
+        "cross-origin-resource-policy": "cross-origin",
+      },
+      continue: true,
+    },
     {
       src: "/assets/(.*)",
       headers: { "cache-control": "public,max-age=31536000,immutable" },
       continue: true,
     },
     { handle: "filesystem" },
+    {
+      src: "/assets/(.*)",
+      status: 404,
+      headers: { "cache-control": "no-store", "content-type": "text/plain; charset=utf-8" },
+    },
     { src: "/(.*)", dest: "/__server" },
   ],
 };
+
+function srcMatches(src, path) {
+  try {
+    return new RegExp(`^${src}$`).test(path);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Walk Vercel Build Output routes the way the edge does: continue:true merges
+ * headers and keeps going; filesystem serves a hit; later matches dest/status.
+ */
+export function resolveVercelRoute(path, { hasFile = false } = {}, routes = VERCEL_ROUTES.routes) {
+  const headers = {};
+  for (const row of routes) {
+    if (row.handle === "filesystem") {
+      if (hasFile) return { kind: "filesystem", status: 200, dest: "filesystem", headers: { ...headers } };
+      continue;
+    }
+    if (!row.src || !srcMatches(row.src, path)) continue;
+    if (row.headers) Object.assign(headers, row.headers);
+    if (row.continue) continue;
+    if (row.status) {
+      return { kind: "status", status: row.status, dest: row.dest ?? null, headers: { ...headers } };
+    }
+    if (row.dest) {
+      return { kind: "dest", status: 200, dest: row.dest, headers: { ...headers } };
+    }
+  }
+  return { kind: "none", status: 404, dest: null, headers: { ...headers } };
+}
+
+export function vercelConfigMatches(parsed) {
+  if (!parsed || parsed.version !== 3 || !Array.isArray(parsed.routes)) return false;
+  return JSON.stringify(parsed.routes) === JSON.stringify(VERCEL_ROUTES.routes);
+}
 
 /**
  * The nitro({ hooks.compiled }) in vite.config replaces the vercel preset's
  * compiled hook, so generateFunctionFiles never writes config.json /
  * .vc-config.json. Without them a prebuilt deploy cannot replace the live
  * function and production stays on the broken 003 isolate.
+ *
+ * Always rewrite config.json when routes drift — Nitro may write a stale
+ * catch-all-only table first, and a skip-if-exists left 016 serving HTML for
+ * missing /assets/*.
  */
 export function writeVercelOutputConfig(outputDir) {
   const dir = outputDir ?? DEFAULT_OUTPUT_DIR;
@@ -219,12 +283,21 @@ export function writeVercelOutputConfig(outputDir) {
     written.push(".vc-config.json");
   }
   const configPath = join(dir, "config.json");
-  if (!existsSync(configPath)) {
+  let needConfig = true;
+  if (existsSync(configPath)) {
+    try {
+      needConfig = !vercelConfigMatches(JSON.parse(readFileSync(configPath, "utf8")));
+    } catch {
+      needConfig = true;
+    }
+  }
+  if (needConfig) {
     writeFileSync(configPath, `${JSON.stringify(VERCEL_ROUTES, null, 2)}\n`);
     written.push("config.json");
   }
   return { ok: true, dir, written };
 }
+
 
 function funcDirFromSsr(ssrDir) {
   if (!ssrDir) return undefined;

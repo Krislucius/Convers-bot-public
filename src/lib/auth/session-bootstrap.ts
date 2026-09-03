@@ -25,6 +25,27 @@ export function bakeSessionUserScript(user: SessionUser): string {
   return `window.${BAKED_SESSION_FLAG}=${payload};`;
 }
 
+/**
+ * Hydration-safe bake read. Server/first-paint snapshot is always null so a
+ * guest SSR document cannot mismatch a client that sees __CB_SSR_SESSION.
+ * After hydrate, getBakedSessionSnapshot returns the bake.
+ */
+export function subscribeBakedSession(_onStoreChange: () => void): () => void {
+  return () => {};
+}
+
+export function getBakedSessionSnapshot(): SessionUser {
+  return readBakedSessionUser();
+}
+
+export function getBakedSessionServerSnapshot(): SessionUser {
+  return null;
+}
+
+export function peekSessionUser(sessionUser: SessionUser, baked: SessionUser): SessionUser {
+  return sessionUser ?? baked;
+}
+
 export type AuthBootstrapStatus = "RESOLVING" | "READY" | "ERROR";
 
 export type ClientShell = "guest" | "app" | "boot" | "error" | "none";

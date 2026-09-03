@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 import { UserButton } from "@/lib/auth/gates";
 import { useCurrentUserState, type AppUser } from "@/lib/auth/use-current-user";
 import { authTrace, formatLoginLog } from "@/lib/auth-trace";
@@ -23,7 +23,12 @@ import {
 } from "@/lib/boot-watchdog";
 import { LoginForm } from "@/components/login-form";
 import { SystemRevisionLine } from "@/components/system-info";
-import { readBakedSessionUser } from "@/lib/auth/session-bootstrap";
+import {
+  getBakedSessionServerSnapshot,
+  getBakedSessionSnapshot,
+  peekSessionUser,
+  subscribeBakedSession,
+} from "@/lib/auth/session-bootstrap";
 
 export type SsrSessionUser = { id: string; email: string | null } | null;
 export { markAuthReturning, clearAuthReturning, isAuthReturning } from "@/lib/auth-loop";
@@ -42,11 +47,14 @@ const EMPTY_SNAPSHOT = {
   packets: [],
 };
 
-/** First paint must match SSR: never read window in useState. */
-function peekSession(sessionUser: SsrSessionUser): SsrSessionUser {
-  if (sessionUser) return sessionUser;
-  if (typeof window === "undefined") return null;
-  return readBakedSessionUser();
+/** First paint must match SSR: bake is only read after hydrate via useSyncExternalStore. */
+function usePeekSession(sessionUser: SsrSessionUser): SsrSessionUser {
+  const baked = useSyncExternalStore(
+    subscribeBakedSession,
+    getBakedSessionSnapshot,
+    getBakedSessionServerSnapshot,
+  );
+  return peekSessionUser(sessionUser, baked);
 }
 
 const BOOT_STYLE: CSSProperties = {
@@ -173,7 +181,7 @@ export function SignedInApp({
   children: ReactNode;
 }) {
   const { user, isPending } = useCurrentUserState();
-  const ssrUser = peekSession(sessionUser);
+  const ssrUser = usePeekSession(sessionUser);
   const authed = user ?? fromSsr(ssrUser);
   const [clientWait, setClientWait] = useState(false);
   const returning = isAuthReturning();

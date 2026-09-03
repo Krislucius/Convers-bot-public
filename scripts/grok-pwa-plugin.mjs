@@ -33,12 +33,23 @@ export function renderInstallPage(hostHeader, url = "/") {
   return renderInstallPageHtml(template, { host: hostHeader, url });
 }
 
+const FRAME_ANCESTORS =
+  "frame-ancestors 'self' https://grok.com https://*.grok.com https://*.grok.me";
+
+function applyFrameHeaders(res) {
+  if (res.headersSent) return;
+  res.setHeader("content-security-policy", FRAME_ANCESTORS);
+  res.setHeader("cross-origin-resource-policy", "cross-origin");
+  res.removeHeader("x-frame-options");
+}
+
 function sendHtml(res, html) {
   const body = Buffer.from(html, "utf8");
   res.statusCode = 200;
   res.setHeader("content-type", "text/html; charset=utf-8");
   res.setHeader("cache-control", "no-cache");
   res.setHeader("content-length", String(body.byteLength));
+  applyFrameHeaders(res);
   res.end(body);
 }
 
@@ -98,6 +109,8 @@ function wrapHtmlResponses(middlewares, cwd) {
       next();
       return;
     }
+
+    applyFrameHeaders(res);
 
     const originalWrite = res.write.bind(res);
     const originalEnd = res.end.bind(res);
