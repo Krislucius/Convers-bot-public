@@ -220,6 +220,9 @@ try {
     if (snap.bootFail || /did not finish loading/i.test(snap.body) || /did not finish loading/i.test(snap.watchdogText)) {
       fail("authed-hydrate-hang: blank watchdog overlay", { snap, errors });
     }
+    if (/Maximum update depth|#185/i.test(snap.body)) {
+      fail("authed-hydrate-hang: render loop #185", { snap, errors });
+    }
     if (snap.boot && !snap.error && !snap.app) {
       fail("authed-hydrate-hang: still Loading your projects", { snap, errors });
     }

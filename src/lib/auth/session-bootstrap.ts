@@ -29,13 +29,28 @@ export function bakeSessionUserScript(user: SessionUser): string {
  * Hydration-safe bake read. Server/first-paint snapshot is always null so a
  * guest SSR document cannot mismatch a client that sees __CB_SSR_SESSION.
  * After hydrate, getBakedSessionSnapshot returns the bake.
+ * getSnapshot is referentially stable when the bake is unchanged — a new
+ * `{ id, email }` object every call is React #185 (maximum update depth).
  */
 export function subscribeBakedSession(_onStoreChange: () => void): () => void {
   return () => {};
 }
 
+let bakedSnapshotCache: SessionUser = null;
+let bakedSnapshotKey = "";
+
+export function resetBakedSessionSnapshotCache(): void {
+  bakedSnapshotCache = null;
+  bakedSnapshotKey = "";
+}
+
 export function getBakedSessionSnapshot(): SessionUser {
-  return readBakedSessionUser();
+  const user = readBakedSessionUser();
+  const key = user ? `${user.id}\0${user.email ?? ""}` : "";
+  if (key === bakedSnapshotKey) return bakedSnapshotCache;
+  bakedSnapshotKey = key;
+  bakedSnapshotCache = user;
+  return bakedSnapshotCache;
 }
 
 export function getBakedSessionServerSnapshot(): SessionUser {

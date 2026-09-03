@@ -7,6 +7,7 @@ export function AppErrorComponent({ error }: ErrorComponentProps) {
   useLayoutEffect(() => {
     markClientReady();
   }, []);
+  const message = error.message || "An unexpected error occurred. Try reloading the page.";
   return (
     <main
       data-cb-shell="error"
@@ -17,9 +18,31 @@ export function AppErrorComponent({ error }: ErrorComponentProps) {
         <TriangleAlert className="size-10" strokeWidth={2} />
       </span>
       <h1 className="font-display text-lg font-semibold">Something went wrong</h1>
-      <p className="max-w-md text-sm break-words text-muted">
-        {error.message || "An unexpected error occurred. Try reloading the page."}
-      </p>
+      <p className="max-w-md text-sm break-words text-muted">{message}</p>
+      <button
+        type="button"
+        className="min-h-11 rounded-sm px-4 font-semibold"
+        style={{ background: "#d7d4cc", color: "#0c0c0d" }}
+        onClick={() => {
+          location.reload();
+        }}
+      >
+        Reload
+      </button>
+      <button
+        type="button"
+        className="min-h-11 rounded-sm border border-line px-4 font-semibold"
+        onClick={() => {
+          const go = () => {
+            location.href = "/login?stay=1";
+          };
+          void fetch("/api/auth/sign-out", { method: "POST", credentials: "include" })
+            .catch(() => undefined)
+            .then(go);
+        }}
+      >
+        Sign out
+      </button>
     </main>
   );
 }

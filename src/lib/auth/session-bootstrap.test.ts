@@ -10,7 +10,9 @@ import {
   resolveRootSessionUser,
   shouldMarkClientReady,
   getBakedSessionServerSnapshot,
+  getBakedSessionSnapshot,
   peekSessionUser,
+  resetBakedSessionSnapshotCache,
 } from "./session-bootstrap.ts";
 
 function hang(): Promise<never> {
@@ -184,5 +186,38 @@ describe("hydration-safe baked session", () => {
     assert.equal(peekSessionUser(null, baked), baked);
     const firstPaint = peekSessionUser(null, getBakedSessionServerSnapshot());
     assert.equal(firstPaint, null);
+  });
+
+  it("getSnapshot is referentially stable so a signed-in bake cannot #185", () => {
+    resetBakedSessionSnapshotCache();
+    const hadWindow = Object.prototype.hasOwnProperty.call(globalThis, "window");
+    const prev = (globalThis as { window?: unknown }).window;
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      writable: true,
+      value: { __CB_SSR_SESSION: { id: "u1", email: "a@b.c" } },
+    });
+    try {
+      const a = getBakedSessionSnapshot();
+      assert.equal(a?.id, "u1");
+      for (let i = 0; i < 80; i += 1) {
+        assert.equal(getBakedSessionSnapshot(), a);
+      }
+      (globalThis as unknown as { window: { __CB_SSR_SESSION: unknown } }).window.__CB_SSR_SESSION = {
+        id: "u2",
+        email: null,
+      };
+      const next = getBakedSessionSnapshot();
+      assert.equal(next?.id, "u2");
+      assert.notEqual(next, a);
+      assert.equal(getBakedSessionSnapshot(), next);
+    } finally {
+      if (hadWindow) {
+        (globalThis as { window?: unknown }).window = prev;
+      } else {
+        Reflect.deleteProperty(globalThis, "window");
+      }
+      resetBakedSessionSnapshotCache();
+    }
   });
 });
