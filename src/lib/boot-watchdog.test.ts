@@ -7,6 +7,7 @@ import {
   BOOT_WATCHDOG_INLINE,
   BOOT_WATCHDOG_MS,
   LOGIN_LOG_FLAG,
+  REACT_MOUNTED_FLAG,
   SKIP_HYDRATE_KEY,
 } from "./boot-watchdog.ts";
 
@@ -41,5 +42,14 @@ describe("boot watchdog", () => {
     assert.match(BOOT_WATCHDOG_INLINE, new RegExp(SKIP_HYDRATE_KEY));
     assert.match(BOOT_WATCHDOG_INLINE, /\/api\/auth\/sign-out/);
     assert.equal(BOOT_WATCHDOG_INLINE.includes("justify-center"), false);
+  });
+
+  it("records React mount vs parse-time ready and captures minified hydration errors", () => {
+    assert.match(BOOT_WATCHDOG_INLINE, new RegExp(REACT_MOUNTED_FLAG));
+    assert.match(BOOT_WATCHDOG_INLINE, /Minified React error/);
+    assert.match(BOOT_WATCHDOG_INLINE, /#418/);
+    assert.match(BOOT_WATCHDOG_INLINE, /console\.error/);
+    assert.match(BOOT_WATCHDOG_INLINE, /react: /);
+    assert.match(BOOT_WATCHDOG_INLINE, /\/api\/auth\//);
   });
 });

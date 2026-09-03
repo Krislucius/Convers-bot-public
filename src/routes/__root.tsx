@@ -89,7 +89,7 @@ export const Route = createRootRoute({
         <AuthProvider>
           <RootBody />
         </AuthProvider>
-        <script dangerouslySetInnerHTML={{ __html: BOOT_WATCHDOG_INLINE }} />
+        <script suppressHydrationWarning dangerouslySetInnerHTML={{ __html: BOOT_WATCHDOG_INLINE }} />
         <Scripts />
       </body>
     </html>

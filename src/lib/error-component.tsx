@@ -12,7 +12,7 @@ export function AppErrorComponent({ error }: ErrorComponentProps) {
       data-cb-shell="error"
       className="flex min-h-screen flex-col items-center justify-center gap-3 bg-bg px-6 text-center text-fg"
     >
-      <script dangerouslySetInnerHTML={{ __html: BOOT_READY_SCRIPT }} />
+      <script suppressHydrationWarning dangerouslySetInnerHTML={{ __html: BOOT_READY_SCRIPT }} />
       <span className="text-danger" aria-hidden="true">
         <TriangleAlert className="size-10" strokeWidth={2} />
       </span>
@@ -34,7 +34,7 @@ export function DefaultPendingComponent() {
       className="flex min-h-dvh flex-col items-center justify-center"
       style={{ background: "#0c0c0d", color: "#9a9a94" }}
     >
-      <script dangerouslySetInnerHTML={{ __html: BOOT_READY_SCRIPT }} />
+      <script suppressHydrationWarning dangerouslySetInnerHTML={{ __html: BOOT_READY_SCRIPT }} />
       <p className="text-sm">Loading…</p>
     </div>
   );

@@ -7,6 +7,7 @@ import { loadHydratePayload, withTimeout, HYDRATE_TIMEOUT_MS } from "@/lib/counc
 import { useSession } from "@/lib/council/session";
 import { bindAccountStore, hydrateStore, readLegacyLocalStore } from "@/lib/council/store";
 import { signOut } from "@/lib/auth/client";
+import { systemIdentity } from "@/lib/architecture/identity";
 import {
   accountShellKind,
   clearAuthReturning,
@@ -55,14 +56,23 @@ const BOOT_STYLE: CSSProperties = {
 };
 
 function ShellReadyScript() {
-  return <script dangerouslySetInnerHTML={{ __html: BOOT_READY_SCRIPT }} />;
+  return <script suppressHydrationWarning dangerouslySetInnerHTML={{ __html: BOOT_READY_SCRIPT }} />;
+}
+
+function loginLogSeed(stage: string, extra?: Record<string, unknown>): string {
+  const id = systemIdentity();
+  const lines = [`stage: ${stage}`, `build: ${id.buildId}`];
+  if (extra?.label) lines.push(`label: ${String(extra.label)}`);
+  if (extra?.ssrUser != null) lines.push(`ssrUser: ${extra.ssrUser ? "1" : "0"}`);
+  if (extra?.message) lines.push(`message: ${String(extra.message).slice(0, 180)}`);
+  return lines.join("\n");
 }
 
 function LoginLog({ stage, extra }: { stage: string; extra?: Record<string, unknown> }) {
   const extraKey = JSON.stringify(extra ?? {});
-  const [text, setText] = useState("stage: " + stage);
+  const [text, setText] = useState(() => loginLogSeed(stage, extra));
   useEffect(() => {
-    setText(formatLoginLog({ stage, ...(extra ?? {}) }));
+    setText(formatLoginLog({ stage, build: systemIdentity().buildId, ...(extra ?? {}) }));
     // extraKey is the stable snapshot of extra
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stage, extraKey]);
@@ -89,7 +99,13 @@ function LoginLog({ stage, extra }: { stage: string; extra?: Record<string, unkn
   );
 }
 
-export function BootScreen({ label }: { label: string }) {
+export function BootScreen({
+  label,
+  extra,
+}: {
+  label: string;
+  extra?: Record<string, unknown>;
+}) {
   useLayoutEffect(() => {
     markClientReady();
     authTrace("boot", { label });
@@ -104,7 +120,7 @@ export function BootScreen({ label }: { label: string }) {
       <div className="h-10 w-40 animate-pulse rounded-md bg-subtle" />
       <p className="text-sm text-muted">{label}</p>
       <SystemRevisionLine className="text-center" />
-      <LoginLog stage="boot" extra={{ label }} />
+      <LoginLog stage="boot" extra={{ label, ...extra }} />
     </div>
   );
 }
@@ -203,7 +219,12 @@ export function SignedInApp({
     );
   }
   if (clientWait) {
-    return <BootScreen label={returning ? "Signing you in…" : "Checking your account…"} />;
+    return (
+      <BootScreen
+        label={returning ? "Signing you in…" : "Checking your account…"}
+        extra={{ ssrUser: Boolean(ssrUser) }}
+      />
+    );
   }
   return <GuestGate />;
 }
@@ -291,7 +312,9 @@ function AccountHydrator({
     };
   }, [attempt, hydrateFromAccount, onReady, userId]);
 
-  if (!ready) return <BootScreen label="Loading your projects…" />;
+  if (!ready) {
+    return <BootScreen label="Loading your projects…" extra={{ ssrUser: 1, userId }} />;
+  }
   if (error) {
     return (
       <div
@@ -339,7 +362,7 @@ function AccountHydrator({
         >
           Sign out
         </button>
-        <LoginLog stage="hydrate-error" extra={{ message: error, userId }} />
+        <LoginLog stage="hydrate-error" extra={{ message: error, ssrUser: 1, userId }} />
       </div>
     );
   }

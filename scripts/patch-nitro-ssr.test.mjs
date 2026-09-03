@@ -55,6 +55,18 @@ describe("patch-nitro-ssr", () => {
     assert.equal(ssr2.includes('from "./ssr.mjs"'), false);
   });
 
+  it("accepts a unified ssr.mjs that already defines ssr_exports without ssr2", () => {
+    const dir = mkdtempSync(join(tmpdir(), "nitro-ssr-unified-"));
+    const unified = `var ssr_exports = { default: () => server_default, t: () => server_exports };
+export { getServerFnById as a, __exportAll as c, createServerEntry, server_default as default, TSS_SERVER_FUNCTION as i, createMiddleware as n, getRequest as o, createServerFn as r, ssr_exports as s, server_exports as t };
+`;
+    writeFileSync(join(dir, "ssr.mjs"), unified);
+    const result = patchNitroSsr(dir);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.patched, []);
+    assert.equal(patchSsrBarrel(unified).changed, false);
+  });
+
   it("injects ssr_exports even when the export list differs", () => {
     const src = `import { s as server_default, c as server_exports } from "./ssr2.mjs";
 export { server_default as default, ssr_exports as s, server_exports as t };

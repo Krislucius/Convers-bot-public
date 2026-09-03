@@ -93,7 +93,7 @@ export function findAllSsrDirs(root) {
 
 export function patchSsrBarrel(source) {
   if (!source.includes("ssr_exports as s")) return { text: source, changed: false };
-  if (/\bconst ssr_exports\s*=/.test(source)) return { text: source, changed: false };
+  if (/\b(?:const|var|let) ssr_exports\s*=/.test(source)) return { text: source, changed: false };
   const exact = source.replace(
     /export \{ getServerFnById as a, __exportAll as c, createServerEntry, server_default as default, TSS_SERVER_FUNCTION as i, createMiddleware as n, getRequest as o, createServerFn as r, ssr_exports as s, server_exports as t \};/,
     `${SSR_EXPORTS_STUB}export { getServerFnById as a, __exportAll as c, createServerEntry, server_default as default, TSS_SERVER_FUNCTION as i, createMiddleware as n, getRequest as o, createServerFn as r, ssr_exports as s, server_exports as t };`,
@@ -136,19 +136,26 @@ export function patchNitroSsr(ssrDir) {
   const dir = ssrDir ?? DEFAULT_SSR_DIR;
   const ssrPath = join(dir, "ssr.mjs");
   const ssr2Path = join(dir, "ssr2.mjs");
-  if (!existsSync(ssrPath) || !existsSync(ssr2Path)) {
+  if (!existsSync(ssrPath)) {
+    return { ok: false, error: `missing ssr barrels in ${dir}`, patched: [] };
+  }
+  const ssrSource = readFileSync(ssrPath, "utf8");
+  const unified = /\b(?:const|var|let) ssr_exports\s*=/.test(ssrSource);
+  if (!existsSync(ssr2Path) && !unified) {
     return { ok: false, error: `missing ssr barrels in ${dir}`, patched: [] };
   }
   const patched = [];
-  const ssr = patchSsrBarrel(readFileSync(ssrPath, "utf8"));
+  const ssr = patchSsrBarrel(ssrSource);
   if (ssr.changed) {
     writeFileSync(ssrPath, ssr.text);
     patched.push("ssr.mjs");
   }
-  const ssr2 = patchSsr2Circular(readFileSync(ssr2Path, "utf8"));
-  if (ssr2.changed) {
-    writeFileSync(ssr2Path, ssr2.text);
-    patched.push("ssr2.mjs");
+  if (existsSync(ssr2Path)) {
+    const ssr2 = patchSsr2Circular(readFileSync(ssr2Path, "utf8"));
+    if (ssr2.changed) {
+      writeFileSync(ssr2Path, ssr2.text);
+      patched.push("ssr2.mjs");
+    }
   }
   return { ok: true, dir, patched };
 }
