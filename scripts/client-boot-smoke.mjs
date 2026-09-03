@@ -246,6 +246,8 @@ try {
       fail("boot-stuck: blank overlay on SSR boot shell", { snap });
     }
     if (!snap.bootStuck && !snap.error) fail("boot-stuck: no hydrate timeout recovery", { snap });
+    if (!/Login log/i.test(snap.body)) fail("boot-stuck: login log missing", { snap });
+    if (!/Sign out/i.test(snap.body)) fail("boot-stuck: sign out missing", { snap });
     results.bootStuck = snap;
     await isolated.close();
   }

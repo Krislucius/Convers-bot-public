@@ -10,6 +10,7 @@ import { BOOT_READY_SCRIPT, markClientReady } from "@/lib/boot-watchdog";
 export const Route = createFileRoute("/login")({
   validateSearch: (search: Record<string, unknown>) => ({
     error: typeof search.error === "string" ? search.error : undefined,
+    stay: search.stay === "1" || search.stay === true,
   }),
   component: Login,
 });
@@ -17,16 +18,17 @@ export const Route = createFileRoute("/login")({
 function Login() {
   const { user } = useCurrentUserState();
   const searchError = Route.useSearch({ select: (s) => s.error });
+  const stay = Route.useSearch({ select: (s) => s.stay });
 
   useLayoutEffect(() => {
     markClientReady();
   }, []);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || stay) return;
     if (!beginAutoLand()) return;
     window.location.replace("/");
-  }, [user]);
+  }, [user, stay]);
 
   function landInApp() {
     if (typeof window === "undefined") return;
@@ -34,7 +36,7 @@ function Login() {
     window.location.replace("/");
   }
 
-  if (user && !shouldAutoLand()) {
+  if (user && (stay || !shouldAutoLand())) {
     return (
       <div className="relative z-20" style={{ minHeight: "100dvh", background: "#0c0c0d", color: "#f1f1ef" }}>
         <script dangerouslySetInnerHTML={{ __html: BOOT_READY_SCRIPT }} />

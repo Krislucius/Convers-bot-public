@@ -6,6 +6,8 @@ import {
   BOOT_STUCK_MS,
   BOOT_WATCHDOG_INLINE,
   BOOT_WATCHDOG_MS,
+  LOGIN_LOG_FLAG,
+  SKIP_HYDRATE_KEY,
 } from "./boot-watchdog.ts";
 
 describe("boot watchdog", () => {
@@ -31,7 +33,13 @@ describe("boot watchdog", () => {
     assert.match(BOOT_WATCHDOG_INLINE, /cb-boot-stuck/);
     assert.match(BOOT_WATCHDOG_INLINE, /Loading projects timed out/);
     assert.match(BOOT_WATCHDOG_INLINE, /data-cb-shell="boot"/);
-    assert.match(BOOT_WATCHDOG_INLINE, /\/login/);
+    assert.match(BOOT_WATCHDOG_INLINE, /\/login\?stay=1/);
+    assert.match(BOOT_WATCHDOG_INLINE, /Sign out/);
+    assert.match(BOOT_WATCHDOG_INLINE, /Open workspace anyway/);
+    assert.match(BOOT_WATCHDOG_INLINE, /Login log/);
+    assert.match(BOOT_WATCHDOG_INLINE, new RegExp(LOGIN_LOG_FLAG));
+    assert.match(BOOT_WATCHDOG_INLINE, new RegExp(SKIP_HYDRATE_KEY));
+    assert.match(BOOT_WATCHDOG_INLINE, /\/api\/auth\/sign-out/);
     assert.equal(BOOT_WATCHDOG_INLINE.includes("justify-center"), false);
   });
 });

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { UserButton } from "@/lib/auth/gates";
 import { useCurrentUserState, type AppUser } from "@/lib/auth/use-current-user";
-import { authTrace } from "@/lib/auth-trace";
+import { authTrace, formatLoginLog } from "@/lib/auth-trace";
 import { importAccountSnapshot, loadAccountHydrate } from "@/lib/council/account";
 import { loadHydratePayload, withTimeout, HYDRATE_TIMEOUT_MS } from "@/lib/council/hydrate";
 import { useSession } from "@/lib/council/session";
@@ -14,11 +14,15 @@ import {
   resetAuthHops,
   SESSION_WAIT_MS,
 } from "@/lib/auth-loop";
-import { BOOT_READY_SCRIPT, markClientReady } from "@/lib/boot-watchdog";
+import {
+  BOOT_READY_SCRIPT,
+  clearSkipHydrate,
+  markClientReady,
+  readSkipHydrate,
+} from "@/lib/boot-watchdog";
 import { LoginForm } from "@/components/login-form";
 import { SystemRevisionLine } from "@/components/system-info";
 import { readBakedSessionUser } from "@/lib/auth/session-bootstrap";
-
 
 export type SsrSessionUser = { id: string; email: string | null } | null;
 export { markAuthReturning, clearAuthReturning, isAuthReturning } from "@/lib/auth-loop";
@@ -37,7 +41,9 @@ const EMPTY_SNAPSHOT = {
   packets: [],
 };
 
-function initialBakedUser(): SsrSessionUser {
+/** First paint must match SSR: never read window in useState. */
+function peekSession(sessionUser: SsrSessionUser): SsrSessionUser {
+  if (sessionUser) return sessionUser;
   if (typeof window === "undefined") return null;
   return readBakedSessionUser();
 }
@@ -52,10 +58,42 @@ function ShellReadyScript() {
   return <script dangerouslySetInnerHTML={{ __html: BOOT_READY_SCRIPT }} />;
 }
 
+function LoginLog({ stage, extra }: { stage: string; extra?: Record<string, unknown> }) {
+  const extraKey = JSON.stringify(extra ?? {});
+  const [text, setText] = useState("stage: " + stage);
+  useEffect(() => {
+    setText(formatLoginLog({ stage, ...(extra ?? {}) }));
+    // extraKey is the stable snapshot of extra
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage, extraKey]);
+  return (
+    <details
+      id="cb-login-log"
+      className="mt-2 w-full max-w-md text-left"
+      style={{ border: "1px solid #3a3a3c", borderRadius: 8, background: "#141416" }}
+    >
+      <summary
+        className="min-h-11 cursor-pointer px-3 py-2 text-sm font-semibold"
+        style={{ color: "#f1f1ef" }}
+      >
+        Login log
+      </summary>
+      <pre
+        id="cb-login-log-body"
+        className="m-0 max-h-40 overflow-auto px-3 pb-3 font-mono text-xs leading-snug"
+        style={{ color: "#9a9a94", whiteSpace: "pre-wrap" }}
+      >
+        {text}
+      </pre>
+    </details>
+  );
+}
+
 export function BootScreen({ label }: { label: string }) {
   useLayoutEffect(() => {
     markClientReady();
-  }, []);
+    authTrace("boot", { label });
+  }, [label]);
   return (
     <div
       data-cb-shell="boot"
@@ -66,6 +104,7 @@ export function BootScreen({ label }: { label: string }) {
       <div className="h-10 w-40 animate-pulse rounded-md bg-subtle" />
       <p className="text-sm text-muted">{label}</p>
       <SystemRevisionLine className="text-center" />
+      <LoginLog stage="boot" extra={{ label }} />
     </div>
   );
 }
@@ -118,8 +157,7 @@ export function SignedInApp({
   children: ReactNode;
 }) {
   const { user, isPending } = useCurrentUserState();
-  const [bakedUser, setBakedUser] = useState<SsrSessionUser>(initialBakedUser);
-  const ssrUser = sessionUser ?? bakedUser;
+  const ssrUser = peekSession(sessionUser);
   const authed = user ?? fromSsr(ssrUser);
   const [clientWait, setClientWait] = useState(false);
   const returning = isAuthReturning();
@@ -127,13 +165,12 @@ export function SignedInApp({
 
   useLayoutEffect(() => {
     markClientReady();
-    const baked = readBakedSessionUser();
-    if (baked) setBakedUser(baked);
   }, []);
 
   useEffect(() => {
     authTrace("app.mount", {
       hasSsrUser: Boolean(sessionUser),
+      hasBakedUser: Boolean(ssrUser),
       hasClientUser: Boolean(user),
       isPending,
       returning,
@@ -204,6 +241,19 @@ function AccountHydrator({
       markClientReady();
       setReady(true);
     };
+
+    if (readSkipHydrate()) {
+      clearSkipHydrate();
+      authTrace("app.hydrate-skip", { userId });
+      hydrateStore(EMPTY_SNAPSHOT);
+      bindAccountStore();
+      onReady?.();
+      markClientReady();
+      setReady(true);
+      return () => {
+        cancelled = true;
+      };
+    }
 
     const timer = window.setTimeout(() => {
       failOpen(`Timed out after ${Math.round(HYDRATE_TIMEOUT_MS / 1000)}s while loading this account.`);
@@ -284,11 +334,12 @@ function AccountHydrator({
           type="button"
           className="min-h-11 rounded-sm border border-line px-4 font-semibold"
           onClick={() => {
-            void signOut("/login");
+            void signOut("/login?stay=1");
           }}
         >
           Sign out
         </button>
+        <LoginLog stage="hydrate-error" extra={{ message: error, userId }} />
       </div>
     );
   }
