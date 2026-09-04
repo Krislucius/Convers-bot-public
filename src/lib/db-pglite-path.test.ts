@@ -7,6 +7,8 @@ import {
   DEFAULT_SANDBOX_PGLITE_DIR,
   ensurePgliteDataDir,
   resolvePgliteDataDir,
+  shouldReopenPglite,
+  pgliteHandleClosed,
 } from "./db-pglite-path.ts";
 
 describe("resolvePgliteDataDir", () => {
@@ -56,5 +58,15 @@ describe("ensurePgliteDataDir", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("shouldReopenPglite", () => {
+  it("opens when missing or closed, never replaces a live instance", () => {
+    assert.equal(shouldReopenPglite(null), true);
+    assert.equal(shouldReopenPglite({ closed: true }), true);
+    assert.equal(shouldReopenPglite({ closed: false }), false);
+    assert.equal(pgliteHandleClosed(undefined), true);
+    assert.equal(pgliteHandleClosed({ closed: false }), false);
   });
 });

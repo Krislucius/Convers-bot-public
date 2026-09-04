@@ -18,6 +18,8 @@ import {
   type TransactionSettings,
 } from "kysely";
 
+import { pgliteHandleClosed } from "../db-pglite-path";
+
 type Client = PGlite;
 
 /** Factory used by `auth/server.ts`: `pgliteDialect(() => getPglite())`. */
@@ -27,7 +29,9 @@ export function pgliteDialect(
   return {
     createAdapter: () => new PostgresAdapter(),
     createDriver: () => new LazyPGliteDriver(getClient),
-    createQueryCompiler: (): QueryCompiler => new PostgresQueryCompiler(),
+    createQueryCompiler(): QueryCompiler {
+      return new PostgresQueryCompiler();
+    },
     createIntrospector: (db: Kysely<unknown>): DatabaseIntrospector =>
       new PostgresIntrospector(db),
   };
@@ -45,15 +49,17 @@ class LazyPGliteDriver implements Driver {
   }
 
   async acquireConnection(): Promise<DatabaseConnection> {
-    if (this.client === undefined) {
+    if (pgliteHandleClosed(this.client)) {
       this.client = await this.getClient();
+      this.connection = undefined;
+      this.queue = [];
     }
     if (this.connection !== undefined) {
       return new Promise((resolve) => {
         this.queue.push(resolve);
       });
     }
-    this.connection = new PGliteConnection(this.client);
+    this.connection = new PGliteConnection(this.client!);
     return this.connection;
   }
 

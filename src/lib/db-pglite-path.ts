@@ -49,3 +49,20 @@ export function ensurePgliteDataDir(dir: string): boolean {
     return false;
   }
 }
+
+/**
+ * Only reopen PGLite when there is no live instance.
+ *
+ * Never close a healthy process-wide instance to swap dataDir: Better Auth's
+ * Kysely dialect caches the client, and a close under it makes Google/X sign-in
+ * fail with `PGlite is closed`. Disk persist applies on the next process start.
+ */
+export function pgliteHandleClosed(
+  client: { closed?: boolean } | null | undefined,
+): boolean {
+  return client == null || client.closed === true;
+}
+
+export function shouldReopenPglite(existing: { closed: boolean } | null): boolean {
+  return pgliteHandleClosed(existing);
+}

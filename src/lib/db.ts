@@ -1,6 +1,6 @@
 import { pendingMigrations } from "../../scripts/migration-plan.mjs";
 import { neonPoolConfig } from "./db-pool";
-import { ensurePgliteDataDir, resolvePgliteDataDir } from "./db-pglite-path";
+import { ensurePgliteDataDir, resolvePgliteDataDir, shouldReopenPglite } from "./db-pglite-path";
 
 /** Which database backend is active. */
 export type DbSource = "neon" | "pglite";
@@ -124,6 +124,12 @@ function pgliteParsers() {
   };
 }
 
+function clearPgliteSlot(): void {
+  globalRef.__pgliteInstance__ = undefined;
+  globalRef.__pgSqlPromise__ = undefined;
+  globalRef.__pgliteMigrateChain__ = undefined;
+}
+
 function registerPgliteShutdown(): void {
   const g = globalThis as typeof globalThis & { __pgliteShutdown__?: boolean };
   if (g.__pgliteShutdown__) return;
@@ -131,12 +137,19 @@ function registerPgliteShutdown(): void {
   g.__pgliteShutdown__ = true;
   const flush = () => {
     const inst = globalRef.__pgliteInstance__;
+    clearPgliteSlot();
     if (!inst) return;
-    void inst.then((pg) => pg.close()).catch(() => undefined);
+    void inst
+      .then((pg) => {
+        if (!pg.closed) return pg.close();
+        return undefined;
+      })
+      .catch(() => undefined);
   };
+  // Never `beforeExit`: Vite's loop can idle without exiting, and a close
+  // there leaves Better Auth querying a dead client (`PGlite is closed`).
   process.once("SIGTERM", flush);
   process.once("SIGINT", flush);
-  process.once("beforeExit", flush);
 }
 
 async function openPglite(): Promise<import("@electric-sql/pglite").PGlite> {
@@ -177,29 +190,37 @@ async function openPglite(): Promise<import("@electric-sql/pglite").PGlite> {
   }
 }
 
-async function createPgliteSql(): Promise<Sql> {
-  // One PGLite instance per process, shared across HMR. Sandbox live preview
-  // writes the cluster under /workspace/artifacts/pglite so account projects
-  // survive Vite restarts and execution changes. Production uses Neon.
+/**
+ * Process-wide live PGLite. Reopen only when missing or `closed`.
+ * Never close a healthy instance to change dataDir — Better Auth caches the
+ * client, and that close is what made sandbox Google/X return
+ * "Sign-in was cancelled or failed".
+ */
+async function livePglite(): Promise<import("@electric-sql/pglite").PGlite> {
   const wanted = resolvePgliteDataDir();
-  if (globalRef.__pgliteInstance__ && globalRef.__pgliteDataDir__ !== wanted) {
-    const previous = globalRef.__pgliteInstance__;
-    globalRef.__pgliteInstance__ = undefined;
-    globalRef.__pgSqlPromise__ = undefined;
-    globalRef.__pgliteMigrateChain__ = undefined;
+  const existingPromise = globalRef.__pgliteInstance__;
+  if (existingPromise) {
     try {
-      const old = await previous;
-      await old.close();
+      const existing = await existingPromise;
+      if (!shouldReopenPglite(existing)) return existing;
     } catch {
-      // previous init or close failed — still open the wanted backend
+      // previous open failed
     }
+    if (globalRef.__pgliteInstance__ === existingPromise) clearPgliteSlot();
   }
   globalRef.__pgliteDataDir__ = wanted;
   globalRef.__pgliteInstance__ ??= openPglite().catch((err) => {
     globalRef.__pgliteInstance__ = undefined;
     throw err;
   });
-  const pg = await globalRef.__pgliteInstance__;
+  return globalRef.__pgliteInstance__;
+}
+
+async function createPgliteSql(): Promise<Sql> {
+  // One PGLite instance per process, shared across HMR. Sandbox live preview
+  // writes the cluster under /workspace/artifacts/pglite so account projects
+  // survive Vite restarts and execution changes. Production uses Neon.
+  const pg = await livePglite();
 
   // Apply migrations/ (the single schema source) so preview matches production.
   // SQL is inlined by the bundler via import.meta.glob (no runtime fs); applied
@@ -209,19 +230,20 @@ async function createPgliteSql(): Promise<Sql> {
   // passes serialized on a global chain so concurrent callers never
   // double-apply.
   const migrate = async (): Promise<void> => {
+    const live = await livePglite();
     const migrations = import.meta.glob("/migrations/*.sql", {
       query: "?raw",
       import: "default",
       eager: true,
     }) as Record<string, string>;
-    const doneRows = await pg.query<{ name: string }>(
+    const doneRows = await live.query<{ name: string }>(
       "select name from _migrations",
     );
     const done = doneRows.rows.map((r) => r.name);
     for (const { name, path } of pendingMigrations(Object.keys(migrations), done)) {
       // Apply + record atomically (parity with scripts/migrate.mjs) so a failed
       // statement can't leave a file half-applied but untracked.
-      await pg.transaction(async (tx) => {
+      await live.transaction(async (tx) => {
         await tx.exec(migrations[path]);
         await tx.query("insert into _migrations (name) values ($1)", [name]);
       });
@@ -233,8 +255,11 @@ async function createPgliteSql(): Promise<Sql> {
   globalRef.__pgliteMigrateChain__ = pass;
   await pass;
 
+  // Resolve the live instance per query so a closed handle from HMR / a
+  // mistaken close cannot poison every later Better Auth or account write.
   return toSql(async <T>(text: string, params: unknown[]) => {
-    const result = await pg.query<T>(text, params);
+    const live = await livePglite();
+    const result = await live.query<T>(text, params);
     return result.rows;
   });
 }
@@ -270,14 +295,15 @@ export function getSql(): Promise<Sql> {
  * The shared PGLite instance (preview only), with `migrations/*.sql` applied.
  * Lets Better Auth persist to the SAME embedded DB as app data in preview (via a
  * Kysely dialect). Throws when `DATABASE_URL` is set (that path uses Neon).
+ * Reopens when the previous handle is `closed`.
  */
 export async function getPglite(): Promise<import("@electric-sql/pglite").PGlite> {
   if (dbSource !== "pglite") {
     throw new Error("getPglite() is only available on the PGLite fallback (no DATABASE_URL)");
   }
   await getSql();
-  const pg = await globalRef.__pgliteInstance__;
-  if (!pg) throw new Error("PGLite instance failed to initialize");
+  const pg = await livePglite();
+  if (!pg || pg.closed) throw new Error("PGLite instance failed to initialize");
   return pg;
 }
 
