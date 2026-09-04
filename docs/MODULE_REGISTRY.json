@@ -47,7 +47,11 @@
       "status": "ACTIVE",
       "implementation_path": "src/lib/db.ts",
       "architecture_revision": "CB-ARCH-20260829-001",
-      "responsibilities": ["Neon when DATABASE_URL is set", "PGLite preview fallback", "migrations"],
+      "responsibilities": [
+        "Neon when DATABASE_URL is set",
+        "PGLite durable sandbox fallback at artifacts/pglite",
+        "migrations"
+      ],
       "dependencies": [],
       "supersedes": []
     },

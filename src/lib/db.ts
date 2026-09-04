@@ -1,5 +1,6 @@
 import { pendingMigrations } from "../../scripts/migration-plan.mjs";
 import { neonPoolConfig } from "./db-pool";
+import { ensurePgliteDataDir, resolvePgliteDataDir } from "./db-pglite-path";
 
 /** Which database backend is active. */
 export type DbSource = "neon" | "pglite";
@@ -18,6 +19,13 @@ const databaseUrl =
  * included. Swap in Neon later by just setting `DATABASE_URL`; no code changes.
  */
 export const dbSource: DbSource = databaseUrl ? "neon" : "pglite";
+
+/**
+ * Filesystem path for the PGLite cluster when the sandbox is not on Neon.
+ * `undefined` means in-memory (production preview / Vercel without DATABASE_URL).
+ */
+export const pgliteDataDir: string | undefined =
+  dbSource === "pglite" ? resolvePgliteDataDir() : undefined;
 
 /**
  * Minimal shared SQL surface, satisfied by both Neon and PGLite. Both the
@@ -49,6 +57,7 @@ const globalRef = globalThis as typeof globalThis & {
   __pgSqlPromise__?: Promise<Sql>;
   __pgliteInstance__?: Promise<import("@electric-sql/pglite").PGlite>;
   __pgliteMigrateChain__?: Promise<void>;
+  __pgliteDataDir__?: string | undefined;
 };
 
 /**
@@ -107,25 +116,86 @@ function createNeonSql(): Promise<Sql> {
   return globalRef.__pgSqlPromise__;
 }
 
-async function createPgliteSql(): Promise<Sql> {
-  // Embedded Postgres, imported on demand so it never loads on the Neon path.
-  // One in-memory instance per process, shared across HMR module instances, so
-  // data survives source edits (it resets on dev-server restart).
-  globalRef.__pgliteInstance__ ??= (async () => {
-    const { PGlite } = await import("@electric-sql/pglite");
+function pgliteParsers() {
+  return {
+    [OID_INT8]: Number,
+    [OID_DATE]: identity,
+    [OID_INTERVAL]: identity,
+  };
+}
+
+function registerPgliteShutdown(): void {
+  const g = globalThis as typeof globalThis & { __pgliteShutdown__?: boolean };
+  if (g.__pgliteShutdown__) return;
+  if (typeof process === "undefined" || typeof process.on !== "function") return;
+  g.__pgliteShutdown__ = true;
+  const flush = () => {
+    const inst = globalRef.__pgliteInstance__;
+    if (!inst) return;
+    void inst.then((pg) => pg.close()).catch(() => undefined);
+  };
+  process.once("SIGTERM", flush);
+  process.once("SIGINT", flush);
+  process.once("beforeExit", flush);
+}
+
+async function openPglite(): Promise<import("@electric-sql/pglite").PGlite> {
+  const { PGlite } = await import("@electric-sql/pglite");
+  const parsers = pgliteParsers();
+  const resolved = resolvePgliteDataDir();
+  const dataDir = resolved && ensurePgliteDataDir(resolved) ? resolved : undefined;
+
+  try {
     const pg = new PGlite({
-      parsers: {
-        [OID_INT8]: Number,
-        [OID_DATE]: identity,
-        [OID_INTERVAL]: identity,
-      },
+      parsers,
+      relaxedDurability: false,
+      ...(dataDir ? { dataDir } : {}),
     });
+    await pg.waitReady;
+    if (dataDir) {
+      console.info("[db] PGLite persisting account data at", dataDir);
+    } else {
+      console.info("[db] PGLite in-memory (ephemeral)");
+    }
+    await pg.exec(
+      "create table if not exists _migrations (name text primary key, applied_at timestamptz not null default now())",
+    );
+    registerPgliteShutdown();
+    return pg;
+  } catch (err) {
+    if (!dataDir) throw err;
+    // Locked or unreadable cluster (second process, corrupt files): do not
+    // wipe the durable dir. Fall back to RAM so this process still serves.
+    console.error("[db] durable PGLite failed, using in-memory fallback:", err);
+    const pg = new PGlite({ parsers, relaxedDurability: false });
     await pg.waitReady;
     await pg.exec(
       "create table if not exists _migrations (name text primary key, applied_at timestamptz not null default now())",
     );
+    registerPgliteShutdown();
     return pg;
-  })().catch((err) => {
+  }
+}
+
+async function createPgliteSql(): Promise<Sql> {
+  // One PGLite instance per process, shared across HMR. Sandbox live preview
+  // writes the cluster under /workspace/artifacts/pglite so account projects
+  // survive Vite restarts and execution changes. Production uses Neon.
+  const wanted = resolvePgliteDataDir();
+  if (globalRef.__pgliteInstance__ && globalRef.__pgliteDataDir__ !== wanted) {
+    const previous = globalRef.__pgliteInstance__;
+    globalRef.__pgliteInstance__ = undefined;
+    globalRef.__pgSqlPromise__ = undefined;
+    globalRef.__pgliteMigrateChain__ = undefined;
+    try {
+      const old = await previous;
+      await old.close();
+    } catch {
+      // previous init or close failed — still open the wanted backend
+    }
+  }
+  globalRef.__pgliteDataDir__ = wanted;
+  globalRef.__pgliteInstance__ ??= openPglite().catch((err) => {
     globalRef.__pgliteInstance__ = undefined;
     throw err;
   });
@@ -214,8 +284,9 @@ export async function getPglite(): Promise<import("@electric-sql/pglite").PGlite
 /**
  * Finish DB bootstrap before the server handles traffic.
  *
- * - **PGLite** (preview / no `DATABASE_URL`): open the in-memory DB and apply
- *   `migrations/*.sql`. Idempotent — concurrent callers share one promise.
+ * - **PGLite** (preview / no `DATABASE_URL`): open the durable (or in-memory)
+ *   DB and apply `migrations/*.sql`. Idempotent — concurrent callers share one
+ *   promise.
  * - **Neon**: no-op (pool is created lazily on first query).
  *
  * Vite `configureServer` awaits this at dev startup; production imports of this

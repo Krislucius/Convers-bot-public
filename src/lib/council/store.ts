@@ -56,8 +56,20 @@ const empty: StoreShape = {
 };
 
 const listeners = new Set<() => void>();
-let memory: StoreShape = empty;
-let accountBound = false;
+
+type AccountSlot = { memory: StoreShape; accountBound: boolean };
+
+/** Client-only. Survives Vite HMR of this module so execution edits do not blank the workspace. */
+function accountSlot(): AccountSlot | null {
+  if (typeof window === "undefined") return null;
+  const g = window as Window & { __cbAccountStore__?: AccountSlot };
+  g.__cbAccountStore__ ??= { memory: empty, accountBound: false };
+  return g.__cbAccountStore__;
+}
+
+const restored = accountSlot();
+let memory: StoreShape = restored?.memory ?? empty;
+let accountBound = restored?.accountBound ?? false;
 let persistQueue: Promise<void> = Promise.resolve();
 
 function nid(): string {
@@ -157,6 +169,8 @@ export function readLegacyLocalStore(): StoreShape | null {
 
 function persist(next: StoreShape) {
   memory = next;
+  const slot = accountSlot();
+  if (slot) slot.memory = next;
   listeners.forEach((fn) => fn());
 }
 
@@ -177,11 +191,15 @@ export function hydrateStore(next: StoreShape) {
 
 export function resetStore() {
   accountBound = false;
+  const slot = accountSlot();
+  if (slot) slot.accountBound = false;
   persist(empty);
 }
 
 export function bindAccountStore() {
   accountBound = true;
+  const slot = accountSlot();
+  if (slot) slot.accountBound = true;
 }
 
 function snapshot(): StoreShape {

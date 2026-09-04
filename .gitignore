@@ -33,6 +33,8 @@ Thumbs.db
 
 # QA / session noise
 screenshots/
+# Sandbox PGLite cluster (account projects/sessions; not source)
+artifacts/pglite/
 attachments/
 artifacts/browsed_files/
 artifacts/workspace-source/

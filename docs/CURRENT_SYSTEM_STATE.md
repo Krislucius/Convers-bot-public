@@ -1,7 +1,7 @@
 # Current system state
 
 Revision: CB-ARCH-20260901-002
-Recorded: 2026-09-04T07:20:00.000Z
+Recorded: 2026-09-04T07:45:00.000Z
 
 Factual state of the authoritative tree. Not a backlog.
 
@@ -19,7 +19,7 @@ Factual state of the authoritative tree. Not a backlog.
 
 ## CURRENT DATA MODEL
 
-Postgres tables from migrations `0001`–`0006`: Better Auth identity; `account_settings`; `projects`; `context_items`; `tasks`; `agent_responses`; `council_results` (including `review_verdict` and `structured`); `chat_sources`; `history_messages`; `context_manifests`; `artifacts`; `project_files`; `evidence_chunks`; `evidence_items`; `extractor_cache`; `implementation_packets`. All app tables carry `user_id`.
+Postgres tables from migrations `0001`–`0006`: Better Auth identity; `account_settings`; `projects`; `context_items`; `tasks`; `agent_responses`; `council_results` (including `review_verdict` and `structured`); `chat_sources`; `history_messages`; `context_manifests`; `artifacts`; `project_files`; `evidence_chunks`; `evidence_items`; `extractor_cache`; `implementation_packets`. All app tables carry `user_id`. Sandbox without `DATABASE_URL` persists the PGLite cluster at `/workspace/artifacts/pglite` so signed-in account projects survive Vite restarts and execution changes; production uses Neon. The client Zustand account store is kept on `window.__cbAccountStore__` so an HMR reload of the store module does not blank the workspace.
 
 ## CURRENT AUTHENTICATION
 
@@ -57,7 +57,7 @@ FUNCTION BLOCKERS: none.
 
 ### BUILD WORKFLOW
 
-- Production Publish is a user action; git `CB-BUILD-20260904-020` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
+- Production Publish is a user action; git `CB-BUILD-20260904-021` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
 - Production FUNCTIONALITY READY requires a real browser smoke to an interactive UI. HTTP 200 / bundles / identity / auth-health are necessary but not sufficient.
 - The protected runtime shell is `docs/RUNTIME_SHELL.json`. `npm run shell:gate` (hash, product-vs-shell scope, no client `.server` imports, production build, built-browser smoke) must pass before a release. Functional Council/evidence/history patches that also change shell files fail with `SHELL_SCOPE_VIOLATION`.
-- Nitro Vercel SSR barrels that re-export undefined `ssr_exports` are patched in the nitro `compiled` and `close` hooks during `vite build` (`scripts/patch-nitro-ssr.mjs`), then again from `npm run build`. The same hook writes Vercel `config.json` / `.vc-config.json` and **rewrites** them when routes drift (missing hashed `/assets/*` 404 instead of SSR; CSP `frame-ancestors` for grok.com). PGLite `pglite.data`, `pglite.wasm`, and `initdb.wasm` are staged next to the bundled driver. Eager PGLite bootstrap failures are logged and do not kill the isolate. Production uses Neon.
+- Nitro Vercel SSR barrels that re-export undefined `ssr_exports` are patched in the nitro `compiled` and `close` hooks during `vite build` (`scripts/patch-nitro-ssr.mjs`), then again from `npm run build`. The same hook writes Vercel `config.json` / `.vc-config.json` and **rewrites** them when routes drift (missing hashed `/assets/*` 404 instead of SSR; CSP `frame-ancestors` for grok.com). PGLite `pglite.data`, `pglite.wasm`, and `initdb.wasm` are staged next to the bundled driver. Eager PGLite bootstrap failures are logged and do not kill the isolate. Production uses Neon. Sandbox PGLite is durable on disk (`artifacts/pglite`); production preview and Vercel without `DATABASE_URL` stay in-memory.
