@@ -15,7 +15,9 @@ import {
   toProviderFailure,
 } from "./provider-error";
 
-const BASE = "https://openrouter.ai/api/v1";
+const BASE = "https://nano-gpt.com/api/v1";
+const PROVIDER = "openrouter" as const;
+const API_LABEL = "API";
 
 export type ModelPricing = { prompt: number | null; completion: number | null };
 
@@ -51,9 +53,8 @@ function asFloat(value: unknown): number | null {
 function headersFor(apiKey: string, json = false): Record<string, string> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${apiKey}`,
-    "X-Title": "Conversation Bot",
-    "HTTP-Referer": "https://grok.com",
     Accept: "application/json",
+    "X-Title": "Conversation Bot",
   };
   if (json) headers["Content-Type"] = "application/json";
   return headers;
@@ -75,6 +76,34 @@ async function probeGet(path: string, apiKey: string, timeoutMs: number): Promis
     const res = await fetch(`${BASE}${path}`, {
       method: "GET",
       headers: headersFor(apiKey),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    return {
+      path,
+      status: res.status,
+      latencyMs: Date.now() - started,
+      body: redact(await res.text(), apiKey),
+      headers: pickHeaders(res),
+    };
+  } catch (err) {
+    return {
+      path,
+      status: 0,
+      latencyMs: Date.now() - started,
+      body: "",
+      headers: {},
+      error: redact(err instanceof Error ? err.message : String(err), apiKey),
+    };
+  }
+}
+
+async function probePost(path: string, apiKey: string, payload: unknown, timeoutMs: number): Promise<Probe> {
+  const started = Date.now();
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      method: "POST",
+      headers: headersFor(apiKey, true),
+      body: JSON.stringify(payload),
       signal: AbortSignal.timeout(timeoutMs),
     });
     return {
@@ -144,7 +173,8 @@ function formatLog(opts: {
     result: opts.ok ? "PASS" : "FAIL",
     time: new Date().toISOString(),
     probe: "server",
-    provider: "openrouter",
+    provider: PROVIDER,
+    backend: "nanogpt",
     key: {
       chars: opts.fingerprint.chars,
       prefix: opts.fingerprint.prefix,
@@ -171,11 +201,9 @@ export function operatorError(err: unknown, apiKey = ""): string {
     return "Council stopped because the configured cost limit was reached.";
   }
   if (err instanceof Error && /not connected|save an api key/i.test(err.message)) {
-    return "OpenRouter is not connected. Connect your API key before running the Council.";
+    return `${API_LABEL} is not connected. Connect your API key before running the Council.`;
   }
-  return formatProviderFailure(
-    toProviderFailure(err, { provider: "openrouter", model: "", stage: "request" }, apiKey),
-  );
+  return formatProviderFailure(toProviderFailure(err, { provider: PROVIDER, model: "", stage: "request" }, apiKey));
 }
 
 export async function preflightWithKey(opts: {
@@ -185,7 +213,7 @@ export async function preflightWithKey(opts: {
   claudeModel: string;
 }): Promise<PreflightClientReport & { pricing: Record<string, ModelPricing> }> {
   const checks: Record<string, ConnectionCheck> = {
-    openrouter: { ok: false, label: "OpenRouter", detail: "Not checked" },
+    openrouter: { ok: false, label: API_LABEL, detail: "Not checked" },
     gpt: { ok: false, label: "GPT Architect", detail: "Not checked" },
     grok: { ok: false, label: "Grok Adversary", detail: "Not checked" },
     claude: { ok: false, label: "Claude Formalist", detail: "Not checked" },
@@ -195,8 +223,8 @@ export async function preflightWithKey(opts: {
     grok: opts.grokModel.trim(),
     claude: opts.claudeModel.trim(),
   };
-  const key = sanitizeApiKey(opts.apiKey);
-  const fingerprint = keyFingerprint(key);
+  const key = sanitizeApiKey(opts.apiKey, PROVIDER);
+  const fingerprint = keyFingerprint(key, PROVIDER);
   const steps: LogStep[] = [];
   const extra: Record<string, unknown> = {};
   const done = (ok: boolean, error: string | undefined, pricing: Record<string, ModelPricing> = {}) => ({
@@ -209,75 +237,21 @@ export async function preflightWithKey(opts: {
   });
 
   if (!key) {
-    const error = "OpenRouter is not connected. Connect your API key before running the Council.";
-    checks.openrouter = { ok: false, label: "OpenRouter", detail: error };
+    const error = `${API_LABEL} is not connected. Connect your API key before running the Council.`;
+    checks.openrouter = { ok: false, label: API_LABEL, detail: error };
     return done(false, error);
   }
-
-  const keyProbe = await probeGet("/key", key, 20000);
-  steps.push(toStep("GET /api/v1/key", keyProbe));
-  let keyStatus = keyProbe.status;
-  let keyBody = keyProbe.body;
-  let keyError = keyProbe.error;
-
-  if (keyStatus === 404) {
-    const authProbe = await probeGet("/auth/key", key, 20000);
-    steps.push(toStep("GET /api/v1/auth/key (fallback)", authProbe));
-    keyStatus = authProbe.status;
-    keyBody = authProbe.body;
-    keyError = authProbe.error;
-  }
-
-  if (keyError) {
-    const error = operatorError(keyError, key);
-    checks.openrouter = { ok: false, label: "OpenRouter", detail: error };
-    return done(false, error);
-  }
-
-  if (keyStatus === 401 || keyStatus === 403) {
-    const error = keyRejectedMessage(keyStatus, extractErrorMessage(parseBody(keyBody), keyStatus), fingerprint);
-    checks.openrouter = { ok: false, label: "OpenRouter", detail: error };
-    return done(false, error);
-  }
-
-  if (keyStatus < 200 || keyStatus >= 300) {
-    const error = redact(extractErrorMessage(parseBody(keyBody), keyStatus), key);
-    checks.openrouter = { ok: false, label: "OpenRouter", detail: error };
-    return done(false, error);
-  }
-
-  const keyPayload = parseBody(keyBody) as { data?: Record<string, unknown> } | null;
-  const data = keyPayload?.data ?? {};
-  const account: Record<string, string> = {};
-  for (const field of [
-    "label",
-    "is_free_tier",
-    "is_provisioning_key",
-    "is_management_key",
-    "limit",
-    "limit_remaining",
-    "usage",
-  ]) {
-    if (field in data) account[field] = String(data[field]);
-  }
-  if (Object.keys(account).length) extra.account = account;
-
-  checks.openrouter = {
-    ok: true,
-    label: "OpenRouter",
-    detail: `Connected · ${fingerprint.chars} characters`,
-  };
 
   const modelsProbe = await probeGet("/models", key, 20000);
   steps.push(toStep("GET /api/v1/models", modelsProbe, true));
   if (modelsProbe.error) {
     const error = operatorError(modelsProbe.error, key);
-    checks.openrouter = { ok: false, label: "OpenRouter", detail: error };
+    checks.openrouter = { ok: false, label: API_LABEL, detail: error };
     return done(false, error);
   }
   if (modelsProbe.status < 200 || modelsProbe.status >= 300) {
     const error = redact(extractErrorMessage(parseBody(modelsProbe.body), modelsProbe.status), key);
-    checks.openrouter = { ok: false, label: "OpenRouter", detail: error };
+    checks.openrouter = { ok: false, label: API_LABEL, detail: error };
     return done(false, error);
   }
 
@@ -297,11 +271,11 @@ export async function preflightWithKey(opts: {
       requested.push({ slot, id: "", result: "FAIL (empty)" });
       continue;
     }
-    if (!known.has(id)) {
+    if (known.size > 0 && !known.has(id)) {
       checks[slot] = {
         ok: false,
         label,
-        detail: `The selected ${label.replace(" Architect", "").replace(" Adversary", "").replace(" Formalist", "")} model is not currently available. Choose another model in API Settings.`,
+        detail: `The selected ${label.replace(" Architect", "").replace(" Adversary", "").replace(" Formalist", "")} model is not currently available on NanoGPT. Choose another model in API Settings.`,
       };
       requested.push({ slot, id, result: "FAIL (not in catalog)" });
       continue;
@@ -311,10 +285,54 @@ export async function preflightWithKey(opts: {
       prompt: asFloat(row?.pricing?.prompt),
       completion: asFloat(row?.pricing?.completion),
     };
-    checks[slot] = { ok: true, label, detail: "Ready" };
+    checks[slot] = { ok: true, label, detail: "Listed" };
     requested.push({ slot, id, result: "PASS" });
   }
   extra.requested_models = requested;
+
+  const pingModel = models.gpt || models.grok || models.claude;
+  const ping = await probePost(
+    "/chat/completions",
+    key,
+    {
+      model: pingModel,
+      messages: [{ role: "user", content: "ping" }],
+      max_tokens: 1,
+      temperature: 0,
+    },
+    20000,
+  );
+  steps.push(toStep("POST /api/v1/chat/completions (model probe)", ping));
+
+  if (ping.error) {
+    const error = operatorError(ping.error, key);
+    checks.openrouter = { ok: false, label: API_LABEL, detail: error };
+    return done(false, error, pricing);
+  }
+  if (ping.status === 401 || ping.status === 403) {
+    const error = keyRejectedMessage(ping.status, extractErrorMessage(parseBody(ping.body), ping.status), fingerprint, PROVIDER);
+    checks.openrouter = { ok: false, label: API_LABEL, detail: error };
+    return done(false, error, pricing);
+  }
+  if (ping.status === 402) {
+    const error = "NanoGPT needs credits on this key. Add balance at nano-gpt.com/api, then test again.";
+    checks.openrouter = { ok: false, label: API_LABEL, detail: error };
+    return done(false, error, pricing);
+  }
+  if (ping.status < 200 || ping.status >= 300) {
+    const error = redact(extractErrorMessage(parseBody(ping.body), ping.status), key);
+    checks.openrouter = { ok: false, label: API_LABEL, detail: error };
+    return done(false, error, pricing);
+  }
+
+  checks.openrouter = {
+    ok: true,
+    label: API_LABEL,
+    detail: `Connected · ${fingerprint.chars} characters`,
+  };
+  for (const [slot, , label] of slots) {
+    if (checks[slot].ok) checks[slot] = { ok: true, label, detail: "Ready" };
+  }
 
   const ok = Object.values(checks).every((c) => c.ok);
   const failed = Object.values(checks).find((c) => !c.ok);
@@ -329,8 +347,8 @@ export async function complete(opts: {
   temperature: number;
   responseFormat?: Record<string, unknown>;
 }): Promise<Completion> {
-  const key = sanitizeApiKey(opts.apiKey);
-  if (!key) throw new Error("OpenRouter is not connected. Connect your API key before running the Council.");
+  const key = sanitizeApiKey(opts.apiKey, PROVIDER);
+  if (!key) throw new Error(`${API_LABEL} is not connected. Connect your API key before running the Council.`);
   const body: Record<string, unknown> = {
     model: opts.model,
     messages: opts.messages,
@@ -348,19 +366,17 @@ export async function complete(opts: {
       signal: AbortSignal.timeout(COMPLETE_TIMEOUT_MS),
     });
   } catch (err) {
-    throw new ProviderError(
-      toProviderFailure(err, { provider: "openrouter", model: opts.model, stage: "complete" }, key),
-    );
+    throw new ProviderError(toProviderFailure(err, { provider: PROVIDER, model: opts.model, stage: "complete" }, key));
   }
   const textBody = redact(await res.text(), key);
   const payload = parseBody(textBody);
   if (res.status === 401 || res.status === 403) {
-    throw new Error(keyRejectedMessage(res.status, extractErrorMessage(payload, res.status), keyFingerprint(key)));
+    throw new Error(keyRejectedMessage(res.status, extractErrorMessage(payload, res.status), keyFingerprint(key, PROVIDER), PROVIDER));
   }
   if (!res.ok) {
     throw new ProviderError(
       providerFailure({
-        provider: "openrouter",
+        provider: PROVIDER,
         model: opts.model,
         stage: "complete",
         httpStatus: res.status,

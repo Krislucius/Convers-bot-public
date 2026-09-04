@@ -118,7 +118,7 @@ function SettingsPage() {
     const raw = apiKey;
     const body = creds();
     if (!body.apiKey && !savedSlot.saved) {
-      const text = `Paste a ${meta.name} API key first.`;
+      const text = "Paste your API key first.";
       setMsg(text);
       setLog(localFailLog(text, raw, ""));
       return false;
@@ -132,7 +132,7 @@ function SettingsPage() {
       }
     }
     setBusy(true);
-    setMsg(kind === "save" ? "Saving…" : "Testing connection…");
+    setMsg(kind === "save" ? "Saving…" : "Testing GPT, Grok, and Claude…");
     try {
       const report = await testProvider(body);
       setChecks(report.checks);
@@ -161,10 +161,14 @@ function SettingsPage() {
     const raw = apiKey;
     const body = creds();
     if (!body.apiKey && !savedSlot.saved) {
-      const text = `Paste a ${meta.name} API key first.`;
+      const text = "Paste your API key first.";
       setMsg(text);
       setLog(localFailLog(text, raw, ""));
       return;
+    }
+    let tested = true;
+    if (body.apiKey) {
+      tested = await runProbe("test");
     }
     setBusy(true);
     try {
@@ -175,21 +179,14 @@ function SettingsPage() {
       setBusy(false);
       return;
     }
-    if (!body.apiKey) {
-      setMsg(`${meta.name} is saved on this account.`);
-      setBusy(false);
-      void navigate({ to: "/" });
-      return;
-    }
-    setMsg(`${meta.name} is saved on this account. Testing connection…`);
     setBusy(false);
-    const ok = await runProbe("save");
-    if (ok) {
-      setMsg(`${meta.name} is saved on this account.`);
+    const savedCopy = meta.id === "openrouter" ? "The API key" : meta.name;
+    if (tested) {
+      setMsg(`${savedCopy} is saved on this account.`);
       void navigate({ to: "/" });
       return;
     }
-    setMsg(`${meta.name} is saved on this account, but the connection test failed.`);
+    setMsg(`${savedCopy} is saved on this account, but the connection test failed.`);
   }
 
   async function onClear() {
@@ -208,8 +205,8 @@ function SettingsPage() {
     <Page>
       <PageHeader title="API Settings">
         <p className="max-w-measure text-muted">
-          Keys are stored on this signed-in account, not in the browser. A new device can use them after you
-          sign in. The full secret is never shown again after save.
+          Keys are stored on this signed-in account, not in the browser. Test GPT, Grok, and Claude, then Save.
+          A new device can use the key after you sign in. The full secret is never shown again after save.
         </p>
       </PageHeader>
       <Panel>
@@ -242,7 +239,7 @@ function SettingsPage() {
               })}
             </div>
           </fieldset>
-          <Field label={`${meta.name} API Key`}>
+          <Field label={`${meta.name} key`}>
             <div className="flex flex-wrap gap-2">
               <TextInput
                 type={showKey ? "text" : "password"}
@@ -307,7 +304,7 @@ function SettingsPage() {
               Test Connection
             </PrimaryButton>
             <PrimaryButton type="submit" disabled={busy}>
-              Save & Start
+              Save
             </PrimaryButton>
             <button
               type="button"
@@ -358,7 +355,7 @@ function SettingsPage() {
 }
 
 function labelFor(key: string): string {
-  if (key === "openrouter") return "OpenRouter";
+  if (key === "openrouter") return "API";
   if (key === "openrusrouter") return "OpenRusRouter";
   if (key === "gpt") return "GPT Architect";
   if (key === "grok") return "Grok Adversary";

@@ -4,6 +4,7 @@ import type { ProviderId } from "./types";
 const INVISIBLE =
   // eslint-disable-next-line no-control-regex -- strip C0/C1/format chars from pasted keys
   /[\u0000-\u0020\u007F-\u00A0\u1680\u2000-\u200F\u2028-\u202F\u205F\u2060\u3000\uFEFF]/g;
+const NANO_TOKEN = /sk-nano-[A-Za-z0-9_-]+/i;
 const OPENROUTER_TOKEN = /sk-or-[A-Za-z0-9_-]+/i;
 const OPENRUS_TOKEN = /orr_(?:live|test)_[A-Za-z0-9_-]+/i;
 
@@ -28,7 +29,7 @@ export function mergeStoredApiKeys(
 export function detectProvider(raw: string): ProviderId | null {
   const cleaned = raw.replace(INVISIBLE, "");
   if (OPENRUS_TOKEN.test(cleaned)) return "openrusrouter";
-  if (OPENROUTER_TOKEN.test(cleaned)) return "openrouter";
+  if (NANO_TOKEN.test(cleaned)) return "openrouter";
   return null;
 }
 
@@ -37,29 +38,30 @@ export function sanitizeApiKey(raw: string, provider?: ProviderId): string {
   let key = raw.replace(INVISIBLE, "");
   key = key.replace(/^['"`]+|['"`]+$/g, "");
   const assigned = key.match(
-    /(?:OPENRUSROUTER_API_KEY|OPENROUTER_API_KEY|OR_API_KEY|API_KEY|api[_-]?key)\s*[=:]\s*(.+)$/i,
+    /(?:NANOGPT_API_KEY|NANO_GPT_API_KEY|NANO_API_KEY|OPENRUSROUTER_API_KEY|OPENROUTER_API_KEY|OR_API_KEY|API_KEY|api[_-]?key)\s*[=:]\s*(.+)$/i,
   );
   if (assigned?.[1]) {
     key = assigned[1].replace(/^['"`]+|['"`]+$/g, "");
   }
   key = key.replace(/^Bearer/i, "");
   const orr = key.match(OPENRUS_TOKEN);
-  const openrouter = key.match(OPENROUTER_TOKEN);
+  const nano = key.match(NANO_TOKEN);
   if (provider === "openrusrouter") {
     if (orr) return orr[0];
     return key.replace(/[^A-Za-z0-9_-]/g, "");
   }
   if (provider === "openrouter") {
-    if (openrouter) return openrouter[0];
+    if (nano) return nano[0];
+    if (OPENROUTER_TOKEN.test(key)) return "";
     return key.replace(/[^A-Za-z0-9_-]/g, "");
   }
   if (orr) return orr[0];
-  if (openrouter) return openrouter[0];
+  if (nano) return nano[0];
   return key.replace(/[^A-Za-z0-9_-]/g, "");
 }
 
 export function looksMasked(raw: string): boolean {
-  return /(sk-or-|orr_(?:live|test)_)/i.test(raw) && /(\.{3}|…|•{2,}|·{2,})/.test(raw);
+  return /(sk-nano-|sk-or-|orr_(?:live|test)_)/i.test(raw) && /(\.{3}|…|•{2,}|·{2,})/.test(raw);
 }
 
 export function maskKey(raw: string, provider?: ProviderId): string {
@@ -74,7 +76,7 @@ export function keyFingerprint(raw: string, provider?: ProviderId): { chars: num
   const prefix = /^orr_/i.test(value) ? value.slice(0, 9) : value.slice(0, 8);
   return {
     chars: value.length,
-    prefix: prefix || (provider === "openrusrouter" ? "orr_live_" : "sk-or-v1"),
+    prefix: prefix || (provider === "openrusrouter" ? "orr_live_" : "sk-nano-"),
   };
 }
 
@@ -101,7 +103,13 @@ export function describeKey(key: string, provider: ProviderId = "openrouter"): {
       text: `This looks like an xAI key. ${meta.name} keys start with ${meta.keyPrefix}.`,
     };
   }
-  if (/^sk-proj-/i.test(value) || (/^sk-(?!or-)/i.test(value) && provider === "openrouter")) {
+  if (provider === "openrouter" && OPENROUTER_TOKEN.test(key)) {
+    return {
+      ok: false,
+      text: "That is an OpenRouter key. This app uses NanoGPT. Create a key at nano-gpt.com/api.",
+    };
+  }
+  if (/^sk-proj-/i.test(value) || (/^sk-(?!nano-|or-)/i.test(value) && provider === "openrouter")) {
     return {
       ok: false,
       text: `This looks like an OpenAI key. Create a ${meta.name} key at ${meta.keysUrl.replace("https://", "")}.`,
@@ -111,7 +119,7 @@ export function describeKey(key: string, provider: ProviderId = "openrouter"): {
     if (!/^orr_(?:live|test)_/i.test(value)) {
       return {
         ok: false,
-        text: "OpenRusRouter keys start with orr_live_. OpenRouter, ChatGPT Plus, or Grok keys will not work here.",
+        text: "OpenRusRouter keys start with orr_live_. NanoGPT, ChatGPT Plus, or Grok keys will not work here.",
       };
     }
     if (value.length < 20) {
@@ -125,21 +133,21 @@ export function describeKey(key: string, provider: ProviderId = "openrouter"): {
       text: `Looks like an OpenRusRouter key · ${value.length} characters`,
     };
   }
-  if (!/^sk-or-/i.test(value)) {
+  if (!/^sk-nano-/i.test(value)) {
     return {
       ok: false,
-      text: "OpenRouter keys start with sk-or-v1-. ChatGPT Plus, Grok, or OpenRusRouter keys will not work here.",
+      text: "NanoGPT keys start with sk-nano-. OpenRouter, ChatGPT Plus, or Grok keys will not work here.",
     };
   }
-  if (value.length < 48) {
+  if (value.length < 20) {
     return {
       ok: false,
-      text: `Too short (${value.length} characters). A real OpenRouter secret is usually 70+ characters. Paste the full key shown once at creation, not the dotted preview.`,
+      text: `Too short (${value.length} characters). Paste the full sk-nano-… secret from nano-gpt.com/api.`,
     };
   }
   return {
     ok: true,
-    text: `Looks like an OpenRouter key · ${value.length} characters`,
+    text: `Looks like a NanoGPT key · ${value.length} characters`,
   };
 }
 
@@ -178,9 +186,10 @@ export function redact(text: string, apiKey = ""): string {
   const key = sanitizeApiKey(apiKey);
   if (key) out = out.split(key).join("[redacted]");
   return out
+    .replace(/sk-nano-[A-Za-z0-9_-]+/gi, "[redacted]")
     .replace(/sk-or-v1-[A-Za-z0-9_-]+/g, "[redacted]")
     .replace(/orr_(?:live|test)_[A-Za-z0-9_-]+/gi, "[redacted]")
-    .replace(/OPENROUTER_API_KEY/gi, "API key")
+    .replace(/NANOGPT_API_KEY|NANO_GPT_API_KEY|OPENROUTER_API_KEY/gi, "API key")
     .replace(/OPENRUSROUTER_API_KEY/gi, "API key");
 }
 

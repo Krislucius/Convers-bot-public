@@ -139,7 +139,7 @@ export function assertRunCredentials(creds: ProviderCreds): string | null {
   const pasted = typeof creds.apiKey === "string" ? creds.apiKey : "";
   // Empty apiKey is the signed-in account path: the secret lives in
   // account_settings and completeChat resolves it server-side. Requiring a
-  // client-side key made OpenRouter READY + Run Council print "not connected".
+  // client-side key made API READY + Run Council print "not connected".
   if (pasted.trim()) {
     const key = sanitizeApiKey(pasted, creds.provider);
     if (!key) return `${who} is not connected. Connect your API key before running the Council.`;

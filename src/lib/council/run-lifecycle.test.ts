@@ -174,6 +174,10 @@ describe("assertRunCredentials", () => {
 
   it("hides a leftover disconnect banner once the account key is ready", () => {
     assert.equal(
+      isStaleDisconnectError("API is not connected. Connect your API key before running the Council.", true),
+      true,
+    );
+    assert.equal(
       isStaleDisconnectError("OpenRouter is not connected. Connect your API key before running the Council.", true),
       true,
     );

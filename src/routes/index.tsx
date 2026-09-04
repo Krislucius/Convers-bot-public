@@ -29,7 +29,7 @@ function Home() {
       {!config.ready ? (
         <Banner
           title="AI Council is not connected yet."
-          body={`You can still create projects and tasks. Council runs need a ${providerName(config.provider)} key.`}
+          body="You can still create projects and tasks. Council runs need a saved API key."
           action={
             <Link
               to="/settings"

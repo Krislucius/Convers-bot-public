@@ -64,11 +64,11 @@ function publicSettings(row: SettingsRow | null): AccountSettingsPublic {
     claudeModel: row?.claude_model?.trim() || DEFAULT_CLAUDE,
     maxCostUsd: Number(row?.max_cost_usd) > 0 ? Number(row?.max_cost_usd) : DEFAULT_MAX_COST_USD,
     openrouter: {
-      saved: Boolean(row?.openrouter_key),
+      saved: Boolean(sanitizeApiKey(row?.openrouter_key ?? "", "openrouter")),
       masked: row?.openrouter_key ? maskKey(row.openrouter_key, "openrouter") : "",
     },
     openrusrouter: {
-      saved: Boolean(row?.openrusrouter_key),
+      saved: Boolean(sanitizeApiKey(row?.openrusrouter_key ?? "", "openrusrouter")),
       masked: row?.openrusrouter_key ? maskKey(row.openrusrouter_key, "openrusrouter") : "",
     },
   };

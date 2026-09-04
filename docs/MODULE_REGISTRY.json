@@ -141,7 +141,7 @@
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/run-council.ts",
       "architecture_revision": "CB-ARCH-20260829-001",
-      "responsibilities": ["OpenRouter and OpenRusRouter server functions", "key resolve from account"],
+      "responsibilities": ["NanoGPT and OpenRusRouter server functions", "key resolve from account"],
       "dependencies": ["account.persistence"],
       "supersedes": []
     },

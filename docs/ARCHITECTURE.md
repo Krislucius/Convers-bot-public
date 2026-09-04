@@ -14,7 +14,7 @@ Conversation Bot is a signed-in workspace for reconstructing project decisions f
 - Framework: TypeScript, React 19, TanStack Start/Router, Vite, Nitro
 - Auth: Better Auth via the Grok broker (Google, X, email/password)
 - Data: Postgres (Neon in production, PGLite in preview), scoped by `user_id`
-- Providers: OpenRouter and OpenRusRouter, keys on the account row
+- Providers: NanoGPT (Connect API, `sk-nano-…`) and OpenRusRouter, keys on the account row
 
 There is one production application and one production host. The Python tree `conversation-bot/` is SUPERSEDED and is not an implementation target.
 
@@ -30,7 +30,7 @@ UI (routes + council-ui)
 → task create (CREATE / REVIEW / DECIDE)
 → council.orchestrator (only path)
 → council.protocol (roles + synthesis schemas + gate)
-→ council.providers (OpenRouter / OpenRusRouter)
+→ council.providers (NanoGPT / OpenRusRouter)
 → Implementation Packet (when CREATE is APPROVED)
 → persist.postgres
 ```

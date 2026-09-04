@@ -1,7 +1,7 @@
 # Current system state
 
 Revision: CB-ARCH-20260901-002
-Recorded: 2026-09-04T10:10:00.000Z
+Recorded: 2026-09-04T11:40:00.000Z
 
 Factual state of the authoritative tree. Not a backlog.
 
@@ -19,7 +19,7 @@ Factual state of the authoritative tree. Not a backlog.
 
 ## CURRENT DATA MODEL
 
-Postgres tables from migrations `0001`–`0006`: Better Auth identity; `account_settings`; `projects`; `context_items`; `tasks`; `agent_responses`; `council_results` (including `review_verdict` and `structured`); `chat_sources`; `history_messages`; `context_manifests`; `artifacts`; `project_files`; `evidence_chunks`; `evidence_items`; `extractor_cache`; `implementation_packets`. All app tables carry `user_id`. Sandbox without `DATABASE_URL` persists the PGLite cluster at `/workspace/artifacts/pglite` so signed-in account projects and API keys survive Vite restarts and execution changes; production uses Neon. The process never closes a healthy PGLite handle to swap dataDir (that left Better Auth on a dead client and sandbox Google/X returned "Sign-in was cancelled or failed" / `PGlite is closed`). Closed handles reopen. Account writes `CHECKPOINT` the cluster. The live-preview Better Auth signing secret is stored at `/workspace/artifacts/grok-auth-preview-secret` so a process restart does not mint a new secret against durable users. Client project/key writes no longer wait on `accountBound` (that dropped the first save when hydrate lagged or HMR reset the flag) and retry Unauthorized / closed-PGLite. Settings Save writes the key to the account before the connection probe, so a failed OpenRouter test cannot swallow the secret. The client Zustand account store is kept on `window.__cbAccountStore__` so an HMR reload of the store module does not blank the workspace.
+Postgres tables from migrations `0001`–`0006`: Better Auth identity; `account_settings`; `projects`; `context_items`; `tasks`; `agent_responses`; `council_results` (including `review_verdict` and `structured`); `chat_sources`; `history_messages`; `context_manifests`; `artifacts`; `project_files`; `evidence_chunks`; `evidence_items`; `extractor_cache`; `implementation_packets`. All app tables carry `user_id`. Sandbox without `DATABASE_URL` persists the PGLite cluster at `/workspace/artifacts/pglite` so signed-in account projects and API keys survive Vite restarts and execution changes; production uses Neon. The process never closes a healthy PGLite handle to swap dataDir (that left Better Auth on a dead client and sandbox Google/X returned "Sign-in was cancelled or failed" / `PGlite is closed`). Closed handles reopen. Account writes `CHECKPOINT` the cluster. The live-preview Better Auth signing secret is stored at `/workspace/artifacts/grok-auth-preview-secret` so a process restart does not mint a new secret against durable users. Client project/key writes no longer wait on `accountBound` (that dropped the first save when hydrate lagged or HMR reset the flag) and retry Unauthorized / closed-PGLite. Settings Test probes GPT, Grok, and Claude, then Save writes the key to the account, so a failed NanoGPT test cannot swallow the secret. The client Zustand account store is kept on `window.__cbAccountStore__` so an HMR reload of the store module does not blank the workspace.
 
 ## CURRENT AUTHENTICATION
 
@@ -27,7 +27,7 @@ Auth is ON. Better Auth + Grok broker. Google, X, email/password. Session requir
 
 ## CURRENT PROVIDER
 
-OpenRouter (`sk-or-…`) and OpenRusRouter (`orr_live_…`). Keys persist on `account_settings` as soon as Save runs, even if the connection probe fails. Models and `max_cost_usd` persist with the account. After save the browser does not keep the secret (`creds.apiKey` is empty); Council Run resolves it server-side. `assertRunCredentials` must not treat that empty client field as "not connected" when the account already shows READY.
+NanoGPT (`sk-nano-…`, Connect API) and OpenRusRouter (`orr_live_…`). Settings Test probes GPT, Grok, and Claude on NanoGPT, then Save writes the key to `account_settings` even if the probe fails. Models and `max_cost_usd` persist with the account. After save the browser does not keep the secret (`creds.apiKey` is empty); Council Run resolves it server-side. `assertRunCredentials` must not treat that empty client field as "not connected" when the account already shows READY. A leftover OpenRouter `sk-or-…` secret is not treated as a connected NanoGPT key.
 
 ## CURRENT COUNCIL FLOW
 

@@ -12,11 +12,11 @@ export type ProviderMeta = {
 export const PROVIDERS: Record<ProviderId, ProviderMeta> = {
   openrouter: {
     id: "openrouter",
-    name: "OpenRouter",
-    keysUrl: "https://openrouter.ai/keys",
-    keyPrefix: "sk-or-v1-",
-    placeholder: "sk-or-v1-••••••••••••••••••••",
-    help: "Copy the full sk-or-v1-… value shown once. The dotted line in the keys table is not the secret.",
+    name: "API",
+    keysUrl: "https://nano-gpt.com/api",
+    keyPrefix: "sk-nano-",
+    placeholder: "sk-nano-••••••••••••••••••••",
+    help: "Create a NanoGPT key and paste the full sk-nano-… value shown once. GPT, Grok, and Claude run through this one key.",
   },
   openrusrouter: {
     id: "openrusrouter",
@@ -24,7 +24,7 @@ export const PROVIDERS: Record<ProviderId, ProviderMeta> = {
     keysUrl: "https://openrusrouter.ru/cabinet/keys",
     keyPrefix: "orr_live_",
     placeholder: "orr_live_••••••••••••••••••••",
-    help: "Create a key in the OpenRusRouter cabinet and paste the full orr_live_… value. This is a separate service from OpenRouter.",
+    help: "Create a key in the OpenRusRouter cabinet and paste the full orr_live_… value. This is a separate service from NanoGPT.",
   },
 };
 
