@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArtifactPanel, ContextManifestPanel } from "@/components/context-manifest-panel";
 import { CouncilFold } from "@/components/council-fold";
 import { CouncilRunPanel } from "@/components/council-run-panel";
@@ -8,7 +8,7 @@ import { Crumb, DangerButton, GhostButton, Page, PageHeader, Panel, StatusPill }
 import { ImplementationPacketPanel } from "@/components/implementation-packet-panel";
 import { OpLogPanel } from "@/components/op-log";
 import { displayVerdict } from "@/lib/council/evaluate";
-import { runCouncil } from "@/lib/council/orchestrate";
+import { runCouncil, isStaleDisconnectError, runCredsFromReady } from "@/lib/council/orchestrate";
 import { providerName } from "@/lib/council/providers";
 import {
   applyCouncilOutput,
@@ -85,6 +85,14 @@ function TaskPage() {
   const [confirmRestart, setConfirmRestart] = useState(false);
   const runGen = useRef(0);
 
+  useEffect(() => {
+    if (!config.ready) return;
+    if (isStaleDisconnectError(msg, true)) setMsg("");
+    if (task && isStaleDisconnectError(task.error ?? "", true)) {
+      patchTask(task.id, { error: null });
+    }
+  }, [config.ready, msg, task?.id, task?.error]);
+
   if (!task || !project) {
     return (
       <Page>
@@ -153,7 +161,8 @@ function TaskPage() {
       );
       return;
     }
-    if (!creds) {
+    const runCreds = creds ?? runCredsFromReady(config);
+    if (!runCreds) {
       const text = `${providerName(config.provider)} is not connected. Connect your API key before running the Council.`;
       setMsg(text);
       setLog(
@@ -203,7 +212,7 @@ function TaskPage() {
     });
     try {
       const out = await runCouncil({
-        creds,
+        creds: runCreds,
         project: currentProject,
         context: currentContext,
         task: currentTask,
@@ -321,7 +330,7 @@ function TaskPage() {
           ready={config.ready}
           providerLabel={providerName(config.provider)}
           busy={busy}
-          message={msg}
+          message={isStaleDisconnectError(msg, config.ready) ? "" : msg}
           onRun={(prepared) => void onRun(prepared)}
         />
       ) : null}

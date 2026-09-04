@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { survivingResponses } from "./agents.ts";
-import { runCouncil, type CouncilProgress } from "./orchestrate.ts";
+import { runCouncil, assertRunCredentials, isStaleDisconnectError, runCredsFromReady, type CouncilProgress } from "./orchestrate.ts";
 import { providerFailure } from "./provider-error.ts";
 import {
   beginCouncilRun,
@@ -157,6 +157,57 @@ afterEach(() => {
   resetCouncilRuns();
 });
 
+describe("assertRunCredentials", () => {
+  it("allows an empty apiKey when models are set (account-stored secret)", () => {
+    assert.equal(assertRunCredentials({ ...creds, apiKey: "" }), null);
+  });
+
+  it("rejects missing models even with a stored-key empty apiKey", () => {
+    const err = assertRunCredentials({ ...creds, apiKey: "", gptModel: "" });
+    assert.match(err ?? "", /Choose GPT, Grok, and Claude models/);
+  });
+
+  it("rejects a pasted key that sanitizes to empty", () => {
+    const err = assertRunCredentials({ ...creds, apiKey: "!!!" });
+    assert.match(err ?? "", /is not connected\. Connect your API key/);
+  });
+
+  it("hides a leftover disconnect banner once the account key is ready", () => {
+    assert.equal(
+      isStaleDisconnectError("OpenRouter is not connected. Connect your API key before running the Council.", true),
+      true,
+    );
+    assert.equal(
+      isStaleDisconnectError("OpenRouter is not connected. Connect your API key before running the Council.", false),
+      false,
+    );
+  });
+
+  it("runCredsFromReady sends an empty apiKey when the account already shows READY", () => {
+    const ready = runCredsFromReady({
+      ready: true,
+      provider: "openrouter",
+      gptModel: creds.gptModel,
+      grokModel: creds.grokModel,
+      claudeModel: creds.claudeModel,
+      maxCostUsd: creds.maxCostUsd,
+    });
+    assert.equal(ready?.apiKey, "");
+    assert.equal(assertRunCredentials(ready!), null);
+    assert.equal(
+      runCredsFromReady({
+        ready: false,
+        provider: "openrouter",
+        gptModel: creds.gptModel,
+        grokModel: creds.grokModel,
+        claudeModel: creds.claudeModel,
+        maxCostUsd: 1,
+      }),
+      null,
+    );
+  });
+});
+
 describe("council run lifecycle", () => {
   it("marks GPT/Grok/Claude RUNNING before any provider call returns", async () => {
     const progress: CouncilProgress[] = [];
@@ -188,6 +239,21 @@ describe("council run lifecycle", () => {
     assert.equal(round1?.agents?.GROK?.state, "RUNNING");
     assert.equal(round1?.agents?.CLAUDE?.state, "RUNNING");
     assert.equal(seenRunningBeforeReturn, true);
+  });
+
+  it("dispatches providers when apiKey is empty because the account holds the secret", async () => {
+    let calls = 0;
+    const out = await runCouncil(
+      baseInput({
+        creds: { ...creds, apiKey: "" },
+        completeChat: async (opts) => {
+          calls += 1;
+          return { ok: true, completion: completion(opts.model) };
+        },
+      }),
+    );
+    assert.ok(calls >= 3);
+    assert.equal(out.task.error?.includes("not connected") ?? false, false);
   });
 
   it("Stop during PREPARING never dispatches providers", async () => {

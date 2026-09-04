@@ -115,14 +115,45 @@ function waitingAgents(): Record<AgentKey, AgentProgress> {
   };
 }
 
+export function runCredsFromReady(config: {
+  ready: boolean;
+  provider: ProviderCreds["provider"];
+  gptModel: string;
+  grokModel: string;
+  claudeModel: string;
+  maxCostUsd: number;
+}): ProviderCreds | null {
+  if (!config.ready) return null;
+  return {
+    provider: config.provider,
+    apiKey: "",
+    gptModel: config.gptModel,
+    grokModel: config.grokModel,
+    claudeModel: config.claudeModel,
+    maxCostUsd: config.maxCostUsd,
+  };
+}
+
 export function assertRunCredentials(creds: ProviderCreds): string | null {
-  const key = sanitizeApiKey(creds.apiKey, creds.provider);
   const who = providerName(creds.provider);
-  if (!key) return `${who} is not connected. Connect your API key before running the Council.`;
+  const pasted = typeof creds.apiKey === "string" ? creds.apiKey : "";
+  // Empty apiKey is the signed-in account path: the secret lives in
+  // account_settings and completeChat resolves it server-side. Requiring a
+  // client-side key made OpenRouter READY + Run Council print "not connected".
+  if (pasted.trim()) {
+    const key = sanitizeApiKey(pasted, creds.provider);
+    if (!key) return `${who} is not connected. Connect your API key before running the Council.`;
+  }
   if (!creds.gptModel.trim() || !creds.grokModel.trim() || !creds.claudeModel.trim()) {
     return "Choose GPT, Grok, and Claude models in API Settings.";
   }
   return null;
+}
+
+export function isStaleDisconnectError(message: string, accountReady: boolean): boolean {
+  return (
+    accountReady && /is not connected\. Connect your API key before running the Council/i.test(message)
+  );
 }
 
 function tagRun(row: AgentResponse, runId: string): AgentResponse {

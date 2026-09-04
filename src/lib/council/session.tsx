@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useMemo, useState, type ReactNo
 import { loadAccountSettings, saveAccountSettings } from "./account";
 import { sanitizeApiKey } from "./api-key";
 import { runWithPersistRetry } from "./persist-queue";
+import { runCredsFromReady } from "./orchestrate";
 import { DEFAULT_CLAUDE, DEFAULT_GPT, DEFAULT_GROK, DEFAULT_MAX_COST_USD, isProviderId } from "./providers";
 import type { AccountSettingsPublic, ProviderCreds, ProviderId } from "./types";
 
@@ -65,16 +66,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const api = useMemo<SessionApi>(
     () => ({
       config,
-      creds: config.ready
-        ? {
-            provider: config.provider,
-            apiKey: "",
-            gptModel: config.gptModel,
-            grokModel: config.grokModel,
-            claudeModel: config.claudeModel,
-            maxCostUsd: config.maxCostUsd,
-          }
-        : null,
+      creds: runCredsFromReady(config),
       hydrateFromAccount,
       setProvider: (provider) => {
         setConfig((prev) => {
