@@ -2,12 +2,12 @@
   "project_id": "01a048b8-c1f7-7382-9dfd-fb30bff7137d",
   "production_host": "https://swift-lake-solar-cosmic.grok.me",
   "architecture_revision": "CB-ARCH-20260901-002",
-  "architecture_hash": "aff27003cc3bdf1860a02814a4f4355733e80ae2ac0b188403019cb91e114ab5",
+  "architecture_hash": "d05c9dade15823f7cca46b0a50e0320fef579000ac9d51304f7514896da8e720",
   "module_registry_hash": "698316d65c19ab5cfe47adf752638730600cb74020eda5f3ba7b6da904bc3b5f",
   "schema_hash": "3f3c2bf60d21261d714c4ba3d133321d7f80f3de0d652b8ed7f75d90e40d5598",
-  "critical_contract_hash": "f74df89057a620a8c2b88e59977b94e1c5e5da677e677caaa739213d382cba62",
+  "critical_contract_hash": "6993f62a9987504fc6772a1087daa0c767014f7917c95f00ca4e746e6d607223",
   "created_at": "2026-08-29T18:45:00.000Z",
-  "build_id": "CB-BUILD-20260903-019",
+  "build_id": "CB-BUILD-20260904-020",
   "schema_version": "0006_closed_loop",
   "source_root": "src",
   "protected_invariants": [
@@ -23,6 +23,6 @@
     "SINGLE_CONTEXT_PACKER",
     "IMPLEMENTATION_PACKET_HANDOFF"
   ],
-  "runtime_shell_hash": "62de61ecd0352392b1acb3606c3d5a6771975de46f88566a371f19ee03c0f432",
+  "runtime_shell_hash": "798ee8f88852ed3006b6624985eaeb669f26a525f917a0c4cbee1090331e19f5",
   "runtime_shell_id": "CB-SHELL-20260903-001"
 }

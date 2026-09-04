@@ -8,6 +8,7 @@ import {
   extractSessionToken,
   isAuthFramed,
   MAX_AUTO_LANDS,
+  allowAutoLand,
   oauthPopupPath,
   OAUTH_LEAVE_FRAME_ANCESTORS,
   renderOAuthLeaveHtml,
@@ -18,6 +19,18 @@ import {
 
 test("auto-land allows only one bounce", () => {
   assert.equal(MAX_AUTO_LANDS, 1);
+  assert.equal(allowAutoLand({ hops: 0, signedOut: false }), true);
+  assert.equal(allowAutoLand({ hops: 1, signedOut: false }), false);
+});
+
+test("explicit sign-out blocks auto-land even with zero hops", () => {
+  assert.equal(allowAutoLand({ hops: 0, signedOut: true }), false);
+  assert.equal(allowAutoLand({ hops: 0, signedOut: false }), true);
+  for (let i = 0; i < 100; i += 1) {
+    assert.equal(allowAutoLand({ hops: i % 3, signedOut: true }), false, `signed-out hop ${i}`);
+    assert.equal(allowAutoLand({ hops: 0, signedOut: false }), true);
+    assert.equal(allowAutoLand({ hops: 1, signedOut: false }), false);
+  }
 });
 
 test("extracts bearer from Better Auth email payloads", () => {

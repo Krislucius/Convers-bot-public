@@ -35,7 +35,7 @@ export function StaySignedIn() {
         disabled={busy}
         onClick={() => {
           setBusy(true);
-          void signOut("/login").catch(() => setBusy(false));
+          void signOut().catch(() => setBusy(false));
         }}
       >
         {busy ? "Signing out…" : "Sign out"}

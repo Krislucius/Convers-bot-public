@@ -2,7 +2,7 @@ import { genericOAuthClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/react";
 import { runPreSignInSignOut, runSignOut } from "../../../scripts/sign-out-plan.mjs";
 import { GROK_PROVIDERS } from "./providers";
-import { oauthPopupPath, shouldPopupOAuth, waitForAuthPopup } from "../auth-loop";
+import { oauthPopupPath, shouldPopupOAuth, waitForAuthPopup, SIGN_OUT_PATH, markExplicitSignOut, clearExplicitSignOut } from "../auth-loop";
 
 /**
  * Better Auth client for this React SPA (browser-side).
@@ -127,6 +127,7 @@ export async function signIn(
     const token = await waitForAuthPopup(popup);
     if (!token) throw new Error("Sign-in was cancelled or failed");
     setBearerToken(token);
+    clearExplicitSignOut();
     // Refresh the client session store with the bearer attached (onRequest).
     // Avoid a full iframe reload when we're already on the destination — that
     // reload was the slow "still loading after the popup closed" feeling.
@@ -183,9 +184,10 @@ function openSignInPopup(providerId: string): Window | null {
  * a hand-rolled control must catch it and let the visitor retry. In the live
  * preview the local clear is sufficient, so it always resolves.
  */
-export async function signOut(redirectTo = "/"): Promise<void> {
+export async function signOut(redirectTo = SIGN_OUT_PATH): Promise<void> {
+  markExplicitSignOut();
   await runSignOut({
-    livePreview: inLivePreview(),
+    livePreview: inLivePreview() || shouldPopupOAuth(),
     hasBearer: Boolean(getBearerToken()),
     // Better Auth resolves with `{ error }` instead of rejecting, so surface a
     // failed response as a rejection for the sequence to act on.

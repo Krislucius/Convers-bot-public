@@ -14,6 +14,9 @@ import {
   isAuthReturning,
   resetAuthHops,
   SESSION_WAIT_MS,
+  getExplicitSignOutServerSnapshot,
+  getExplicitSignOutSnapshot,
+  subscribeExplicitSignOut,
 } from "@/lib/auth-loop";
 import {
   BOOT_READY_SCRIPT,
@@ -182,10 +185,15 @@ export function SignedInApp({
 }) {
   const { user, isPending } = useCurrentUserState();
   const ssrUser = usePeekSession(sessionUser);
-  const authed = user ?? fromSsr(ssrUser);
+  const signedOut = useSyncExternalStore(
+    subscribeExplicitSignOut,
+    getExplicitSignOutSnapshot,
+    getExplicitSignOutServerSnapshot,
+  );
+  const authed = signedOut ? null : user ?? fromSsr(ssrUser);
   const [clientWait, setClientWait] = useState(false);
-  const returning = isAuthReturning();
-  const kind = accountShellKind({ sessionUser: ssrUser, user });
+  const returning = signedOut ? false : isAuthReturning();
+  const kind = signedOut ? "guest" : accountShellKind({ sessionUser: ssrUser, user });
 
   useLayoutEffect(() => {
     markClientReady();

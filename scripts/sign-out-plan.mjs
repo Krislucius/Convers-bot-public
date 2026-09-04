@@ -100,11 +100,11 @@ export async function runSignOut({
   timeoutMs,
 }) {
   if (livePreview) {
-    // No bearer means a partitioned iframe with nothing to invalidate; with one,
-    // still invalidate it server-side, just don't block on the answer.
-    if (hasBearer) {
-      await settleWithin(requestSignOut, timeoutMs ?? signOutTimeoutMs(livePreview));
-    }
+    // Always ask the server to drop the cookie too. After popup / new-tab
+    // Google the iframe can have a first-party session cookie even when the
+    // bearer was already cleared — skipping this POST left Sign out bouncing
+    // straight back into the last account.
+    await settleWithin(requestSignOut, timeoutMs ?? signOutTimeoutMs(livePreview));
     clearToken();
     redirect();
     return;

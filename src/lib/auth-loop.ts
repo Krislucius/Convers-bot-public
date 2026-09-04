@@ -2,8 +2,11 @@ const HOPS_KEY = "grok-auth.hops";
 const TOKEN_KEY = "grok-auth.bearer-token";
 const RETURNING_KEY = "grok-auth.returning";
 const LANDING_KEY = "grok-auth.landing";
+const SIGNED_OUT_KEY = "grok-auth.signed-out";
 export const MAX_AUTO_LANDS = 1;
 export const SESSION_WAIT_MS = 5000;
+/** After Sign out, stay on the login form. Never bounce back into the last session. */
+export const SIGN_OUT_PATH = "/login?stay=1";
 
 export function readAuthHops(): number {
   if (typeof window === "undefined") return 0;
@@ -36,13 +39,74 @@ export function resetAuthHops(): void {
   }
 }
 
+const signOutListeners = new Set<() => void>();
+
+function emitExplicitSignOut(): void {
+  for (const listener of signOutListeners) listener();
+}
+
+export function markExplicitSignOut(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(SIGNED_OUT_KEY, "1");
+    window.sessionStorage.removeItem(RETURNING_KEY);
+    window.sessionStorage.removeItem(HOPS_KEY);
+    window.sessionStorage.removeItem(LANDING_KEY);
+  } catch {
+    /* ignore */
+  }
+  emitExplicitSignOut();
+}
+
+export function clearExplicitSignOut(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(SIGNED_OUT_KEY);
+  } catch {
+    /* ignore */
+  }
+  emitExplicitSignOut();
+}
+
+export function isExplicitSignOut(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.sessionStorage.getItem(SIGNED_OUT_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function subscribeExplicitSignOut(onStoreChange: () => void): () => void {
+  signOutListeners.add(onStoreChange);
+  return () => {
+    signOutListeners.delete(onStoreChange);
+  };
+}
+
+export function getExplicitSignOutSnapshot(): boolean {
+  return isExplicitSignOut();
+}
+
+export function getExplicitSignOutServerSnapshot(): boolean {
+  return false;
+}
+
+/** Auto-land is a one-shot after OAuth. An explicit Sign out must never bounce back in. */
+export function allowAutoLand(input: { hops?: number; signedOut?: boolean } = {}): boolean {
+  if (input.signedOut) return false;
+  const hops = input.hops ?? 0;
+  return hops < MAX_AUTO_LANDS;
+}
+
 export function shouldAutoLand(): boolean {
-  return readAuthHops() < MAX_AUTO_LANDS;
+  return allowAutoLand({ hops: readAuthHops(), signedOut: isExplicitSignOut() });
 }
 
 export function beginAutoLand(): boolean {
   if (typeof window === "undefined") return shouldAutoLand();
   try {
+    if (isExplicitSignOut()) return false;
     if (window.sessionStorage.getItem(LANDING_KEY) === "1") return true;
     if (!shouldAutoLand()) return false;
     window.sessionStorage.setItem(LANDING_KEY, "1");
@@ -96,6 +160,8 @@ export function captureSessionToken(payload: unknown): boolean {
   if (!token || typeof window === "undefined") return false;
   try {
     window.sessionStorage.setItem(TOKEN_KEY, token);
+    window.sessionStorage.removeItem(SIGNED_OUT_KEY);
+    emitExplicitSignOut();
     return true;
   } catch {
     return false;

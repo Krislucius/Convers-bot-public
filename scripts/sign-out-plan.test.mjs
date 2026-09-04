@@ -95,10 +95,10 @@ test("preview: a sign-out that never settles clears and redirects once the wait 
   assert.deepEqual(h.order, ["clear", "redirect"]);
 });
 
-test("preview: no bearer means nothing to invalidate, so no request is made", async () => {
+test("preview: no bearer still asks the server so a leftover cookie dies", async () => {
   const h = preview({ hasBearer: false });
   await h.run();
-  assert.equal(h.requests, 0);
+  assert.equal(h.requests, 1);
   assert.deepEqual(h.order, ["clear", "redirect"]);
 });
 

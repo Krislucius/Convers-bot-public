@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useLayoutEffect, useState } from "react";
 import { Page, PageHeader } from "@/components/council-ui";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
-import { SESSION_WAIT_MS, isAuthReturning, markAuthReturning, resetAuthHops } from "@/lib/auth-loop";
+import { SESSION_WAIT_MS, SIGN_OUT_PATH, isAuthReturning, isExplicitSignOut, markAuthReturning, resetAuthHops } from "@/lib/auth-loop";
 import { BOOT_READY_SCRIPT, markClientReady } from "@/lib/boot-watchdog";
 
 export const Route = createFileRoute("/signed-in")({ component: SignedInLanding });
@@ -17,6 +17,10 @@ function SignedInLanding() {
   }, []);
 
   useEffect(() => {
+    if (isExplicitSignOut()) {
+      window.location.replace(SIGN_OUT_PATH);
+      return;
+    }
     if (user) {
       resetAuthHops();
       window.location.replace("/");
