@@ -308,6 +308,21 @@ export async function getPglite(): Promise<import("@electric-sql/pglite").PGlite
 }
 
 /**
+ * Flush the sandbox cluster so a process restart cannot drop a just-saved
+ * API key or project. Neon is a no-op (the insert already committed).
+ */
+export async function checkpointPglite(): Promise<void> {
+  if (dbSource !== "pglite") return;
+  try {
+    const pg = await livePglite();
+    if (!pg || pg.closed) return;
+    await pg.exec("checkpoint");
+  } catch (err) {
+    console.error("[db] PGLite checkpoint failed:", err);
+  }
+}
+
+/**
  * Finish DB bootstrap before the server handles traffic.
  *
  * - **PGLite** (preview / no `DATABASE_URL`): open the durable (or in-memory)

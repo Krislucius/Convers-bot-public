@@ -12,6 +12,7 @@ import {
   persistAccountProject,
   persistAccountTask,
 } from "./account";
+import { runWithPersistRetry } from "./persist-queue";
 import { applyRemoteAccessChange, filterSelectedForProject, memoryChatIds } from "@/lib/history/provenance";
 import type { ChatSource, HistoryMessage } from "@/lib/history/types";
 import type { AccessStatus, ImportStatus } from "@/lib/history/types";
@@ -175,10 +176,12 @@ function persist(next: StoreShape) {
 }
 
 function enqueue(op: () => Promise<unknown>) {
-  if (!accountBound || typeof window === "undefined") return;
+  // Always attempt the write from the browser. Gating on `accountBound` dropped
+  // project rows when HMR reset the flag or hydrate lagged behind the first save.
+  if (typeof window === "undefined") return;
   persistQueue = persistQueue
     .then(async () => {
-      await op();
+      await runWithPersistRetry(op);
     })
     .catch((err) => {
       console.error("[account] persist failed", err);

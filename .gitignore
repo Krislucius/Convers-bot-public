@@ -35,6 +35,8 @@ Thumbs.db
 screenshots/
 # Sandbox PGLite cluster (account projects/sessions; not source)
 artifacts/pglite/
+# Sandbox Better Auth signing secret (pairs with durable PGLite)
+artifacts/grok-auth-preview-secret
 attachments/
 artifacts/browsed_files/
 artifacts/workspace-source/

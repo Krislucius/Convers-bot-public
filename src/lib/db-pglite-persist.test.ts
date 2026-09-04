@@ -88,4 +88,58 @@ describe("PGLite filesystem persistence", { timeout: 90_000 }, () => {
       await pg.close();
     }
   });
+
+  it("keeps account API keys after close and reopen", async () => {
+    const keysDir = mkdtempSync(join(tmpdir(), "cb-pglite-keys-"));
+    try {
+      const schema = `
+        create table if not exists account_settings (
+          user_id text primary key,
+          provider text not null default 'openrouter',
+          openrouter_key text not null default '',
+          openrusrouter_key text not null default '',
+          gpt_model text not null,
+          grok_model text not null,
+          claude_model text not null,
+          max_cost_usd numeric not null default 1,
+          updated_at text not null
+        );
+      `;
+      const first = new PGlite({ dataDir: keysDir, relaxedDurability: false });
+      await first.waitReady;
+      await first.exec(schema);
+      await first.query(
+        `insert into account_settings (
+          user_id, provider, openrouter_key, openrusrouter_key, gpt_model, grok_model, claude_model, max_cost_usd, updated_at
+        ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [
+          "user-sandbox",
+          "openrouter",
+          "sk-or-v1-persist-keep",
+          "",
+          "openai/gpt-5",
+          "x-ai/grok-4",
+          "anthropic/claude-sonnet-4",
+          1,
+          "2026-09-04T09:20:00.000Z",
+        ],
+      );
+      await first.exec("checkpoint");
+      await first.close();
+
+      const second = new PGlite({ dataDir: keysDir, relaxedDurability: false });
+      await second.waitReady;
+      await second.exec(schema);
+      const rows = await second.query<{ openrouter_key: string; provider: string }>(
+        "select provider, openrouter_key from account_settings where user_id = $1",
+        ["user-sandbox"],
+      );
+      assert.equal(rows.rows.length, 1);
+      assert.equal(rows.rows[0]?.provider, "openrouter");
+      assert.equal(rows.rows[0]?.openrouter_key, "sk-or-v1-persist-keep");
+      await second.close();
+    } finally {
+      rmSync(keysDir, { recursive: true, force: true });
+    }
+  });
 });

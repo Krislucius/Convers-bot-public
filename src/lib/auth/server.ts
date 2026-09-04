@@ -33,7 +33,6 @@ import { betterAuth } from "better-auth";
 import { bearer, genericOAuth } from "better-auth/plugins";
 import { tanstackStartCookies } from "better-auth/tanstack-start";
 import { getCookie } from "@tanstack/react-start/server";
-import { randomBytes } from "node:crypto";
 import { Pool } from "pg";
 import { ensureDbReady, getPglite } from "../db";
 import { neonPoolConfig } from "../db-pool";
@@ -41,6 +40,7 @@ import { emailAndPasswordEnabled } from "./email-password";
 import { GATE_PROVIDER_ID, gateIdentitySessions } from "./gate-session.server";
 import { GROK_PROVIDERS } from "./providers";
 import { pgliteDialect } from "./pglite-dialect";
+import { loadOrCreatePreviewAuthSecret } from "./preview-secret";
 import {
   GROK_ISSUER_DEFAULT,
   PREVIEW_ALLOWED_HOSTS,
@@ -52,17 +52,19 @@ import {
 void ensureDbReady();
 
 /**
- * Preview secret must outlive module reloads: PGLite (and its session rows) is
- * stored on `globalThis`, so an HMR re-eval of this file must NOT mint a new
- * signing secret or every existing session becomes invalid mid-dev. Process
- * restart clears both the secret and PGLite together.
+ * Preview secret must outlive module reloads AND process restarts: PGLite
+ * account rows now live on disk, so minting a new signing secret on every
+ * Vite start used to invalidate sessions and made the next Google/X login
+ * look like an empty account. HMR keeps the value on `globalThis`; restarts
+ * reload it from `/workspace/artifacts/grok-auth-preview-secret`.
  */
 const globalAuthRef = globalThis as typeof globalThis & {
   __grokAuthPreviewSecret__?: string;
 };
 function previewAuthSecret(): string {
-  globalAuthRef.__grokAuthPreviewSecret__ ??= randomBytes(32).toString("hex");
-  return globalAuthRef.__grokAuthPreviewSecret__;
+  const secret = loadOrCreatePreviewAuthSecret(process.env, globalAuthRef.__grokAuthPreviewSecret__);
+  globalAuthRef.__grokAuthPreviewSecret__ = secret;
+  return secret;
 }
 
 /** Read an env var, treating empty/whitespace as unset. */

@@ -166,19 +166,30 @@ function SettingsPage() {
       setLog(localFailLog(text, raw, ""));
       return;
     }
-    const ok = body.apiKey ? await runProbe("save") : true;
-    if (body.apiKey && !ok) return;
     setBusy(true);
     try {
       await save(body);
       setApiKey("");
-      setMsg(`${meta.name} is saved on this account.`);
-      void navigate({ to: "/" });
     } catch (err) {
       setMsg(err instanceof Error ? err.message : "Could not save to this account.");
-    } finally {
       setBusy(false);
+      return;
     }
+    if (!body.apiKey) {
+      setMsg(`${meta.name} is saved on this account.`);
+      setBusy(false);
+      void navigate({ to: "/" });
+      return;
+    }
+    setMsg(`${meta.name} is saved on this account. Testing connection…`);
+    setBusy(false);
+    const ok = await runProbe("save");
+    if (ok) {
+      setMsg(`${meta.name} is saved on this account.`);
+      void navigate({ to: "/" });
+      return;
+    }
+    setMsg(`${meta.name} is saved on this account, but the connection test failed.`);
   }
 
   async function onClear() {

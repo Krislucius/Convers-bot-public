@@ -45,6 +45,11 @@ function asJson<T>(value: unknown, fallback: T): T {
   return value as T;
 }
 
+async function durable(): Promise<void> {
+  const { checkpointPglite } = await import("@/lib/db");
+  await checkpointPglite();
+}
+
 function jsonParam(value: unknown): string | null {
   if (value == null) return null;
   return JSON.stringify(value);
@@ -136,6 +141,8 @@ export async function saveSettings(
       max_cost_usd = excluded.max_cost_usd,
       updated_at = excluded.updated_at
   `;
+  await durable();
+  console.info("[account] saved settings", userId, provider);
   return publicSettings({
     user_id: userId,
     provider,
@@ -720,6 +727,7 @@ export async function writeSnapshot(userId: string, snapshot: StoreShape): Promi
   for (const artifact of snapshot.artifacts ?? []) await insertArtifactRow(userId, artifact);
   for (const manifest of snapshot.manifests ?? []) await insertManifestRow(userId, manifest);
   for (const packet of snapshot.packets ?? []) await insertPacketRow(userId, packet);
+  await durable();
 }
 
 export async function importSnapshotIfEmpty(userId: string, snapshot: StoreShape): Promise<StoreShape> {
@@ -732,18 +740,23 @@ export async function importSnapshotIfEmpty(userId: string, snapshot: StoreShape
 
 export async function persistProject(userId: string, project: Project) {
   await insertProjectRow(userId, project);
+  await durable();
+  console.info("[account] persisted project", userId, project.id);
 }
 
 export async function persistContext(userId: string, item: ContextItem) {
   await insertContextRow(userId, item);
+  await durable();
 }
 
 export async function persistTask(userId: string, task: Task) {
   await insertTaskRow(userId, task);
+  await durable();
 }
 
 export async function persistManifest(userId: string, manifest: ContextManifest) {
   await insertManifestRow(userId, manifest);
+  await durable();
 }
 
 export async function persistCouncilOutput(
@@ -770,10 +783,12 @@ export async function persistCouncilOutput(
     for (const artifact of patch.artifacts) await insertArtifactRow(userId, artifact);
   }
   if (patch.packet) await insertPacketRow(userId, patch.packet);
+  await durable();
 }
 
 export async function persistPacket(userId: string, packet: ImplementationPacket) {
   await insertPacketRow(userId, packet);
+  await durable();
 }
 
 export async function persistChat(
@@ -791,10 +806,12 @@ export async function persistChat(
     userId,
     messages.map((row) => ({ ...row, chatSourceId: source.id })),
   );
+  await durable();
 }
 
 export async function persistChatPatch(userId: string, source: ChatSource) {
   await insertChatRow(userId, source);
+  await durable();
 }
 
 export async function persistDeleteChat(userId: string, chatId: string, tasks: Task[]) {
@@ -802,6 +819,7 @@ export async function persistDeleteChat(userId: string, chatId: string, tasks: T
   await sql`delete from history_messages where user_id = ${userId} and chat_source_id = ${chatId}`;
   await sql`delete from chat_sources where user_id = ${userId} and id = ${chatId}`;
   for (const task of tasks) await insertTaskRow(userId, task);
+  await durable();
 }
 
 async function insertFileRow(userId: string, file: ProjectFile) {
@@ -831,12 +849,14 @@ async function insertFileRow(userId: string, file: ProjectFile) {
 
 export async function persistFile(userId: string, file: ProjectFile) {
   await insertFileRow(userId, file);
+  await durable();
 }
 
 export async function persistDeleteFile(userId: string, fileId: string, tasks: Task[]) {
   const sql = await getSql();
   await sql`delete from project_files where user_id = ${userId} and id = ${fileId}`;
   for (const task of tasks) await insertTaskRow(userId, task);
+  await durable();
 }
 
 export async function ownedProjectId(userId: string, projectId: string): Promise<string | null> {
