@@ -1,9 +1,16 @@
-import type { DiscoveredModel, ModelAccess } from "./discover.ts";
+import type { CatalogShapeKind, CatalogShapeMeta, DiscoveredModel, ModelAccess } from "./discover.ts";
 import { accessCounts } from "./discover.ts";
 import { containsSecret } from "./provider-error.ts";
 import { redact } from "./api-key.ts";
 
 export type ConnectionStatus = "CONNECTED" | "FAILED";
+
+export type CatalogParseLog = {
+  ok: boolean;
+  code?: string;
+  error?: string;
+  meta?: CatalogShapeMeta;
+};
 
 export type TestLogPayload = {
   result: "PASS" | "FAIL";
@@ -14,6 +21,8 @@ export type TestLogPayload = {
     http_status: number | "NETWORK_ERROR";
     model_count: number;
     latency_ms?: number;
+    response_shape?: CatalogShapeKind | "none";
+    parse?: CatalogParseLog;
   };
   probes: { performed: number; ids: string[] };
   access: Record<ModelAccess, number>;
@@ -33,13 +42,20 @@ export function countsFromModels(models: DiscoveredModel[]): Record<ModelAccess,
 }
 
 export function formatTestLog(payload: TestLogPayload, apiKey = ""): string {
+  const catalog: Record<string, unknown> = {
+    http_status: payload.catalog.http_status,
+    model_count: payload.catalog.model_count,
+  };
+  if (payload.catalog.latency_ms != null) catalog.latency_ms = payload.catalog.latency_ms;
+  catalog.response_shape = payload.catalog.response_shape ?? "none";
+  if (payload.catalog.parse) catalog.parse = payload.catalog.parse;
   const body: Record<string, unknown> = {
     title: "Conversation Bot · API test log",
     result: payload.result,
     time: payload.time ?? new Date().toISOString(),
     provider: payload.provider,
     connection: payload.connection,
-    catalog: payload.catalog,
+    catalog,
     probes: {
       performed: payload.probes.performed,
       ids: payload.probes.ids,
@@ -60,7 +76,10 @@ export function formatTestLog(payload: TestLogPayload, apiKey = ""): string {
   const text = JSON.stringify(body, null, 2);
   const redacted = apiKey ? redact(text, apiKey) : text;
   if (containsSecret(redacted)) {
-    return redact(redacted.replace(/sk-(?:or|nano)-[A-Za-z0-9_-]+/gi, "[redacted]").replace(/orr_(?:live|test)_[A-Za-z0-9_-]+/gi, "[redacted]"), apiKey);
+    return redact(
+      redacted.replace(/sk-(?:or|nano)-[A-Za-z0-9_-]+/gi, "[redacted]").replace(/orr_(?:live|test)_[A-Za-z0-9_-]+/gi, "[redacted]"),
+      apiKey,
+    );
   }
   return redacted;
 }

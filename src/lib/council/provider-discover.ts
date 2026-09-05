@@ -10,16 +10,19 @@ import {
   accessCounts,
   availableModels,
   buildDiscovery,
-  parseCatalogBody,
+  normalizeCatalogPayload,
   pickProbeTargets,
   pruneToAvailable,
   type CatalogEntry,
+  type CatalogNormalizeResult,
+  type CatalogShapeKind,
+  type CatalogShapeMeta,
   type DiscoverySnapshot,
   type ModelProbe,
 } from "./discover.ts";
 import { coerceMembers } from "./members.ts";
 import { providerName } from "./providers.ts";
-import { emptyAccessCounts, formatTestLog } from "./test-log.ts";
+import { emptyAccessCounts, formatTestLog, type CatalogParseLog } from "./test-log.ts";
 import type { ConnectionCheck, PreflightClientReport, ProviderId } from "./types.ts";
 import type { CouncilMember } from "./members.ts";
 
@@ -38,39 +41,50 @@ export type ProviderTransport = {
   creditMessage: string;
 };
 
-function parseBody(body: string): unknown {
+function jsonPayload(body: string): unknown {
+  const trimmed = (body ?? "").trim();
+  if (!trimmed) return undefined;
   try {
-    return JSON.parse(body);
+    return JSON.parse(trimmed) as unknown;
   } catch {
-    return null;
+    return undefined;
   }
 }
 
-export function selectedIdsFromPreflight(opts: {
-  members?: CouncilMember[];
-  selectedIds?: string[];
-  gptModel?: string;
-  grokModel?: string;
-  claudeModel?: string;
-}): string[] {
-  const members = coerceMembers(opts);
-  if (members.length) return members.map((row) => row.modelId);
-  return (opts.selectedIds ?? []).map((id) => id.trim()).filter(Boolean);
+function parseLogFromNormalize(norm: CatalogNormalizeResult): CatalogParseLog {
+  return {
+    ok: norm.ok,
+    code: norm.code,
+    error: norm.error,
+    meta: norm.meta,
+  };
 }
+
+export type CatalogListOk = {
+  ok: true;
+  entries: CatalogEntry[];
+  status: number;
+  latencyMs: number;
+  shape: CatalogShapeKind;
+  meta: CatalogShapeMeta;
+  parse: CatalogParseLog;
+};
+
+export type CatalogListFail = {
+  ok: false;
+  error: string;
+  code: "KEY_REJECTED" | "PROVIDER_UNREACHABLE" | "CATALOG_PARSE_ERROR";
+  status: number | "NETWORK_ERROR";
+  latencyMs: number;
+  shape: CatalogShapeKind | "none";
+  meta?: CatalogShapeMeta;
+  parse?: CatalogParseLog;
+};
 
 export async function listCatalogWith(
   transport: ProviderTransport,
   apiKey: string,
-): Promise<
-  | { ok: true; entries: CatalogEntry[]; status: number; latencyMs: number }
-  | {
-      ok: false;
-      error: string;
-      code: "KEY_REJECTED" | "PROVIDER_UNREACHABLE";
-      status: number | "NETWORK_ERROR";
-      latencyMs: number;
-    }
-> {
+): Promise<CatalogListOk | CatalogListFail> {
   const key = sanitizeApiKey(apiKey, transport.provider);
   if (!key) {
     return {
@@ -79,13 +93,14 @@ export async function listCatalogWith(
       error: `${transport.label} is not connected. Connect your API key before running the Council.`,
       status: 0,
       latencyMs: 0,
+      shape: "none",
     };
   }
   const probe = await transport.listModels(key);
   const latencyMs = probe.latencyMs ?? 0;
   const httpStatus = probe.status || "NETWORK_ERROR";
   if (probe.error || probe.status < 200 || probe.status >= 300) {
-    const parsed = parseBody(probe.body);
+    const parsed = jsonPayload(probe.body);
     const error =
       probe.status === 401 || probe.status === 403
         ? keyRejectedMessage(
@@ -101,9 +116,32 @@ export async function listCatalogWith(
       error,
       status: httpStatus === "NETWORK_ERROR" ? "NETWORK_ERROR" : probe.status,
       latencyMs,
+      shape: "none",
     };
   }
-  return { ok: true, entries: parseCatalogBody(parseBody(probe.body)), status: probe.status, latencyMs };
+  const payload = jsonPayload(probe.body);
+  const norm = normalizeCatalogPayload(payload);
+  if (!norm.ok) {
+    return {
+      ok: false,
+      code: "CATALOG_PARSE_ERROR",
+      error: norm.error ?? "CATALOG_PARSE_ERROR: unsupported catalog shape.",
+      status: probe.status,
+      latencyMs,
+      shape: norm.shape,
+      meta: norm.meta,
+      parse: parseLogFromNormalize(norm),
+    };
+  }
+  return {
+    ok: true,
+    entries: norm.entries,
+    status: probe.status,
+    latencyMs,
+    shape: norm.shape,
+    meta: norm.meta,
+    parse: parseLogFromNormalize(norm),
+  };
 }
 
 export async function probeModelWith(
@@ -148,6 +186,9 @@ export async function discoverAccountWith(
     snapshot?: DiscoverySnapshot | null;
     selected?: string[];
     warnings?: string[];
+    shape?: CatalogShapeKind | "none";
+    parse?: CatalogParseLog;
+    authenticated?: boolean;
   }) =>
     formatTestLog(
       {
@@ -161,6 +202,8 @@ export async function discoverAccountWith(
           http_status: opts.catalogStatus,
           model_count: opts.catalogCount,
           latency_ms: opts.latencyMs,
+          response_shape: opts.shape ?? "none",
+          parse: opts.parse,
         },
         probes: { performed: opts.probeIds?.length ?? 0, ids: opts.probeIds ?? [] },
         access: opts.snapshot ? accessCounts(opts.snapshot.models) : emptyAccessCounts(),
@@ -168,6 +211,7 @@ export async function discoverAccountWith(
         selected: opts.selected ?? [],
         warnings: opts.warnings ?? [],
         error: opts.error ?? null,
+        extra: { authenticated: opts.authenticated === true },
       },
       key,
     );
@@ -180,7 +224,7 @@ export async function discoverAccountWith(
       error,
       snapshot: null,
       checks,
-      log: makeLog({ ok: false, error, catalogStatus: 0, catalogCount: 0 }),
+      log: makeLog({ ok: false, error, catalogStatus: 0, catalogCount: 0, authenticated: false }),
     };
   }
 
@@ -198,6 +242,9 @@ export async function discoverAccountWith(
         catalogStatus: catalog.status,
         catalogCount: 0,
         latencyMs: catalog.latencyMs,
+        shape: catalog.shape,
+        parse: catalog.parse,
+        authenticated: false,
       }),
     };
   }
@@ -208,7 +255,7 @@ export async function discoverAccountWith(
   if (authFail) {
     const error = keyRejectedMessage(
       authFail.status,
-      extractErrorMessage(parseBody(authFail.body ?? ""), authFail.status),
+      extractErrorMessage(jsonPayload(authFail.body ?? ""), authFail.status),
       keyFingerprint(key, transport.provider),
       transport.provider,
     );
@@ -225,6 +272,9 @@ export async function discoverAccountWith(
         catalogCount: catalog.entries.length,
         latencyMs: catalog.latencyMs,
         probeIds: targets,
+        shape: catalog.shape,
+        parse: catalog.parse,
+        authenticated: false,
       }),
     };
   }
@@ -243,11 +293,21 @@ export async function discoverAccountWith(
         catalogCount: catalog.entries.length,
         latencyMs: catalog.latencyMs,
         probeIds: targets,
+        shape: catalog.shape,
+        parse: catalog.parse,
+        authenticated: false,
       }),
     };
   }
 
-  const snapshot = buildDiscovery(transport.provider, catalog.entries, probes, selectedIds);
+  const snapshot = buildDiscovery(
+    transport.provider,
+    catalog.entries,
+    probes,
+    selectedIds,
+    new Date().toISOString(),
+    catalog.shape,
+  );
   const usable = pruneToAvailable(selectedIds, snapshot.models);
   const warnings: string[] = [];
   for (const id of selectedIds) {
@@ -272,6 +332,9 @@ export async function discoverAccountWith(
       snapshot,
       selected: usable,
       warnings,
+      shape: catalog.shape,
+      parse: catalog.parse,
+      authenticated: true,
     }),
   };
 }
@@ -367,4 +430,16 @@ export async function preflightWith(
     log: discovered.log,
     catalog: discovered.snapshot,
   };
+}
+
+export function selectedIdsFromPreflight(opts: {
+  members?: CouncilMember[];
+  selectedIds?: string[];
+  gptModel?: string;
+  grokModel?: string;
+  claudeModel?: string;
+}): string[] {
+  const members = coerceMembers(opts);
+  if (members.length) return members.map((row) => row.modelId);
+  return (opts.selectedIds ?? []).map((id) => id.trim()).filter(Boolean);
 }

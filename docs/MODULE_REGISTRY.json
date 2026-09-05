@@ -1,5 +1,5 @@
 {
-  "architecture_revision": "CB-ARCH-20260905-002",
+  "architecture_revision": "CB-ARCH-20260905-003",
   "modules": [
     {
       "module_id": "app.shell",
@@ -149,13 +149,15 @@
       "module_id": "council.discovery",
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/discover.ts",
-      "architecture_revision": "CB-ARCH-20260905-002",
+      "architecture_revision": "CB-ARCH-20260905-003",
       "responsibilities": [
-        "provider catalog parse",
+        "provider catalog normalize (direct array or OpenAI data[])",
+        "CATALOG_PARSE_ERROR for unsupported shapes",
         "account access probe",
         "AVAILABLE / UNAVAILABLE / NOT_INCLUDED / UNKNOWN",
         "AVAILABLE-only recommendation and Council membership",
         "provider names are not models",
+        "atomic Test Connection current vs STALE",
         "sanitized persisted test log"
       ],
       "dependencies": ["council.providers"],
@@ -210,8 +212,8 @@
       "module_id": "ui.settings",
       "status": "ACTIVE",
       "implementation_path": "src/routes/settings.tsx",
-      "architecture_revision": "CB-ARCH-20260905-002",
-      "responsibilities": ["provider keys", "AVAILABLE model checkboxes", "Council recommendation", "persisted test log", "system identity"],
+      "architecture_revision": "CB-ARCH-20260905-003",
+      "responsibilities": ["provider keys", "AVAILABLE model checkboxes", "Council recommendation", "current vs STALE catalog", "persisted test log", "system identity"],
       "dependencies": ["council.providers", "architecture.lock"],
       "supersedes": []
     },

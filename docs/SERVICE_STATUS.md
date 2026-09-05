@@ -120,7 +120,7 @@ SYNC:
 
 - `LOCAL` — `/workspace` `BUILD_ID` + commit
 - `REMOTE` — `origin/main` `BUILD_ID` + commit
-- `PRODUCTION` — deployed `BUILD_ID` on https://swift-lake-solar-cosmic.grok.me
+- `PRODUCTION` — deployed `BUILD_ID` on https://cb-gptgrokclaud.grok.me
 - `SYNC` — `PROD_SYNC` when production `BUILD_ID` equals the git release tag
 
 ## EXECUTION reports

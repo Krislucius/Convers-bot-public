@@ -19,6 +19,7 @@ const ACCESS_LABEL: Record<ModelAccess, string> = {
 
 export function ModelCatalogPanel({
   catalog,
+  stale = false,
   selectedIds,
   synthesizerModel,
   query,
@@ -27,6 +28,7 @@ export function ModelCatalogPanel({
   onSynthesizer,
 }: {
   catalog: DiscoverySnapshot | null;
+  stale?: boolean;
   selectedIds: string[];
   synthesizerModel: string;
   query: string;
@@ -57,12 +59,18 @@ export function ModelCatalogPanel({
   return (
     <section className="grid gap-3">
       <div>
-        <h2 className="font-display m-0 text-lg">Available models</h2>
+        <h2 className="font-display m-0 text-lg">{stale ? "STALE cached catalog" : "Available models"}</h2>
         <p className="mt-1 mb-0 text-sm text-muted">
-          {available.length} AVAILABLE of {catalog.models.length} discovered. Select 2–{MAX_COUNCIL_MEMBERS}. Provider
-          names are not models.
+          {stale
+            ? `Cached from a previous successful scan (${catalog.models.length} models). Not current Test Connection results.`
+            : `${available.length} AVAILABLE of ${catalog.models.length} discovered. Select 2–${MAX_COUNCIL_MEMBERS}. Provider names are not models.`}
         </p>
       </div>
+      {stale ? (
+        <p className="m-0 text-sm text-warn">
+          Run Test Connection again. Council membership is saved only from a current AVAILABLE scan.
+        </p>
+      ) : null}
       <input
         type="search"
         value={query}
@@ -77,7 +85,7 @@ export function ModelCatalogPanel({
               key={row.id}
               row={row}
               checked={selected.has(row.id)}
-              disabled={!selected.has(row.id) && selectedIds.length >= MAX_COUNCIL_MEMBERS}
+              disabled={stale || (!selected.has(row.id) && selectedIds.length >= MAX_COUNCIL_MEMBERS)}
               onToggle={() => onToggle(row.id)}
             />
           ))}
@@ -104,6 +112,7 @@ export function ModelCatalogPanel({
         <select
           className="min-h-11 rounded-sm border border-line bg-bg px-3 text-fg"
           value={synthesizerModel}
+          disabled={stale}
           onChange={(e) => onSynthesizer(e.target.value)}
         >
           <option value="">Automatic — strongest selected AVAILABLE model</option>

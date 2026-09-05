@@ -13,8 +13,8 @@ import { fileURLToPath } from "node:url";
 import { runtimeShellHash, readShellSpec } from "./runtime-shell.mjs";
 
 export const PROJECT_ID = "01a048b8-c1f7-7382-9dfd-fb30bff7137d";
-export const PRODUCTION_HOST = "https://swift-lake-solar-cosmic.grok.me";
-export const ARCHITECTURE_REVISION = "CB-ARCH-20260905-002";
+export const PRODUCTION_HOST = "https://cb-gptgrokclaud.grok.me";
+export const ARCHITECTURE_REVISION = "CB-ARCH-20260905-003";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export function repoRoot(from = here) {

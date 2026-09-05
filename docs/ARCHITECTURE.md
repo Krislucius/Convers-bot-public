@@ -1,6 +1,6 @@
 # Conversation Bot architecture
 
-Current revision: **CB-ARCH-20260905-002**
+Current revision: **CB-ARCH-20260905-003**
 
 This document describes the system that is running now. Obsolete trees are listed only under History.
 
@@ -9,7 +9,7 @@ This document describes the system that is running now. Obsolete trees are liste
 Conversation Bot is a signed-in workspace for reconstructing project decisions from imported AI chats and files. One Grok Build project owns it.
 
 - Project ID: `01a048b8-c1f7-7382-9dfd-fb30bff7137d`
-- Production host: `https://swift-lake-solar-cosmic.grok.me`
+- Production host: `https://cb-gptgrokclaud.grok.me`
 - Source root: `src/`
 - Framework: TypeScript, React 19, TanStack Start/Router, Vite, Nitro
 - Auth: Better Auth via the Grok broker (Google, X, email/password)
@@ -87,7 +87,7 @@ The boot, SSR/client boundary, auth bootstrap, Vite/Nitro config, and deploy ent
 
 ## Provider layer
 
-Settings UI writes `account_settings`. Council server functions resolve the stored key for the signed-in user and the selected provider. Client never keeps the secret after save. Empty Save keeps the stored key; Clear Key wipes it. A Council run freezes exactly one provider (NanoGPT or OpenRouter) and the selected AVAILABLE models for Round 1, Round 2, synthesis, retries, and catalog/access preflight. NanoGPT and OpenRouter are API providers, never Council members. Switching provider re-runs discovery and drops stale selections. Membership and recommendations come only from models the current scan classified as AVAILABLE. Missing or inaccessible selected models fail with `MODEL_UNAVAILABLE` before paid calls and are never silently substituted. Hardcoded default IDs (including Grok 4.6) are never injected when absent from the scan. Test Connection always writes a sanitized persisted log. USD cost is telemetry only. The hard execution gate is request attempts: expected successful calls = 2N+1, ceiling = 2N+1+N+2 (N=3 → 7 / 12). Empty completions are failures.
+Settings UI writes `account_settings`. Council server functions resolve the stored key for the signed-in user and the selected provider. Client never keeps the secret after save. Empty Save keeps the stored key; Clear Key wipes it. A Council run freezes exactly one provider (NanoGPT or OpenRouter) and the selected AVAILABLE models for Round 1, Round 2, synthesis, retries, and catalog/access preflight. NanoGPT and OpenRouter are API providers, never Council members. Switching provider re-runs discovery and drops stale selections. Membership and recommendations come only from models the current scan classified as AVAILABLE. Missing or inaccessible selected models fail with `MODEL_UNAVAILABLE` before paid calls and are never silently substituted. Hardcoded default IDs (including Grok 4.6) are never injected when absent from the scan. Test Connection always writes a sanitized persisted log. Catalog responses are normalized before any model logic (direct array or OpenAI `{ data: [...] }`); unsupported shapes fail with `CATALOG_PARSE_ERROR`. CONNECTED requires an authenticated provider check. A failed refresh never presents a previous scan as current — old catalogs are STALE cached data. USD cost is telemetry only. The hard execution gate is request attempts: expected successful calls = 2N+1, ceiling = 2N+1+N+2 (N=3 → 7 / 12). Empty completions are failures.
 
 ## Council workflow
 
@@ -105,7 +105,7 @@ CREATE synthesis → Artifact row + evidence labels. APPROVED CREATE also writes
 
 ## Deployment
 
-`npm run build` (Vite + `db:migrate`) publishes through Grok Build to the same project ID / Vercel / `swift-lake-solar-cosmic.grok.me`.
+`npm run build` (Vite + `db:migrate`) publishes through Grok Build to the same project ID / Vercel / `cb-gptgrokclaud.grok.me`.
 
 ## History (not current)
 

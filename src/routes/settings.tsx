@@ -5,7 +5,7 @@ import { ModelCatalogPanel } from "@/components/model-catalog";
 import { OpLogPanel } from "@/components/op-log";
 import { SystemInfoPanel } from "@/components/system-info";
 import { describeKey, keyFingerprint, redact, sanitizeApiKey } from "@/lib/council/api-key";
-import { availableModels, pruneToAvailable } from "@/lib/council/discover";
+import { currentConnectionView, pruneToAvailable } from "@/lib/council/discover";
 import { emptyAccessCounts, formatTestLog } from "@/lib/council/test-log";
 import { assertAvailableSelection, MAX_COUNCIL_MEMBERS, attemptLimit, expectedSuccessfulCalls, membersFromIds } from "@/lib/council/members";
 import { testProvider } from "@/lib/council/openrouter";
@@ -25,34 +25,41 @@ function SettingsPage() {
   const [selectedIds, setSelectedIds] = useState<string[]>(config.selectedModelIds);
   const [synthesizerModel, setSynthesizerModel] = useState(config.synthesizerModel);
   const [catalog, setCatalog] = useState<DiscoverySnapshot | null>(config.catalog);
+  const [lastTestOk, setLastTestOk] = useState<boolean | null>(config.lastTestOk);
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [log, setLog] = useState(config.lastTestLog);
   const keyHint = useMemo(() => describeKey(apiKey, provider), [apiKey, provider]);
   const savedSlot = slotFor(config, provider);
-  const members = membersFromIds(selectedIds, catalog?.models ?? []);
+  const view = currentConnectionView(lastTestOk, catalog);
+  const liveCatalog = view.catalog;
+  const members = membersFromIds(selectedIds, liveCatalog?.models ?? []);
   const expected = expectedSuccessfulCalls(members.length || 2);
   const limit = attemptLimit(members.length || 2);
-  const selectionError = catalog
-    ? assertAvailableSelection(selectedIds, catalog.models)
-    : members.length
-      ? "Test Connection before saving Council models. Only AVAILABLE models from the current scan can be saved."
-      : "Select at least 2 Council models after Test Connection.";
-  const available = catalog ? availableModels(catalog.models) : [];
-  const connected = config.lastTestOk === true && Boolean(catalog);
+  const selectionError = liveCatalog
+    ? assertAvailableSelection(selectedIds, liveCatalog.models)
+    : "Test Connection before saving Council models. Only AVAILABLE models from the current scan can be saved.";
   const lastTested = config.lastTestAt
     ? new Date(config.lastTestAt).toLocaleString()
-    : catalog?.fetchedAt
-      ? new Date(catalog.fetchedAt).toLocaleString()
+    : liveCatalog?.fetchedAt
+      ? new Date(liveCatalog.fetchedAt).toLocaleString()
       : "Never";
 
   useEffect(() => {
     setSelectedIds(config.selectedModelIds);
     setSynthesizerModel(config.synthesizerModel);
     setCatalog(config.catalog);
+    setLastTestOk(config.lastTestOk);
     if (config.lastTestLog) setLog(config.lastTestLog);
-  }, [config.provider, config.selectedModelIds, config.synthesizerModel, config.catalog, config.lastTestLog]);
+  }, [
+    config.provider,
+    config.selectedModelIds,
+    config.synthesizerModel,
+    config.catalog,
+    config.lastTestLog,
+    config.lastTestOk,
+  ]);
 
   function creds() {
     return {
@@ -62,7 +69,7 @@ function SettingsPage() {
       synthesizerModel,
       maxCostUsd: config.maxCostUsd > 0 ? config.maxCostUsd : 1,
       selectedModelIds: selectedIds,
-      catalog,
+      catalog: liveCatalog,
     };
   }
 
@@ -84,7 +91,7 @@ function SettingsPage() {
           result: "FAIL",
           provider,
           connection: { status: "FAILED", detail: reason },
-          catalog: { http_status: 0, model_count: 0 },
+          catalog: { http_status: 0, model_count: 0, response_shape: "none" },
           probes: { performed: 0, ids: [] },
           access: emptyAccessCounts(),
           recommended: [],
@@ -125,17 +132,13 @@ function SettingsPage() {
     setMsg("");
     setQuery("");
     setCatalog(null);
+    setLastTestOk(null);
     setSelectedIds([]);
     setSynthesizerModel("");
   }
 
-  function applyCatalog(next: DiscoverySnapshot | null, previousIds: string[]) {
+  function applyCatalog(next: DiscoverySnapshot, previousIds: string[]) {
     setCatalog(next);
-    if (!next) {
-      setSelectedIds([]);
-      setSynthesizerModel("");
-      return [];
-    }
     const keep = pruneToAvailable(previousIds, next.models);
     const pick = keep.length >= 2 ? keep : next.recommendedIds.slice(0, MAX_COUNCIL_MEMBERS);
     setSelectedIds(pick);
@@ -165,26 +168,30 @@ function SettingsPage() {
     }
   }
 
+  async function failAttempt(reason: string, raw: string, sanitized: string, extra?: Record<string, unknown>) {
+    const logText = extra ? localFailLog(reason, raw, sanitized, extra) : localFailLog(reason, raw, sanitized);
+    setMsg(reason);
+    setLog(logText);
+    setLastTestOk(false);
+    await persistScan({
+      logText,
+      ok: false,
+      nextCatalog: catalog,
+      nextIds: selectedIds,
+      synth: synthesizerModel,
+    });
+    return false;
+  }
+
   async function runProbe() {
     const raw = apiKey;
     const body = creds();
     if (!body.apiKey && !savedSlot.saved) {
-      const text = "Paste your API key first.";
-      const logText = localFailLog(text, raw, "");
-      setMsg(text);
-      setLog(logText);
-      await persistScan({ logText, ok: false, nextCatalog: catalog, nextIds: selectedIds, synth: synthesizerModel });
-      return false;
+      return failAttempt("Paste your API key first.", raw, "");
     }
     if (body.apiKey) {
       const hint = describeKey(body.apiKey, provider);
-      if (!hint.ok) {
-        const logText = localFailLog(hint.text, raw, body.apiKey);
-        setMsg(hint.text);
-        setLog(logText);
-        await persistScan({ logText, ok: false, nextCatalog: catalog, nextIds: selectedIds, synth: synthesizerModel });
-        return false;
-      }
+      if (!hint.ok) return failAttempt(hint.text, raw, body.apiKey);
     }
     setBusy(true);
     setMsg("Discovering models and checking account access…");
@@ -192,29 +199,36 @@ function SettingsPage() {
       const report = await testProvider(body);
       const logText = mergeLog(report.log, raw, body.apiKey);
       setLog(logText);
-      const nextIds = report.catalog ? applyCatalog(report.catalog, selectedIds) : selectedIds;
-      const nextCatalog = report.catalog ?? catalog;
-      setMsg(
-        report.ok
-          ? `CONNECTED. ${availableModels(nextCatalog?.models ?? []).length} AVAILABLE · ${nextCatalog?.recommendedIds.length ?? 0} recommended.`
-          : report.error || "Connection failed.",
-      );
+      if (report.ok && report.catalog) {
+        const nextIds = applyCatalog(report.catalog, selectedIds);
+        setLastTestOk(true);
+        setMsg(
+          `CONNECTED. ${currentConnectionView(true, report.catalog).available} AVAILABLE · ${report.catalog.recommendedIds.length} recommended.`,
+        );
+        await persistScan({
+          logText,
+          ok: true,
+          nextCatalog: report.catalog,
+          nextIds,
+          synth: nextIds.includes(synthesizerModel) ? synthesizerModel : "",
+        });
+        return true;
+      }
+      setLastTestOk(false);
+      setMsg(report.error || "Connection failed.");
       await persistScan({
         logText,
-        ok: report.ok,
-        nextCatalog,
-        nextIds,
-        synth: nextIds.includes(synthesizerModel) ? synthesizerModel : "",
+        ok: false,
+        nextCatalog: catalog,
+        nextIds: selectedIds,
+        synth: synthesizerModel,
       });
-      return report.ok;
+      return false;
     } catch (err) {
       const text = err instanceof Error ? err.message : "Connection failed.";
-      const logText = localFailLog(text, raw, body.apiKey, {
+      await failAttempt(text, raw, body.apiKey, {
         client_exception: err instanceof Error ? err.message : String(err),
       });
-      setMsg(text);
-      setLog(logText);
-      await persistScan({ logText, ok: false, nextCatalog: catalog, nextIds: selectedIds, synth: synthesizerModel });
       return false;
     } finally {
       setBusy(false);
@@ -230,23 +244,21 @@ function SettingsPage() {
     const raw = apiKey;
     const body = creds();
     if (!body.apiKey && !savedSlot.saved) {
-      const text = "Paste your API key first.";
-      const logText = localFailLog(text, raw, "");
-      setMsg(text);
-      setLog(logText);
+      await failAttempt("Paste your API key first.", raw, "");
       return;
     }
-    let tested = Boolean(catalog);
-    if (body.apiKey || !catalog) {
+    let tested = lastTestOk === true && Boolean(liveCatalog);
+    if (body.apiKey || !tested) {
       tested = await runProbe();
     }
+    if (!tested) return;
     setBusy(true);
     try {
       await save({
         ...creds(),
         lastTestLog: log,
         lastTestAt: config.lastTestAt ?? new Date().toISOString(),
-        lastTestOk: tested,
+        lastTestOk: true,
       });
       setApiKey("");
     } catch (err) {
@@ -255,12 +267,8 @@ function SettingsPage() {
       return;
     }
     setBusy(false);
-    if (tested) {
-      setMsg(`${meta.name} is saved on this account.`);
-      void navigate({ to: "/" });
-      return;
-    }
-    setMsg(`${meta.name} is saved on this account, but the connection test failed.`);
+    setMsg(`${meta.name} is saved on this account.`);
+    void navigate({ to: "/" });
   }
 
   async function onClear() {
@@ -274,6 +282,7 @@ function SettingsPage() {
   }
 
   const logResult = /\n {2}"result": "PASS"/.test(log) || log.includes('"result": "PASS"') ? "PASS" : log ? "FAIL" : "";
+  const statusOk = view.status === "CONNECTED" ? true : view.status === "FAILED" ? false : undefined;
 
   return (
     <Page>
@@ -377,23 +386,31 @@ function SettingsPage() {
         <h2 className="font-display mt-0 mb-4 text-xl">{meta.name}</h2>
         <dl className="m-0 grid gap-3 sm:grid-cols-2">
           <StatusRow label="Provider" value={meta.name} />
-          <StatusRow label="Status" value={connected ? "CONNECTED" : log ? "FAILED" : "NOT TESTED"} ok={connected} />
+          <StatusRow label="Status" value={view.status} ok={statusOk} />
           <StatusRow label="Last tested" value={lastTested} />
-          <StatusRow label="Models discovered" value={String(catalog?.models.length ?? 0)} />
-          <StatusRow label="Models available" value={String(available.length)} />
+          <StatusRow label="Models discovered" value={String(view.discovered)} />
+          <StatusRow label="Models available" value={String(view.available)} />
         </dl>
+        {view.stale ? (
+          <p className="mt-4 mb-0 text-sm text-warn">
+            STALE cached catalog from a previous scan ({view.stale.models.length} models,{" "}
+            {view.stale.recommendedIds.length} recommended). Not current results.
+          </p>
+        ) : null}
         {msg ? <p className="mt-4 mb-0 text-muted">{msg}</p> : null}
       </Panel>
 
       <Panel>
         <ModelCatalogPanel
-          catalog={catalog}
+          catalog={liveCatalog ?? view.stale}
+          stale={Boolean(view.stale)}
           selectedIds={selectedIds}
           synthesizerModel={synthesizerModel}
           query={query}
           onQuery={setQuery}
           onToggle={(id) => {
-            const row = catalog?.models.find((item) => item.id === id);
+            if (view.stale) return;
+            const row = liveCatalog?.models.find((item) => item.id === id);
             if (row && row.access !== "AVAILABLE") return;
             setSelectedIds((prev) => {
               if (prev.includes(id)) {
@@ -418,10 +435,10 @@ function SettingsPage() {
           <button
             type="button"
             className="min-h-11 rounded-sm border border-line bg-transparent px-3.5 font-semibold text-fg"
-            disabled={!catalog?.recommendedIds.length}
+            disabled={!liveCatalog?.recommendedIds.length}
             onClick={() => {
-              if (!catalog) return;
-              setSelectedIds(catalog.recommendedIds.slice(0, MAX_COUNCIL_MEMBERS));
+              if (!liveCatalog) return;
+              setSelectedIds(liveCatalog.recommendedIds.slice(0, MAX_COUNCIL_MEMBERS));
               setSynthesizerModel("");
             }}
           >

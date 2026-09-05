@@ -4,10 +4,17 @@ import type { ProviderId } from "./types.ts";
 export const MODEL_UNAVAILABLE = "MODEL_UNAVAILABLE";
 export const MODEL_UNAVAILABLE_ON_PROVIDER = MODEL_UNAVAILABLE;
 
+export type CatalogCheckCode =
+  | "MODEL_UNAVAILABLE"
+  | "MODEL_UNAVAILABLE_ON_PROVIDER"
+  | "PROVIDER_UNREACHABLE"
+  | "KEY_REJECTED"
+  | "CATALOG_PARSE_ERROR";
+
 export type CatalogCheckResult = {
   ok: boolean;
   error?: string;
-  code?: "MODEL_UNAVAILABLE" | "MODEL_UNAVAILABLE_ON_PROVIDER" | "PROVIDER_UNREACHABLE" | "KEY_REJECTED";
+  code?: CatalogCheckCode;
   missing: string[];
   available: string[];
 };

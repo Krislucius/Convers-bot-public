@@ -56,8 +56,8 @@ describe("systemIdentity", () => {
     assert.equal(typeof id.sourceCommit, "string");
     assert.ok(id.sourceCommit === UNKNOWN_SOURCE_COMMIT || /^[0-9a-f]{7,40}$/.test(id.sourceCommit));
     assert.equal(id.projectId, "01a048b8-c1f7-7382-9dfd-fb30bff7137d");
-    assert.equal(id.buildId, "CB-BUILD-20260905-002");
-    assert.equal(id.architectureRevision, "CB-ARCH-20260905-002");
+    assert.equal(id.buildId, "CB-BUILD-20260905-003");
+    assert.equal(id.architectureRevision, "CB-ARCH-20260905-003");
   });
 
   it("treats SOURCE_COMMIT=UNKNOWN as diagnostic, not a health failure", () => {
@@ -65,7 +65,7 @@ describe("systemIdentity", () => {
     assert.equal(isReleaseHealthy({ ...id, sourceCommit: UNKNOWN_SOURCE_COMMIT } as typeof id), true);
     assert.equal(isReleaseHealthy({ buildId: id.buildId, architectureRevision: id.architectureRevision }), true);
     assert.equal(productionSync(UNKNOWN_SOURCE_COMMIT), false);
-    assert.equal(productionSync("CB-BUILD-20260905-002"), true);
+    assert.equal(productionSync("CB-BUILD-20260905-003"), true);
   });
 
   it("statically reads import.meta.env.VITE_SOURCE_COMMIT so Vite inlines it", () => {

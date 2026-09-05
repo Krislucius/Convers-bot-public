@@ -33,6 +33,7 @@ export type DiscoverySnapshot = {
   fetchedAt: string;
   models: DiscoveredModel[];
   recommendedIds: string[];
+  catalogShape?: CatalogShapeKind;
 };
 
 export const MAX_PROBE_TARGETS = 8;
@@ -109,9 +110,50 @@ export function scoreModel(entry: CatalogEntry): number {
   return score;
 }
 
-export function parseCatalogBody(payload: unknown): CatalogEntry[] {
-  const root = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
-  const rows = Array.isArray(root.data) ? root.data : Array.isArray(payload) ? payload : [];
+export type CatalogShapeKind = "openai_data_array" | "direct_array" | "unsupported" | "invalid_json" | "empty_payload";
+
+export type CatalogShapeMeta = {
+  json: boolean;
+  root_type: string;
+  keys: string[];
+  data_type: string;
+  row_count: number;
+};
+
+export type CatalogNormalizeResult = {
+  ok: boolean;
+  entries: CatalogEntry[];
+  shape: CatalogShapeKind;
+  code?: "CATALOG_PARSE_ERROR";
+  error?: string;
+  meta: CatalogShapeMeta;
+};
+
+export function describePayloadShape(payload: unknown): CatalogShapeMeta {
+  if (payload === undefined) {
+    return { json: false, root_type: "undefined", keys: [], data_type: "none", row_count: 0 };
+  }
+  if (payload === null) {
+    return { json: true, root_type: "null", keys: [], data_type: "none", row_count: 0 };
+  }
+  if (Array.isArray(payload)) {
+    return { json: true, root_type: "array", keys: [], data_type: "array", row_count: payload.length };
+  }
+  if (typeof payload === "object") {
+    const rec = payload as Record<string, unknown>;
+    const data = rec.data;
+    return {
+      json: true,
+      root_type: "object",
+      keys: Object.keys(rec).slice(0, 12),
+      data_type: Array.isArray(data) ? "array" : data === null ? "null" : typeof data,
+      row_count: Array.isArray(data) ? data.length : 0,
+    };
+  }
+  return { json: true, root_type: typeof payload, keys: [], data_type: "none", row_count: 0 };
+}
+
+function parseCatalogRows(rows: unknown[]): CatalogEntry[] {
   const out: CatalogEntry[] = [];
   const seen = new Set<string>();
   for (const row of rows) {
@@ -131,6 +173,57 @@ export function parseCatalogBody(payload: unknown): CatalogEntry[] {
     });
   }
   return out;
+}
+
+/**
+ * Normalize a provider catalog BEFORE any model mapping.
+ * Supported: a direct array, or OpenAI `{ data: [...] }`.
+ * Never calls `.map()` on a non-array root.
+ */
+export function normalizeCatalogPayload(payload: unknown): CatalogNormalizeResult {
+  const meta = describePayloadShape(payload);
+  if (payload === undefined || payload === null) {
+    return {
+      ok: false,
+      entries: [],
+      shape: payload === undefined ? "invalid_json" : "empty_payload",
+      code: "CATALOG_PARSE_ERROR",
+      error: "CATALOG_PARSE_ERROR: catalog body was empty or not JSON.",
+      meta,
+    };
+  }
+  let rows: unknown[] | null = null;
+  let shape: CatalogShapeKind = "unsupported";
+  if (Array.isArray(payload)) {
+    rows = payload;
+    shape = "direct_array";
+  } else if (typeof payload === "object") {
+    const data = (payload as Record<string, unknown>).data;
+    if (Array.isArray(data)) {
+      rows = data;
+      shape = "openai_data_array";
+    }
+  }
+  if (!rows) {
+    return {
+      ok: false,
+      entries: [],
+      shape: "unsupported",
+      code: "CATALOG_PARSE_ERROR",
+      error: `CATALOG_PARSE_ERROR: unsupported catalog shape (root=${meta.root_type}, data=${meta.data_type}).`,
+      meta,
+    };
+  }
+  return {
+    ok: true,
+    entries: parseCatalogRows(rows),
+    shape,
+    meta: { ...meta, row_count: rows.length },
+  };
+}
+
+export function parseCatalogBody(payload: unknown): CatalogEntry[] {
+  return normalizeCatalogPayload(payload).entries;
 }
 
 export function classifyProbe(probe: ModelProbe, catalogHas: boolean): ModelAccess {
@@ -227,6 +320,7 @@ export function buildDiscovery(
   probes: ModelProbe[],
   selectedIds: string[] = [],
   fetchedAt = new Date().toISOString(),
+  catalogShape?: CatalogShapeKind,
 ): DiscoverySnapshot {
   const probeById = new Map(probes.map((row) => [row.id, row]));
   const anySuccess = probes.some((row) => row.status >= 200 && row.status < 300);
@@ -281,7 +375,7 @@ export function buildDiscovery(
     if (av) return av;
     return b.score - a.score;
   });
-  return { provider, fetchedAt, models, recommendedIds };
+  return { provider, fetchedAt, models, recommendedIds, catalogShape };
 }
 
 export function pickDiverse(models: DiscoveredModel[], count: number): DiscoveredModel[] {
@@ -311,4 +405,35 @@ export function pickDiverse(models: DiscoveredModel[], count: number): Discovere
 
 export function accessBlocksRun(access: ModelAccess): boolean {
   return access !== "AVAILABLE";
+}
+
+export type ConnectionView = {
+  status: "CONNECTED" | "FAILED" | "NOT TESTED";
+  discovered: number;
+  available: number;
+  catalog: DiscoverySnapshot | null;
+  stale: DiscoverySnapshot | null;
+};
+
+/** Current Test Connection numbers. A failed attempt never reuses the previous scan as current. */
+export function currentConnectionView(
+  lastTestOk: boolean | null,
+  catalog: DiscoverySnapshot | null,
+): ConnectionView {
+  if (lastTestOk === true && catalog) {
+    return {
+      status: "CONNECTED",
+      discovered: catalog.models.length,
+      available: availableModels(catalog.models).length,
+      catalog,
+      stale: null,
+    };
+  }
+  return {
+    status: lastTestOk === false ? "FAILED" : "NOT TESTED",
+    discovered: 0,
+    available: 0,
+    catalog: null,
+    stale: catalog,
+  };
 }

@@ -5,15 +5,17 @@ import {
   availableModels,
   buildDiscovery,
   classifyProbe,
+  currentConnectionView,
   familyOf,
   isProviderBrandModel,
+  normalizeCatalogPayload,
   parseCatalogBody,
   pickDiverse,
   pickProbeTargets,
   pruneToAvailable,
   scoreModel,
 } from "./discover.ts";
-import { discoverAccountWith, preflightWith, type ProviderTransport } from "./provider-discover.ts";
+import { discoverAccountWith, listCatalogWith, preflightWith, type ProviderTransport } from "./provider-discover.ts";
 import { formatTestLog } from "./test-log.ts";
 import { containsSecret } from "./provider-error.ts";
 import { assertAvailableSelection, assertCouncilSelection, attemptLimit, expectedSuccessfulCalls, assignRoles, membersFromIds, MIN_COUNCIL_MEMBERS } from "./members.ts";
@@ -361,7 +363,13 @@ describe("sanitized test log", () => {
         time: "2026-09-05T17:00:00.000Z",
         provider: "nanogpt",
         connection: { status: "CONNECTED", detail: "NanoGPT connected" },
-        catalog: { http_status: 200, model_count: 4, latency_ms: 12 },
+        catalog: {
+          http_status: 200,
+          model_count: 4,
+          latency_ms: 12,
+          response_shape: "openai_data_array",
+          parse: { ok: true, meta: { json: true, root_type: "object", keys: ["data"], data_type: "array", row_count: 4 } },
+        },
         probes: { performed: 2, ids: ["openai/gpt-5", "anthropic/claude-sonnet-4"] },
         access: { AVAILABLE: 2, NOT_INCLUDED: 1, UNAVAILABLE: 0, UNKNOWN: 1 },
         recommended: ["openai/gpt-5", "anthropic/claude-sonnet-4"],
@@ -377,6 +385,7 @@ describe("sanitized test log", () => {
     assert.match(log, /"http_status": 200/);
     assert.match(log, /"model_count": 4/);
     assert.match(log, /"AVAILABLE": 2/);
+    assert.match(log, /"response_shape": "openai_data_array"/);
     assert.equal(log.includes(secret), false);
     assert.equal(containsSecret(log), false);
     assert.equal(/Bearer /i.test(log), false);
@@ -389,7 +398,7 @@ describe("sanitized test log", () => {
         result: "FAIL",
         provider: "openrouter",
         connection: { status: "FAILED", detail: "key rejected" },
-        catalog: { http_status: 401, model_count: 0 },
+        catalog: { http_status: 401, model_count: 0, response_shape: "none" },
         probes: { performed: 0, ids: [] },
         access: { AVAILABLE: 0, NOT_INCLUDED: 0, UNAVAILABLE: 0, UNKNOWN: 0 },
         recommended: [],
@@ -484,5 +493,273 @@ describe("discoverAccountWith scan", () => {
     assert.match(report.error ?? "", /MODEL_UNAVAILABLE/);
     assert.match(report.error ?? "", /x-ai\/grok-4.6/);
     assert.equal(report.catalog?.recommendedIds.includes("x-ai/grok-4.6"), false);
+  });
+});
+
+describe("catalog normalize", () => {
+  it("parses a NanoGPT OpenAI { data: [...] } catalog", () => {
+    const norm = normalizeCatalogPayload(nanoCatalog);
+    assert.equal(norm.ok, true);
+    assert.equal(norm.shape, "openai_data_array");
+    assert.equal(norm.entries.length, 8);
+    assert.equal(norm.meta.root_type, "object");
+    assert.equal(norm.meta.data_type, "array");
+    assert.equal(norm.entries.some((row) => /nanogpt/i.test(row.id)), false);
+  });
+
+  it("parses a direct-array catalog", () => {
+    const norm = normalizeCatalogPayload([
+      { id: "anthropic/claude-sonnet-4", name: "Sonnet" },
+      { id: "openai/gpt-5", name: "GPT-5" },
+    ]);
+    assert.equal(norm.ok, true);
+    assert.equal(norm.shape, "direct_array");
+    assert.equal(norm.entries.length, 2);
+  });
+
+  it("returns CATALOG_PARSE_ERROR for malformed catalogs without throwing", () => {
+    const shapes = [
+      { object: "list", data: { id: "not-an-array" } },
+      { models: [{ id: "openai/gpt-5" }] },
+      { data: null },
+      "openai/gpt-5",
+      12,
+      { data: { map: true, id: "x" } },
+    ];
+    for (const payload of shapes) {
+      const norm = normalizeCatalogPayload(payload);
+      assert.equal(norm.ok, false, JSON.stringify(payload));
+      assert.equal(norm.code, "CATALOG_PARSE_ERROR");
+      assert.equal(norm.entries.length, 0);
+      assert.match(norm.error ?? "", /CATALOG_PARSE_ERROR/);
+      assert.ok(norm.meta.root_type);
+    }
+    const empty = normalizeCatalogPayload(null);
+    assert.equal(empty.ok, false);
+    assert.equal(empty.code, "CATALOG_PARSE_ERROR");
+    const invalid = normalizeCatalogPayload(undefined);
+    assert.equal(invalid.shape, "invalid_json");
+  });
+
+  it("never treats NanoGPT as a model even when the catalog row is the provider name", () => {
+    const norm = normalizeCatalogPayload({
+      data: [
+        { id: "NanoGPT", name: "NanoGPT" },
+        { id: "openai/gpt-5", name: "GPT-5" },
+      ],
+    });
+    assert.deepEqual(
+      norm.entries.map((row) => row.id),
+      ["openai/gpt-5"],
+    );
+  });
+});
+
+describe("current connection view", () => {
+  it("shows current results after a successful test", () => {
+    const catalog = buildDiscovery(
+      "nanogpt",
+      parseCatalogBody(nanoCatalog),
+      [
+        { id: "openai/gpt-5", status: 200, body: "{}" },
+        { id: "anthropic/claude-sonnet-4", status: 200, body: "{}" },
+      ],
+    );
+    const view = currentConnectionView(true, catalog);
+    assert.equal(view.status, "CONNECTED");
+    assert.equal(view.discovered, catalog.models.length);
+    assert.equal(view.available, availableModels(catalog.models).length);
+    assert.equal(view.stale, null);
+    assert.ok(view.catalog);
+  });
+
+  it("failed refresh after a previous 616/6 scan never shows those counts as current", () => {
+    const entries = Array.from({ length: 616 }, (_, i) => ({
+      id: `model/${i}`,
+      name: `M${i}`,
+      contextLength: 8000,
+      ownedBy: i < 6 ? "openai" : "other",
+    }));
+    const probes = Array.from({ length: 6 }, (_, i) => ({ id: `model/${i}`, status: 200, body: "{}" }));
+    const previous = buildDiscovery("nanogpt", entries, probes);
+    assert.equal(previous.models.length, 616);
+    assert.equal(availableModels(previous.models).length, 6);
+    const view = currentConnectionView(false, previous);
+    assert.equal(view.status, "FAILED");
+    assert.equal(view.discovered, 0);
+    assert.equal(view.available, 0);
+    assert.equal(view.catalog, null);
+    assert.equal(view.stale?.models.length, 616);
+    assert.equal(availableModels(view.stale?.models ?? []).length, 6);
+  });
+});
+
+describe("discoverAccountWith catalog parse and auth", () => {
+  const secret = "sk-nano-THISISASECRETKEYVALUE99";
+
+  function transport(
+    catalog: unknown,
+    ping: (id: string) => { status: number; body: string } = () => ({ status: 200, body: "{}" }),
+  ): ProviderTransport {
+    return {
+      provider: "nanogpt",
+      label: "NanoGPT",
+      creditMessage: "Add NanoGPT credits.",
+      listModels: async () => ({ status: 200, body: JSON.stringify(catalog), latencyMs: 9 }),
+      pingModel: async (_key, id) => ping(id),
+    };
+  }
+
+  it("CONNECTS a valid NanoGPT { data: [...] } catalog and records response shape", async () => {
+    const result = await discoverAccountWith(
+      transport({
+        object: "list",
+        data: [
+          { id: "anthropic/claude-sonnet-4", name: "Sonnet" },
+          { id: "openai/gpt-5", name: "GPT-5" },
+          { id: "deepseek/deepseek-r1", name: "R1" },
+        ],
+      }),
+      secret,
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.snapshot?.catalogShape, "openai_data_array");
+    assert.match(result.log, /"result": "PASS"/);
+    assert.match(result.log, /"status": "CONNECTED"/);
+    assert.match(result.log, /"response_shape": "openai_data_array"/);
+    assert.match(result.log, /"authenticated": true/);
+    assert.equal(result.log.includes(secret), false);
+    assert.equal(containsSecret(result.log), false);
+  });
+
+  it("CONNECTS a direct-array catalog", async () => {
+    const result = await discoverAccountWith(
+      transport([
+        { id: "anthropic/claude-sonnet-4", name: "Sonnet" },
+        { id: "openai/gpt-5", name: "GPT-5" },
+      ]),
+      secret,
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.snapshot?.catalogShape, "direct_array");
+    assert.match(result.log, /"response_shape": "direct_array"/);
+  });
+
+  it("malformed catalog returns CATALOG_PARSE_ERROR, not CONNECTED, and does not crash", async () => {
+    const result = await discoverAccountWith(transport({ object: "list", data: { id: "x" } }), secret);
+    assert.equal(result.ok, false);
+    assert.equal(result.snapshot, null);
+    assert.match(result.error ?? "", /CATALOG_PARSE_ERROR/);
+    assert.match(result.log, /"result": "FAIL"/);
+    assert.match(result.log, /"status": "FAILED"/);
+    assert.match(result.log, /CATALOG_PARSE_ERROR/);
+    assert.match(result.log, /"response_shape": "unsupported"/);
+    assert.match(result.log, /"root_type": "object"/);
+    assert.match(result.log, /"data_type": "object"/);
+    assert.equal(result.log.includes(secret), false);
+  });
+
+  it("invalid key is FAILED, not CONNECTED", async () => {
+    const bad: ProviderTransport = {
+      provider: "nanogpt",
+      label: "NanoGPT",
+      creditMessage: "Add NanoGPT credits.",
+      listModels: async () => ({ status: 401, body: `invalid key ${secret}`, latencyMs: 4 }),
+      pingModel: async () => ({ status: 0, body: "" }),
+    };
+    const result = await discoverAccountWith(bad, secret, []);
+    assert.equal(result.ok, false);
+    assert.match(result.log, /"result": "FAIL"/);
+    assert.match(result.log, /"status": "FAILED"/);
+    assert.equal(/"status": "CONNECTED"/.test(result.log), false);
+    assert.equal(result.log.includes(secret), false);
+  });
+
+  it("catalog HTTP 200 with probe 401 is FAILED, not CONNECTED", async () => {
+    const result = await discoverAccountWith(
+      transport(
+        {
+          data: [
+            { id: "anthropic/claude-sonnet-4", name: "Sonnet" },
+            { id: "openai/gpt-5", name: "GPT-5" },
+          ],
+        },
+        () => ({ status: 401, body: "unauthorized" }),
+      ),
+      secret,
+    );
+    assert.equal(result.ok, false);
+    assert.equal(result.snapshot, null);
+    assert.equal(/"status": "CONNECTED"/.test(result.log), false);
+    assert.match(result.log, /"status": "FAILED"/);
+  });
+
+  it("catalog-visible but NOT_INCLUDED model is not AVAILABLE", async () => {
+    const result = await discoverAccountWith(
+      transport(
+        {
+          data: [
+            { id: "openai/gpt-5", name: "GPT-5" },
+            { id: "openai/gpt-5-premium-only", name: "Premium" },
+          ],
+        },
+        (id) =>
+          id.includes("premium")
+            ? { status: 403, body: "model not included in your subscription" }
+            : { status: 200, body: "{}" },
+      ),
+      secret,
+      ["openai/gpt-5", "openai/gpt-5-premium-only"],
+    );
+    assert.equal(result.ok, true);
+    const premium = result.snapshot?.models.find((row) => row.id === "openai/gpt-5-premium-only");
+    assert.equal(premium?.access, "NOT_INCLUDED");
+    assert.equal(result.snapshot?.recommendedIds.includes("openai/gpt-5-premium-only"), false);
+  });
+
+  it("does not invent Grok when the catalog has none", async () => {
+    const result = await discoverAccountWith(
+      transport({
+        data: [
+          { id: "anthropic/claude-sonnet-4", name: "Sonnet" },
+          { id: "openai/gpt-5", name: "GPT-5" },
+        ],
+      }),
+      secret,
+      ["x-ai/grok-4.6"],
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.snapshot?.recommendedIds.some((id) => /grok/i.test(id)), false);
+    assert.equal(result.snapshot?.models.some((row) => row.id === "x-ai/grok-4.6" && row.access === "AVAILABLE"), false);
+  });
+
+  it("PASS log includes catalog shape and survives as persisted text without the secret", async () => {
+    const result = await discoverAccountWith(
+      transport({
+        data: [
+          { id: "anthropic/claude-sonnet-4", name: "Sonnet" },
+          { id: "openai/gpt-5", name: "GPT-5" },
+        ],
+      }),
+      secret,
+    );
+    const stored = result.log;
+    const parsed = JSON.parse(stored) as {
+      result: string;
+      catalog: { response_shape: string; parse: { ok: boolean } };
+      connection: { status: string };
+    };
+    assert.equal(parsed.result, "PASS");
+    assert.equal(parsed.connection.status, "CONNECTED");
+    assert.equal(parsed.catalog.response_shape, "openai_data_array");
+    assert.equal(parsed.catalog.parse.ok, true);
+    assert.equal(stored.includes(secret), false);
+  });
+
+  it("listCatalogWith fails closed on unsupported shape", async () => {
+    const listed = await listCatalogWith(transport({ data: { id: "x" } }), secret);
+    assert.equal(listed.ok, false);
+    if (listed.ok) throw new Error("expected parse failure");
+    assert.equal(listed.code, "CATALOG_PARSE_ERROR");
   });
 });

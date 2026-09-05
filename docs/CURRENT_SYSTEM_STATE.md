@@ -1,7 +1,7 @@
 # Current system state
 
-Revision: CB-ARCH-20260905-002
-Recorded: 2026-09-05T17:40:00.000Z
+Revision: CB-ARCH-20260905-003
+Recorded: 2026-09-05T19:25:00.000Z
 
 Factual state of the authoritative tree. Not a backlog.
 
@@ -27,7 +27,7 @@ Auth is ON. Better Auth + Grok broker. Google, X, email/password. Session requir
 
 ## CURRENT PROVIDER
 
-Selectable API providers: NanoGPT (`sk-nano-…`) and OpenRouter (`sk-or-…`). OpenRusRouter remains available for existing `orr_live_…` keys. Settings Test fetches the selected provider catalog and probes whether this account can actually call recommended/selected models. Catalog presence is not treated as usable access. Statuses: AVAILABLE / UNAVAILABLE / NOT_INCLUDED / UNKNOWN. Recommendations and Council membership use only AVAILABLE models from the current scan (3–5 diverse families, or fewer if that is all that is available). Provider brand names are not models. Grok is not injected when absent. Stale selected IDs are dropped on provider/catalog change. Test Connection always writes a sanitized persisted log (PASS and FAIL). After save the browser does not keep the secret (`creds.apiKey` is empty); Council Run resolves the selected provider's key server-side. `assertRunCredentials` must not treat that empty client field as "not connected" when the account already shows READY for the selected provider. A leftover OpenRouter `sk-or-…` secret is not treated as a connected NanoGPT key, and a leftover NanoGPT secret is not treated as an OpenRouter key. Switching provider re-runs discovery and never mixes providers inside one run.
+Selectable API providers: NanoGPT (`sk-nano-…`) and OpenRouter (`sk-or-…`). OpenRusRouter remains available for existing `orr_live_…` keys. Settings Test fetches the selected provider catalog, normalizes the response (direct array or OpenAI `{ data: [...] }`), and probes whether this account can actually call recommended/selected models. Unsupported catalog shapes fail with `CATALOG_PARSE_ERROR`. Catalog presence is not treated as usable access. CONNECTED requires an authenticated provider check. Statuses: AVAILABLE / UNAVAILABLE / NOT_INCLUDED / UNKNOWN. Recommendations and Council membership use only AVAILABLE models from the current scan (3–5 diverse families, or fewer if that is all that is available). Provider brand names are not models. Grok is not injected when absent. Stale selected IDs are dropped on provider/catalog change. A failed Test Connection never shows a previous scan as current; the old catalog is STALE cached data. Test Connection always writes a sanitized persisted log (PASS and FAIL), including catalog HTTP status, response shape, and parse metadata. After save the browser does not keep the secret (`creds.apiKey` is empty); Council Run resolves the selected provider's key server-side. `assertRunCredentials` must not treat that empty client field as "not connected" when the account already shows READY for the selected provider. A leftover OpenRouter `sk-or-…` secret is not treated as a connected NanoGPT key, and a leftover NanoGPT secret is not treated as an OpenRouter key. Switching provider re-runs discovery and never mixes providers inside one run.
 
 ## CURRENT COUNCIL FLOW
 
@@ -43,7 +43,7 @@ Implementation Packet JSON is the Build handoff. Direct Build execution is unava
 
 ## CURRENT DEPLOYMENT
 
-Grok Build project `01a048b8-c1f7-7382-9dfd-fb30bff7137d` → `https://swift-lake-solar-cosmic.grok.me`.
+Grok Build project `01a048b8-c1f7-7382-9dfd-fb30bff7137d` → `https://cb-gptgrokclaud.grok.me`.
 
 ## CURRENT BLOCKER TRACKS
 
@@ -57,7 +57,7 @@ FUNCTION BLOCKERS: none.
 
 ### BUILD WORKFLOW
 
-- Production Publish is a user action; git `CB-BUILD-20260905-002` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
+- Production Publish is a user action; git `CB-BUILD-20260905-003` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
 - Production FUNCTIONALITY READY requires a real browser smoke to an interactive UI. HTTP 200 / bundles / identity / auth-health are necessary but not sufficient.
 - The protected runtime shell is `docs/RUNTIME_SHELL.json`. `npm run shell:gate` (hash, product-vs-shell scope, no client `.server` imports, production build, built-browser smoke) must pass before a release. Functional Council/evidence/history patches that also change shell files fail with `SHELL_SCOPE_VIOLATION`.
 - Nitro Vercel SSR barrels that re-export undefined `ssr_exports` are patched in the nitro `compiled` and `close` hooks during `vite build` (`scripts/patch-nitro-ssr.mjs`), then again from `npm run build`. The same hook writes Vercel `config.json` / `.vc-config.json` and **rewrites** them when routes drift (missing hashed `/assets/*` 404 instead of SSR; CSP `frame-ancestors` for grok.com). PGLite `pglite.data`, `pglite.wasm`, and `initdb.wasm` are staged next to the bundled driver. Eager PGLite bootstrap failures are logged and do not kill the isolate. Production uses Neon. Sandbox PGLite is durable on disk (`artifacts/pglite`); a live process does not close that handle under Better Auth. Production preview and Vercel without `DATABASE_URL` stay in-memory.

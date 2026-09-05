@@ -101,3 +101,12 @@ Only ACTIVE rows define current architecture.
 - RATIONALE: Treating aggregator brand names as models and injecting default IDs caused missing models such as Grok 4.6 to appear in recommendations and Council membership.
 - SUPERSEDES: none (tightens ADR-010)
 - AFFECTED_MODULES: council.discovery, council.orchestrator, account.persistence, ui.settings
+
+## ADR-012
+
+- DECISION: Provider catalog responses are normalized before any model mapping. Supported shapes are a direct array of models and an OpenAI-compatible `{ data: [...] }` payload. Unsupported shapes fail with `CATALOG_PARSE_ERROR` and sanitized shape metadata in the Test Log. Test Connection is one atomic attempt: current Status, Models discovered, Models available, and Test Log belong to that attempt. A failed refresh never displays a previous scan (including 616/6) as current; the previous catalog is STALE cached data only. CONNECTED is reported only after an authenticated provider check succeeds (catalog HTTP 2xx + successful normalize + no probe 401). NanoGPT remains a provider, never a model. Test logs always persist for PASS and FAIL and never include the API secret.
+- STATUS: ACTIVE
+- ARCHITECTURE_REVISION: CB-ARCH-20260905-003
+- RATIONALE: Unnormalized catalog objects were treated as empty success, and a failed Test Connection reused previous discovered/available counts as current status.
+- SUPERSEDES: none (tightens ADR-011)
+- AFFECTED_MODULES: council.discovery, ui.settings
