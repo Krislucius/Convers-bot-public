@@ -1,8 +1,9 @@
 import { getSql } from "@/lib/db";
 import { runSerialQueries } from "./hydrate";
 import { maskKey, mergeStoredApiKeys, sanitizeApiKey } from "./api-key";
-import { DEFAULT_CLAUDE, DEFAULT_GPT, DEFAULT_GROK, DEFAULT_MAX_COST_USD, DEFAULT_PROVIDER, isProviderId, normalizeProviderId } from "./providers";
+import { DEFAULT_MAX_COST_USD, DEFAULT_PROVIDER, isProviderId, normalizeProviderId } from "./providers";
 import { membersFromIds } from "./members";
+import { pruneToAvailable } from "./discover";
 import { normalizeAgentKey } from "./roles";
 import type { DiscoverySnapshot } from "./discover";
 import type { CouncilMember } from "./members";
@@ -24,6 +25,9 @@ type SettingsRow = {
   selected_model_ids?: unknown;
   synthesizer_model?: string;
   model_catalog?: unknown;
+  last_test_log?: string;
+  last_test_at?: string | null;
+  last_test_ok?: boolean | null;
 };
 
 function asString(value: unknown, fallback = ""): string {
@@ -91,8 +95,9 @@ function asMembers(value: unknown): CouncilMember[] | null {
 
 function selectedIdsFromRow(row: SettingsRow | null): string[] {
   const stored = asStringIds(row?.selected_model_ids);
-  if (stored.length >= 2) return stored;
-  return [row?.gpt_model, row?.grok_model, row?.claude_model].map((id) => String(id ?? "").trim()).filter(Boolean);
+  const catalog = asJson<DiscoverySnapshot | null>(row?.model_catalog, null);
+  if (catalog?.models?.length) return pruneToAvailable(stored, catalog.models);
+  return stored;
 }
 
 function publicSettings(row: SettingsRow | null): AccountSettingsPublic {
@@ -104,10 +109,13 @@ function publicSettings(row: SettingsRow | null): AccountSettingsPublic {
     selectedModelIds,
     synthesizerModel: row?.synthesizer_model?.trim() || "",
     catalog,
-    gptModel: row?.gpt_model?.trim() || DEFAULT_GPT,
-    grokModel: row?.grok_model?.trim() || DEFAULT_GROK,
-    claudeModel: row?.claude_model?.trim() || DEFAULT_CLAUDE,
+    gptModel: row?.gpt_model?.trim() || "",
+    grokModel: row?.grok_model?.trim() || "",
+    claudeModel: row?.claude_model?.trim() || "",
     maxCostUsd: Number(row?.max_cost_usd) > 0 ? Number(row?.max_cost_usd) : DEFAULT_MAX_COST_USD,
+    lastTestLog: row?.last_test_log ?? "",
+    lastTestAt: row?.last_test_at ?? null,
+    lastTestOk: row?.last_test_ok ?? null,
     nanogpt: {
       saved: Boolean(sanitizeApiKey(row?.nanogpt_key ?? "", "nanogpt")),
       masked: row?.nanogpt_key ? maskKey(row.nanogpt_key, "nanogpt") : "",
@@ -163,6 +171,9 @@ export async function saveSettings(
     maxCostUsd: number;
     apiKey?: string;
     clearKey?: boolean;
+    lastTestLog?: string;
+    lastTestAt?: string | null;
+    lastTestOk?: boolean | null;
   },
 ): Promise<AccountSettingsPublic> {
   const sql = await getSql();
@@ -179,26 +190,31 @@ export async function saveSettings(
   const nanogptKey = merged.nanogptKey;
   const openrouterKey = merged.openrouterKey;
   const openrusrouterKey = merged.openrusrouterKey;
-  const selectedModelIds =
-    input.selectedModelIds && input.selectedModelIds.length
-      ? [...new Set(input.selectedModelIds.map((id) => id.trim()).filter(Boolean))]
-      : selectedIdsFromRow(current);
-  const members = membersFromIds(selectedModelIds);
-  const gptModel = members[0]?.modelId || input.gptModel?.trim() || current?.gpt_model?.trim() || DEFAULT_GPT;
-  const grokModel = members[1]?.modelId || input.grokModel?.trim() || current?.grok_model?.trim() || DEFAULT_GROK;
-  const claudeModel = members[2]?.modelId || input.claudeModel?.trim() || current?.claude_model?.trim() || DEFAULT_CLAUDE;
-  const synthesizerModel = input.synthesizerModel?.trim() ?? current?.synthesizer_model ?? "";
   const catalog =
     input.catalog === undefined ? asJson<DiscoverySnapshot | null>(current?.model_catalog, null) : input.catalog;
+  const rawSelected = Array.isArray(input.selectedModelIds)
+    ? [...new Set(input.selectedModelIds.map((id) => id.trim()).filter(Boolean))]
+    : selectedIdsFromRow(current);
+  const selectedModelIds = catalog?.models?.length ? pruneToAvailable(rawSelected, catalog.models) : rawSelected;
+  const members = membersFromIds(selectedModelIds, catalog?.models ?? []);
+  const gptModel = members[0]?.modelId || "";
+  const grokModel = members[1]?.modelId || "";
+  const claudeModel = members[2]?.modelId || "";
+  const synthesizerModel = selectedModelIds.includes(input.synthesizerModel?.trim() ?? "")
+    ? (input.synthesizerModel?.trim() ?? "")
+    : "";
   const maxCostUsd = input.maxCostUsd > 0 ? input.maxCostUsd : DEFAULT_MAX_COST_USD;
   const updatedAt = new Date().toISOString();
+  const lastTestLog = input.lastTestLog !== undefined ? input.lastTestLog : (current?.last_test_log ?? "");
+  const lastTestAt = input.lastTestAt !== undefined ? input.lastTestAt : (current?.last_test_at ?? null);
+  const lastTestOk = input.lastTestOk !== undefined ? input.lastTestOk : (current?.last_test_ok ?? null);
   await sql`
     insert into account_settings (
       user_id, provider, nanogpt_key, openrouter_key, openrusrouter_key, gpt_model, grok_model, claude_model, max_cost_usd,
-      selected_model_ids, synthesizer_model, model_catalog, updated_at
+      selected_model_ids, synthesizer_model, model_catalog, last_test_log, last_test_at, last_test_ok, updated_at
     ) values (
       ${userId}, ${provider}, ${nanogptKey}, ${openrouterKey}, ${openrusrouterKey}, ${gptModel}, ${grokModel}, ${claudeModel}, ${maxCostUsd},
-      ${jsonParam(selectedModelIds)}::jsonb, ${synthesizerModel}, ${jsonParam(catalog)}::jsonb, ${updatedAt}
+      ${jsonParam(selectedModelIds)}::jsonb, ${synthesizerModel}, ${jsonParam(catalog)}::jsonb, ${lastTestLog}, ${lastTestAt}, ${lastTestOk}, ${updatedAt}
     )
     on conflict (user_id) do update set
       provider = excluded.provider,
@@ -212,6 +228,9 @@ export async function saveSettings(
       selected_model_ids = excluded.selected_model_ids,
       synthesizer_model = excluded.synthesizer_model,
       model_catalog = excluded.model_catalog,
+      last_test_log = excluded.last_test_log,
+      last_test_at = excluded.last_test_at,
+      last_test_ok = excluded.last_test_ok,
       updated_at = excluded.updated_at
   `;
   await durable();
@@ -229,6 +248,9 @@ export async function saveSettings(
     selected_model_ids: selectedModelIds,
     synthesizer_model: synthesizerModel,
     model_catalog: catalog,
+    last_test_log: lastTestLog,
+    last_test_at: lastTestAt,
+    last_test_ok: lastTestOk,
   });
 }
 

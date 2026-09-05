@@ -984,4 +984,55 @@ describe("dynamic council membership", () => {
     assert.equal(synthesizerAgent(rows, twoMembers(), "unselected/premium"), "LEAD_REASONER");
     assert.equal(synthesizerAgent(rows, twoMembers(), "openai/gpt-test"), "LEAD_REASONER");
   });
+
+  it("rejects a selected model that is not AVAILABLE on the current scan", async () => {
+    let calls = 0;
+    const blocked = await runCouncil({
+      ...baseInput({
+        completeChat: async () => {
+          calls += 1;
+          return { ok: true, completion: completion("openai/gpt-test") };
+        },
+      }),
+      catalog: [
+        {
+          id: "openai/gpt-test",
+          name: "GPT test",
+          family: "openai",
+          access: "AVAILABLE",
+          recommendedRole: "LEAD_REASONER",
+          contextTokens: 128000,
+          reasoning: true,
+          score: 90,
+          probed: true,
+        },
+        {
+          id: "x-ai/grok-test",
+          name: "Grok test",
+          family: "xai",
+          access: "NOT_INCLUDED",
+          recommendedRole: null,
+          contextTokens: 128000,
+          reasoning: true,
+          score: 70,
+          probed: true,
+        },
+        {
+          id: "anthropic/claude-test",
+          name: "Claude test",
+          family: "anthropic",
+          access: "AVAILABLE",
+          recommendedRole: "FORMAL_REVIEW",
+          contextTokens: 200000,
+          reasoning: true,
+          score: 88,
+          probed: true,
+        },
+      ],
+    });
+    assert.equal(blocked.task.status, "CREATED");
+    assert.match(blocked.task.error ?? "", /MODEL_UNAVAILABLE/);
+    assert.match(blocked.task.error ?? "", /x-ai\/grok-test/);
+    assert.equal(calls, 0);
+  });
 });

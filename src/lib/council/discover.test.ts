@@ -2,15 +2,21 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   accessBlocksRun,
+  availableModels,
   buildDiscovery,
   classifyProbe,
   familyOf,
+  isProviderBrandModel,
   parseCatalogBody,
   pickDiverse,
   pickProbeTargets,
+  pruneToAvailable,
   scoreModel,
 } from "./discover.ts";
-import { assignRoles, assertCouncilSelection, attemptLimit, expectedSuccessfulCalls, membersFromIds, MIN_COUNCIL_MEMBERS } from "./members.ts";
+import { discoverAccountWith, preflightWith, type ProviderTransport } from "./provider-discover.ts";
+import { formatTestLog } from "./test-log.ts";
+import { containsSecret } from "./provider-error.ts";
+import { assertAvailableSelection, assertCouncilSelection, attemptLimit, expectedSuccessfulCalls, assignRoles, membersFromIds, MIN_COUNCIL_MEMBERS } from "./members.ts";
 
 const nanoCatalog = {
   data: [
@@ -79,9 +85,10 @@ describe("access classification", () => {
   });
 
   it("marks a selected model missing from the catalog as UNAVAILABLE", () => {
-    const discovery = buildDiscovery("nanogpt", parseCatalogBody(nanoCatalog), [], ["missing/vanished"]);
+    const discovery = buildDiscovery("nanogpt", parseCatalogBody(nanoCatalog), [{ id: "missing/vanished", status: 200, body: "{}" }], ["missing/vanished"]);
     const row = discovery.models.find((item) => item.id === "missing/vanished");
     assert.equal(row?.access, "UNAVAILABLE");
+    assert.equal(discovery.recommendedIds.includes("missing/vanished"), false);
   });
 });
 
@@ -189,5 +196,293 @@ describe("diversity picker", () => {
     ];
     const picked = pickDiverse(models, 3);
     assert.equal(new Set(picked.map((row) => row.family)).size, 3);
+  });
+});
+
+function dm(
+  id: string,
+  access: "AVAILABLE" | "UNAVAILABLE" | "NOT_INCLUDED" | "UNKNOWN",
+  extras: Partial<{ family: string; score: number; name: string }> = {},
+) {
+  return {
+    id,
+    name: extras.name ?? id,
+    family: extras.family ?? familyOf(id),
+    access,
+    recommendedRole: null,
+    contextTokens: null,
+    reasoning: true,
+    score: extras.score ?? 80,
+    probed: access !== "UNKNOWN",
+  };
+}
+
+describe("provider is not a model", () => {
+  it("never treats NanoGPT or OpenRouter as AI models", () => {
+    assert.equal(isProviderBrandModel("NanoGPT"), true);
+    assert.equal(isProviderBrandModel("nanogpt"), true);
+    assert.equal(isProviderBrandModel("openrouter"), true);
+    assert.equal(isProviderBrandModel("OpenRouter"), true);
+    assert.equal(isProviderBrandModel("openrusrouter"), true);
+    assert.equal(isProviderBrandModel("openai/gpt-5"), false);
+    assert.equal(isProviderBrandModel("x-ai/grok-4.6"), false);
+  });
+
+  it("drops provider brand ids from the catalog", () => {
+    const entries = parseCatalogBody({
+      data: [
+        { id: "NanoGPT", name: "NanoGPT" },
+        { id: "openrouter", name: "OpenRouter" },
+        { id: "anthropic/claude-sonnet-4", name: "Sonnet" },
+      ],
+    });
+    assert.deepEqual(
+      entries.map((row) => row.id),
+      ["anthropic/claude-sonnet-4"],
+    );
+  });
+});
+
+describe("AVAILABLE-only recommendations and selection", () => {
+  it("does not recommend or select Grok 4.6 when it is absent from the catalog", () => {
+    const entries = parseCatalogBody({
+      data: [
+        { id: "anthropic/claude-sonnet-4", name: "Sonnet", context_length: 200000 },
+        { id: "openai/gpt-5", name: "GPT-5", context_length: 200000 },
+        { id: "deepseek/deepseek-r1", name: "R1", context_length: 64000 },
+      ],
+    });
+    const discovery = buildDiscovery(
+      "nanogpt",
+      entries,
+      entries.map((row) => ({ id: row.id, status: 200, body: "{}" })),
+      ["x-ai/grok-4.6"],
+    );
+    assert.equal(discovery.models.some((row) => row.id === "x-ai/grok-4.6" && row.access === "AVAILABLE"), false);
+    assert.equal(discovery.recommendedIds.includes("x-ai/grok-4.6"), false);
+    assert.deepEqual(pruneToAvailable(["x-ai/grok-4.6", "openai/gpt-5"], discovery.models), ["openai/gpt-5"]);
+    const members = membersFromIds(["x-ai/grok-4.6", "openai/gpt-5", "deepseek/deepseek-r1"], discovery.models);
+    assert.equal(members.some((row) => row.modelId.includes("grok")), false);
+    assert.equal(assertAvailableSelection(["x-ai/grok-4.6", "openai/gpt-5"], discovery.models)?.includes("MODEL_UNAVAILABLE"), true);
+  });
+
+  it("removes a stale Grok selection from a previous scan", () => {
+    const previous = ["x-ai/grok-4.6", "openai/gpt-5", "anthropic/claude-sonnet-4"];
+    const current = [
+      dm("openai/gpt-5", "AVAILABLE", { family: "openai", score: 90 }),
+      dm("anthropic/claude-sonnet-4", "AVAILABLE", { family: "anthropic", score: 92 }),
+      dm("deepseek/deepseek-r1", "AVAILABLE", { family: "deepseek", score: 85 }),
+    ];
+    assert.deepEqual(pruneToAvailable(previous, current), ["openai/gpt-5", "anthropic/claude-sonnet-4"]);
+  });
+
+  it("lists DeepSeek, Kimi, and Perplexity only when they were discovered", () => {
+    const withThem = parseCatalogBody({
+      data: [
+        { id: "deepseek/deepseek-r1", name: "R1" },
+        { id: "moonshotai/kimi-k2", name: "Kimi" },
+        { id: "perplexity/sonar-pro", name: "Sonar" },
+      ],
+    });
+    assert.equal(withThem.some((row) => familyOf(row.id) === "deepseek"), true);
+    assert.equal(withThem.some((row) => familyOf(row.id) === "kimi"), true);
+    assert.equal(withThem.some((row) => familyOf(row.id) === "perplexity"), true);
+    const without = parseCatalogBody({
+      data: [{ id: "openai/gpt-5", name: "GPT-5" }, { id: "anthropic/claude-sonnet-4", name: "Sonnet" }],
+    });
+    assert.equal(without.some((row) => /deepseek|kimi|perplexity|grok/i.test(row.id)), false);
+  });
+
+  it("recommends only AVAILABLE models, 3–5 when that many exist", () => {
+    const entries = parseCatalogBody({
+      data: [
+        { id: "anthropic/claude-opus-4", name: "Opus" },
+        { id: "openai/gpt-5", name: "GPT-5" },
+        { id: "perplexity/sonar-reasoning", name: "Sonar" },
+        { id: "deepseek/deepseek-r1", name: "R1" },
+        { id: "moonshotai/kimi-k2", name: "Kimi" },
+        { id: "google/gemini-2.5-pro", name: "Gemini" },
+      ],
+    });
+    const discovery = buildDiscovery(
+      "nanogpt",
+      entries,
+      entries.map((row) => ({ id: row.id, status: 200, body: "{}" })),
+    );
+    assert.ok(discovery.recommendedIds.length >= 3);
+    assert.ok(discovery.recommendedIds.length <= 5);
+    for (const id of discovery.recommendedIds) {
+      assert.equal(discovery.models.find((row) => row.id === id)?.access, "AVAILABLE");
+    }
+  });
+
+  it("recommends 2 when only 2 models are AVAILABLE", () => {
+    const discovery = buildDiscovery(
+      "nanogpt",
+      parseCatalogBody({
+        data: [
+          { id: "anthropic/claude-sonnet-4", name: "Sonnet" },
+          { id: "openai/gpt-5", name: "GPT-5" },
+          { id: "x-ai/grok-4.6", name: "Grok 4.6" },
+        ],
+      }),
+      [
+        { id: "anthropic/claude-sonnet-4", status: 200, body: "{}" },
+        { id: "openai/gpt-5", status: 200, body: "{}" },
+        { id: "x-ai/grok-4.6", status: 403, body: "model not included in your subscription" },
+      ],
+    );
+    assert.deepEqual(discovery.recommendedIds.sort(), ["anthropic/claude-sonnet-4", "openai/gpt-5"].sort());
+    assert.equal(availableModels(discovery.models).length, 2);
+    assert.equal(discovery.recommendedIds.includes("x-ai/grok-4.6"), false);
+  });
+
+  it("does not recommend UNKNOWN unprobed catalog rows", () => {
+    const discovery = buildDiscovery("nanogpt", parseCatalogBody(nanoCatalog), [
+      { id: "openai/gpt-5", status: 200, body: "{}" },
+      { id: "anthropic/claude-sonnet-4", status: 200, body: "{}" },
+    ]);
+    for (const id of discovery.recommendedIds) {
+      assert.equal(discovery.models.find((row) => row.id === id)?.access, "AVAILABLE");
+    }
+    const unprobed = discovery.models.filter((row) => row.access === "UNKNOWN");
+    assert.ok(unprobed.length > 0);
+    assert.ok(unprobed.every((row) => !discovery.recommendedIds.includes(row.id)));
+  });
+});
+
+describe("sanitized test log", () => {
+  const secret = "sk-nano-THISISASECRETKEYVALUE99";
+
+  it("always includes required fields for PASS and never the API key", () => {
+    const log = formatTestLog(
+      {
+        result: "PASS",
+        time: "2026-09-05T17:00:00.000Z",
+        provider: "nanogpt",
+        connection: { status: "CONNECTED", detail: "NanoGPT connected" },
+        catalog: { http_status: 200, model_count: 4, latency_ms: 12 },
+        probes: { performed: 2, ids: ["openai/gpt-5", "anthropic/claude-sonnet-4"] },
+        access: { AVAILABLE: 2, NOT_INCLUDED: 1, UNAVAILABLE: 0, UNKNOWN: 1 },
+        recommended: ["openai/gpt-5", "anthropic/claude-sonnet-4"],
+        selected: ["openai/gpt-5", "anthropic/claude-sonnet-4"],
+        warnings: [],
+        extra: { apiKey: secret, Authorization: `Bearer ${secret}` },
+      },
+      secret,
+    );
+    assert.match(log, /"result": "PASS"/);
+    assert.match(log, /"provider": "nanogpt"/);
+    assert.match(log, /"status": "CONNECTED"/);
+    assert.match(log, /"http_status": 200/);
+    assert.match(log, /"model_count": 4/);
+    assert.match(log, /"AVAILABLE": 2/);
+    assert.equal(log.includes(secret), false);
+    assert.equal(containsSecret(log), false);
+    assert.equal(/Bearer /i.test(log), false);
+    assert.equal(/apiKey/i.test(log), false);
+  });
+
+  it("always includes required fields for FAIL and never the API key", () => {
+    const log = formatTestLog(
+      {
+        result: "FAIL",
+        provider: "openrouter",
+        connection: { status: "FAILED", detail: "key rejected" },
+        catalog: { http_status: 401, model_count: 0 },
+        probes: { performed: 0, ids: [] },
+        access: { AVAILABLE: 0, NOT_INCLUDED: 0, UNAVAILABLE: 0, UNKNOWN: 0 },
+        recommended: [],
+        selected: [],
+        warnings: [],
+        error: `Unauthorized for ${secret}`,
+      },
+      secret,
+    );
+    assert.match(log, /"result": "FAIL"/);
+    assert.match(log, /"status": "FAILED"/);
+    assert.equal(log.includes(secret), false);
+    assert.equal(containsSecret(log), false);
+  });
+});
+
+describe("discoverAccountWith scan", () => {
+  const secret = "sk-nano-THISISASECRETKEYVALUE99";
+
+  function transport(catalog: unknown, denied: string[] = []): ProviderTransport {
+    return {
+      provider: "nanogpt",
+      label: "NanoGPT",
+      creditMessage: "Add NanoGPT credits.",
+      listModels: async () => ({ status: 200, body: JSON.stringify(catalog), latencyMs: 9 }),
+      pingModel: async (_key, id) => {
+        if (denied.includes(id)) return { status: 403, body: "model not included in your subscription" };
+        return { status: 200, body: "{}" };
+      },
+    };
+  }
+
+  it("CONNECTS, drops stale Grok, never treats NanoGPT as a model, and logs PASS without secrets", async () => {
+    const catalog = {
+      data: [
+        { id: "NanoGPT", name: "NanoGPT" },
+        { id: "anthropic/claude-sonnet-4", name: "Sonnet" },
+        { id: "openai/gpt-5", name: "GPT-5" },
+        { id: "deepseek/deepseek-r1", name: "R1" },
+      ],
+    };
+    const result = await discoverAccountWith(transport(catalog), secret, [
+      "x-ai/grok-4.6",
+      "openai/gpt-5",
+      "NanoGPT",
+    ]);
+    assert.equal(result.ok, true);
+    assert.ok(result.snapshot);
+    assert.equal(result.snapshot?.models.some((row) => /nanogpt/i.test(row.id)), false);
+    assert.equal(result.snapshot?.recommendedIds.includes("x-ai/grok-4.6"), false);
+    assert.equal(result.snapshot?.models.some((row) => row.id === "x-ai/grok-4.6" && row.access === "AVAILABLE"), false);
+    assert.match(result.log, /"result": "PASS"/);
+    assert.match(result.log, /"status": "CONNECTED"/);
+    assert.match(result.log, /Dropped stale selection x-ai\/grok-4.6/);
+    assert.equal(result.log.includes(secret), false);
+    assert.equal(containsSecret(result.log), false);
+    const parsed = JSON.parse(result.log) as { selected: string[]; recommended: string[] };
+    assert.equal(parsed.selected.includes("x-ai/grok-4.6"), false);
+    assert.equal(parsed.selected.includes("NanoGPT"), false);
+    assert.ok(parsed.recommended.length >= 2);
+    assert.ok(parsed.recommended.length <= 5);
+  });
+
+  it("writes a FAIL log when the catalog request is rejected", async () => {
+    const bad: ProviderTransport = {
+      provider: "nanogpt",
+      label: "NanoGPT",
+      creditMessage: "Add NanoGPT credits.",
+      listModels: async () => ({ status: 401, body: `invalid key ${secret}`, latencyMs: 4 }),
+      pingModel: async () => ({ status: 0, body: "" }),
+    };
+    const result = await discoverAccountWith(bad, secret, []);
+    assert.equal(result.ok, false);
+    assert.match(result.log, /"result": "FAIL"/);
+    assert.match(result.log, /"status": "FAILED"/);
+    assert.equal(result.log.includes(secret), false);
+    assert.equal(containsSecret(result.log), false);
+  });
+
+  it("preflight still blocks a paid run when a selected model is not AVAILABLE", async () => {
+    const catalog = {
+      data: [
+        { id: "openai/gpt-5", name: "GPT-5" },
+        { id: "anthropic/claude-sonnet-4", name: "Sonnet" },
+      ],
+    };
+    const report = await preflightWith(transport(catalog), {
+      apiKey: secret,
+      selectedIds: ["openai/gpt-5", "x-ai/grok-4.6"],
+    });
+    assert.equal(report.ok, false);
+    assert.match(report.error ?? "", /MODEL_UNAVAILABLE/);
+    assert.match(report.error ?? "", /x-ai\/grok-4.6/);
+    assert.equal(report.catalog?.recommendedIds.includes("x-ai/grok-4.6"), false);
   });
 });

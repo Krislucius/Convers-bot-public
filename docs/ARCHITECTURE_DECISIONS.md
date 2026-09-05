@@ -92,3 +92,12 @@ Only ACTIVE rows define current architecture.
 - RATIONALE: Fixed GPT/Grok/Claude membership forced unavailable models and mixed vendor identity with review duty. Account access must be verified, not inferred from a catalog listing.
 - SUPERSEDES: fixed GPT/Grok/Claude membership implied by ADR-009
 - AFFECTED_MODULES: council.providers, council.orchestrator, council.protocol, council.discovery, account.persistence, ui.settings
+
+## ADR-011
+
+- DECISION: NanoGPT and OpenRouter are API providers, never Council models. Council membership and recommendations are computed only from models the current provider scan classified as AVAILABLE after catalog fetch and access probe. Hardcoded or default model IDs (including Grok 4.6) are never injected when they are absent from the scan. Stale selected IDs are dropped when the provider or catalog changes. Test Connection always generates and persists a sanitized log, including successful connections, and never includes API secrets.
+- STATUS: ACTIVE
+- ARCHITECTURE_REVISION: CB-ARCH-20260905-002
+- RATIONALE: Treating aggregator brand names as models and injecting default IDs caused missing models such as Grok 4.6 to appear in recommendations and Council membership.
+- SUPERSEDES: none (tightens ADR-010)
+- AFFECTED_MODULES: council.discovery, council.orchestrator, account.persistence, ui.settings

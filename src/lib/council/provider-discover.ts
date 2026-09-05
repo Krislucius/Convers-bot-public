@@ -5,18 +5,21 @@ import {
   redact,
   sanitizeApiKey,
 } from "./api-key.ts";
-import { catalogFromIds, type CatalogCheckResult } from "./catalog.ts";
+import { catalogFromIds, MODEL_UNAVAILABLE, type CatalogCheckResult } from "./catalog.ts";
 import {
+  accessCounts,
+  availableModels,
   buildDiscovery,
   parseCatalogBody,
   pickProbeTargets,
+  pruneToAvailable,
   type CatalogEntry,
   type DiscoverySnapshot,
   type ModelProbe,
 } from "./discover.ts";
 import { coerceMembers } from "./members.ts";
 import { providerName } from "./providers.ts";
-import { ROLE_LABEL } from "./roles.ts";
+import { emptyAccessCounts, formatTestLog } from "./test-log.ts";
 import type { ConnectionCheck, PreflightClientReport, ProviderId } from "./types.ts";
 import type { CouncilMember } from "./members.ts";
 
@@ -58,16 +61,29 @@ export function selectedIdsFromPreflight(opts: {
 export async function listCatalogWith(
   transport: ProviderTransport,
   apiKey: string,
-): Promise<{ ok: true; entries: CatalogEntry[] } | { ok: false; error: string; code: "KEY_REJECTED" | "PROVIDER_UNREACHABLE" }> {
+): Promise<
+  | { ok: true; entries: CatalogEntry[]; status: number; latencyMs: number }
+  | {
+      ok: false;
+      error: string;
+      code: "KEY_REJECTED" | "PROVIDER_UNREACHABLE";
+      status: number | "NETWORK_ERROR";
+      latencyMs: number;
+    }
+> {
   const key = sanitizeApiKey(apiKey, transport.provider);
   if (!key) {
     return {
       ok: false,
       code: "KEY_REJECTED",
       error: `${transport.label} is not connected. Connect your API key before running the Council.`,
+      status: 0,
+      latencyMs: 0,
     };
   }
   const probe = await transport.listModels(key);
+  const latencyMs = probe.latencyMs ?? 0;
+  const httpStatus = probe.status || "NETWORK_ERROR";
   if (probe.error || probe.status < 200 || probe.status >= 300) {
     const parsed = parseBody(probe.body);
     const error =
@@ -83,9 +99,11 @@ export async function listCatalogWith(
       ok: false,
       code: probe.status === 401 || probe.status === 403 ? "KEY_REJECTED" : "PROVIDER_UNREACHABLE",
       error,
+      status: httpStatus === "NETWORK_ERROR" ? "NETWORK_ERROR" : probe.status,
+      latencyMs,
     };
   }
-  return { ok: true, entries: parseCatalogBody(parseBody(probe.body)) };
+  return { ok: true, entries: parseCatalogBody(parseBody(probe.body)), status: probe.status, latencyMs };
 }
 
 export async function probeModelWith(
@@ -117,43 +135,71 @@ export async function discoverAccountWith(
   selectedIds: string[] = [],
 ): Promise<DiscoverAccountResult> {
   const key = sanitizeApiKey(apiKey, transport.provider);
-  const fingerprint = keyFingerprint(key, transport.provider);
   const checks: Record<string, ConnectionCheck> = {
     [transport.provider]: { ok: false, label: transport.label, detail: "Not checked" },
   };
-  const logBase = (ok: boolean, error?: string, extra: Record<string, unknown> = {}) =>
-    JSON.stringify(
+  const makeLog = (opts: {
+    ok: boolean;
+    error?: string;
+    catalogStatus: number | "NETWORK_ERROR";
+    catalogCount: number;
+    latencyMs?: number;
+    probeIds?: string[];
+    snapshot?: DiscoverySnapshot | null;
+    selected?: string[];
+    warnings?: string[];
+  }) =>
+    formatTestLog(
       {
-        title: "Conversation Bot · API test log",
-        result: ok ? "PASS" : "FAIL",
-        time: new Date().toISOString(),
-        probe: "server",
+        result: opts.ok ? "PASS" : "FAIL",
         provider: transport.provider,
-        key: { chars: fingerprint.chars, prefix: fingerprint.prefix },
-        error: error ?? null,
-        checks: Object.fromEntries(
-          Object.entries(checks).map(([id, row]) => [
-            id,
-            { label: row.label, result: row.ok ? "PASS" : "FAIL", detail: row.detail },
-          ]),
-        ),
-        note: "The API secret is not included in this log.",
-        ...extra,
+        connection: {
+          status: opts.ok ? "CONNECTED" : "FAILED",
+          detail: opts.error ?? (opts.ok ? `${transport.label} connected` : "Connection failed"),
+        },
+        catalog: {
+          http_status: opts.catalogStatus,
+          model_count: opts.catalogCount,
+          latency_ms: opts.latencyMs,
+        },
+        probes: { performed: opts.probeIds?.length ?? 0, ids: opts.probeIds ?? [] },
+        access: opts.snapshot ? accessCounts(opts.snapshot.models) : emptyAccessCounts(),
+        recommended: opts.snapshot?.recommendedIds ?? [],
+        selected: opts.selected ?? [],
+        warnings: opts.warnings ?? [],
+        error: opts.error ?? null,
       },
-      null,
-      2,
+      key,
     );
 
   if (!key) {
     const error = `${transport.label} is not connected. Connect your API key before running the Council.`;
     checks[transport.provider] = { ok: false, label: transport.label, detail: error };
-    return { ok: false, error, snapshot: null, checks, log: logBase(false, error) };
+    return {
+      ok: false,
+      error,
+      snapshot: null,
+      checks,
+      log: makeLog({ ok: false, error, catalogStatus: 0, catalogCount: 0 }),
+    };
   }
 
   const catalog = await listCatalogWith(transport, key);
   if (!catalog.ok) {
     checks[transport.provider] = { ok: false, label: transport.label, detail: catalog.error };
-    return { ok: false, error: catalog.error, snapshot: null, checks, log: logBase(false, catalog.error) };
+    return {
+      ok: false,
+      error: catalog.error,
+      snapshot: null,
+      checks,
+      log: makeLog({
+        ok: false,
+        error: catalog.error,
+        catalogStatus: catalog.status,
+        catalogCount: 0,
+        latencyMs: catalog.latencyMs,
+      }),
+    };
   }
 
   const targets = pickProbeTargets(catalog.entries, selectedIds);
@@ -163,11 +209,24 @@ export async function discoverAccountWith(
     const error = keyRejectedMessage(
       authFail.status,
       extractErrorMessage(parseBody(authFail.body ?? ""), authFail.status),
-      fingerprint,
+      keyFingerprint(key, transport.provider),
       transport.provider,
     );
     checks[transport.provider] = { ok: false, label: transport.label, detail: error };
-    return { ok: false, error, snapshot: null, checks, log: logBase(false, error) };
+    return {
+      ok: false,
+      error,
+      snapshot: null,
+      checks,
+      log: makeLog({
+        ok: false,
+        error,
+        catalogStatus: catalog.status,
+        catalogCount: catalog.entries.length,
+        latencyMs: catalog.latencyMs,
+        probeIds: targets,
+      }),
+    };
   }
   const creditFail = probes.find((row) => row.status === 402);
   if (creditFail && probes.every((row) => row.status === 402 || row.status === 0 || row.status >= 500)) {
@@ -177,43 +236,42 @@ export async function discoverAccountWith(
       error: transport.creditMessage,
       snapshot: null,
       checks,
-      log: logBase(false, transport.creditMessage),
+      log: makeLog({
+        ok: false,
+        error: transport.creditMessage,
+        catalogStatus: catalog.status,
+        catalogCount: catalog.entries.length,
+        latencyMs: catalog.latencyMs,
+        probeIds: targets,
+      }),
     };
   }
 
   const snapshot = buildDiscovery(transport.provider, catalog.entries, probes, selectedIds);
+  const usable = pruneToAvailable(selectedIds, snapshot.models);
+  const warnings: string[] = [];
+  for (const id of selectedIds) {
+    if (id && !usable.includes(id)) warnings.push(`Dropped stale selection ${id} — not AVAILABLE on this scan.`);
+  }
+  const availableCount = availableModels(snapshot.models).length;
   checks[transport.provider] = {
     ok: true,
     label: transport.label,
-    detail: `Connected · ${catalog.entries.length} models · ${fingerprint.chars} characters`,
+    detail: `CONNECTED · ${catalog.entries.length} discovered · ${availableCount} available`,
   };
-  for (const id of selectedIds) {
-    const row = snapshot.models.find((item) => item.id === id);
-    const access = row?.access ?? "UNAVAILABLE";
-    const role = row?.recommendedRole ? ROLE_LABEL[row.recommendedRole] : "Council";
-    checks[id] = {
-      ok: access === "AVAILABLE" || access === "UNKNOWN",
-      label: row?.name ?? id,
-      detail: `${access}${role ? ` · ${role}` : ""}`,
-    };
-  }
-  const blockedSelected = selectedIds.filter((id) => {
-    const row = snapshot.models.find((item) => item.id === id);
-    return row?.access === "UNAVAILABLE" || row?.access === "NOT_INCLUDED";
-  });
-  const ok = blockedSelected.length === 0;
-  const error = ok
-    ? undefined
-    : `MODEL_UNAVAILABLE: ${blockedSelected.join(", ")} is not accessible on ${providerName(transport.provider)}. Refresh models and pick a replacement.`;
   return {
-    ok,
-    error,
+    ok: true,
     snapshot,
     checks,
-    log: logBase(ok, error, {
-      catalog: { model_count: catalog.entries.length, probed: targets.length },
-      recommended: snapshot.recommendedIds,
-      selected: selectedIds,
+    log: makeLog({
+      ok: true,
+      catalogStatus: catalog.status,
+      catalogCount: catalog.entries.length,
+      latencyMs: catalog.latencyMs,
+      probeIds: targets,
+      snapshot,
+      selected: usable,
+      warnings,
     }),
   };
 }
@@ -252,13 +310,13 @@ export async function accessCheckWith(
       const row = discovered.snapshot?.models.find((item) => item.id === id);
       return { id, access: row?.access ?? "UNAVAILABLE" };
     })
-    .filter((row) => row.access === "UNAVAILABLE" || row.access === "NOT_INCLUDED");
+    .filter((row) => row.access !== "AVAILABLE");
   if (blocked.length) {
     return {
       ok: false,
       blocked,
       snapshot: discovered.snapshot,
-      error: `MODEL_UNAVAILABLE: ${blocked.map((row) => row.id).join(", ")} is not accessible on ${providerName(transport.provider)}. Refresh models and pick a replacement.`,
+      error: `${MODEL_UNAVAILABLE}: ${blocked.map((row) => row.id).join(", ")} is not accessible on ${providerName(transport.provider)}. Refresh models and pick a replacement.`,
     };
   }
   return { ok: true, blocked: [], snapshot: discovered.snapshot };
@@ -278,13 +336,35 @@ export async function preflightWith(
 ): Promise<PreflightClientReport & { catalog?: DiscoverySnapshot }> {
   const selectedIds = selectedIdsFromPreflight(opts);
   const discovered = await discoverAccountWith(transport, opts.apiKey, selectedIds);
-  const models: Record<string, string> = Object.fromEntries(selectedIds.map((id, index) => [`m${index + 1}`, id]));
+  if (!discovered.snapshot) {
+    return {
+      ok: false,
+      error: discovered.error,
+      checks: discovered.checks,
+      models: {},
+      log: discovered.log,
+    };
+  }
+  const usable = pruneToAvailable(selectedIds, discovered.snapshot.models);
+  const missing = selectedIds.filter((id) => id && !usable.includes(id));
+  const models: Record<string, string> = Object.fromEntries(usable.map((id, index) => [`m${index + 1}`, id]));
+  if (missing.length) {
+    const error = `${MODEL_UNAVAILABLE}: ${missing.join(", ")} is not accessible on ${providerName(transport.provider)}. Refresh models and pick a replacement.`;
+    return {
+      ok: false,
+      error,
+      checks: discovered.checks,
+      models,
+      log: discovered.log,
+      catalog: discovered.snapshot,
+    };
+  }
   return {
     ok: discovered.ok,
     error: discovered.error,
     checks: discovered.checks,
     models,
     log: discovered.log,
-    catalog: discovered.snapshot ?? undefined,
+    catalog: discovered.snapshot,
   };
 }

@@ -1,5 +1,5 @@
 {
-  "architecture_revision": "CB-ARCH-20260905-001",
+  "architecture_revision": "CB-ARCH-20260905-002",
   "modules": [
     {
       "module_id": "app.shell",
@@ -113,7 +113,7 @@
       "module_id": "council.orchestrator",
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/orchestrate.ts",
-      "architecture_revision": "CB-ARCH-20260905-001",
+      "architecture_revision": "CB-ARCH-20260905-002",
       "responsibilities": ["single Council execution path: preflight, catalog, access probe, request budget, dynamic members, round1, round2, synthesis, packet"],
       "dependencies": ["council.protocol", "council.providers", "council.manifest", "council.artifact", "council.packet", "context.evidence-ledger"],
       "supersedes": []
@@ -140,7 +140,7 @@
       "module_id": "council.providers",
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/run-council.ts",
-      "architecture_revision": "CB-ARCH-20260905-001",
+      "architecture_revision": "CB-ARCH-20260905-002",
       "responsibilities": ["NanoGPT and OpenRouter server functions", "per-run provider freeze", "catalog + access discovery", "dynamic Council membership", "key resolve from account"],
       "dependencies": ["account.persistence"],
       "supersedes": []
@@ -149,13 +149,14 @@
       "module_id": "council.discovery",
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/discover.ts",
-      "architecture_revision": "CB-ARCH-20260905-001",
+      "architecture_revision": "CB-ARCH-20260905-002",
       "responsibilities": [
         "provider catalog parse",
         "account access probe",
         "AVAILABLE / UNAVAILABLE / NOT_INCLUDED / UNKNOWN",
-        "diverse model recommendation",
-        "dynamic role assignment"
+        "AVAILABLE-only recommendation and Council membership",
+        "provider names are not models",
+        "sanitized persisted test log"
       ],
       "dependencies": ["council.providers"],
       "supersedes": []
@@ -209,8 +210,8 @@
       "module_id": "ui.settings",
       "status": "ACTIVE",
       "implementation_path": "src/routes/settings.tsx",
-      "architecture_revision": "CB-ARCH-20260829-001",
-      "responsibilities": ["provider keys", "models", "cost cap", "system identity"],
+      "architecture_revision": "CB-ARCH-20260905-002",
+      "responsibilities": ["provider keys", "AVAILABLE model checkboxes", "Council recommendation", "persisted test log", "system identity"],
       "dependencies": ["council.providers", "architecture.lock"],
       "supersedes": []
     },

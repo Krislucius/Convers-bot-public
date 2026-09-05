@@ -59,19 +59,16 @@ export const testProvider = createServerFn({ method: "POST" })
     }
     const creds = { ...data, apiKey };
     const mod = await loadProvider(data.provider);
-    const report = await mod.preflightWithKey({
-      apiKey,
-      members: creds.members,
-      selectedIds: creds.members.map((row) => row.modelId),
-      synthesizerModel: creds.synthesizerModel,
-    });
+    const discovered = await mod.discoverAccount(apiKey, creds.members.map((row) => row.modelId));
     return {
-      ok: report.ok,
-      error: report.error ? redact(report.error, apiKey) : undefined,
-      checks: report.checks,
-      models: report.models,
-      log: redact(report.log, apiKey),
-      catalog: report.catalog,
+      ok: discovered.ok,
+      error: discovered.error ? redact(discovered.error, apiKey) : undefined,
+      checks: discovered.checks,
+      models: Object.fromEntries(
+        (discovered.snapshot?.recommendedIds ?? []).map((id, index) => [`m${index + 1}`, id]),
+      ),
+      log: redact(discovered.log || "", apiKey),
+      catalog: discovered.snapshot ?? undefined,
     };
   });
 

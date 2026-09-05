@@ -36,7 +36,7 @@ export type DiscoverySnapshot = {
 };
 
 export const MAX_PROBE_TARGETS = 8;
-export const RECOMMEND_MIN = 3;
+export const RECOMMEND_MIN = 2;
 export const RECOMMEND_MAX = 5;
 
 const FAMILY_PRIORITY = [
@@ -53,6 +53,16 @@ const FAMILY_PRIORITY = [
 ] as const;
 
 export type ModelFamily = (typeof FAMILY_PRIORITY)[number];
+
+const PROVIDER_BRAND = /^(nanogpt|nano-gpt|nano gpt|openrouter|open-router|openrusrouter|open-rus-router)$/i;
+
+/** Provider product names are not AI models and must never join the Council. */
+export function isProviderBrandModel(id: string, name = ""): boolean {
+  const idNorm = id.trim().toLowerCase().replace(/[\s_]+/g, "-");
+  if (PROVIDER_BRAND.test(idNorm)) return true;
+  const nameNorm = name.trim().toLowerCase().replace(/[\s_]+/g, "-");
+  return PROVIDER_BRAND.test(nameNorm);
+}
 
 export function familyOf(id: string, ownedBy = ""): ModelFamily {
   const text = `${id} ${ownedBy}`.toLowerCase();
@@ -108,13 +118,14 @@ export function parseCatalogBody(payload: unknown): CatalogEntry[] {
     if (!row || typeof row !== "object") continue;
     const rec = row as Record<string, unknown>;
     const id = String(rec.id ?? rec.model ?? "").trim();
-    if (!id || seen.has(id)) continue;
+    const name = String(rec.name ?? rec.id ?? id);
+    if (!id || seen.has(id) || isProviderBrandModel(id, name)) continue;
     seen.add(id);
     const ctx =
       Number(rec.context_length ?? rec.contextLength ?? rec.max_context ?? rec.context_window) || null;
     out.push({
       id,
-      name: String(rec.name ?? rec.id ?? id),
+      name,
       contextLength: ctx && Number.isFinite(ctx) ? ctx : null,
       ownedBy: String(rec.owned_by ?? rec.ownedBy ?? rec.architecture ?? ""),
     });
@@ -154,7 +165,7 @@ export function pickProbeTargets(entries: CatalogEntry[], selectedIds: string[],
   const ranked = [...entries].sort((a, b) => scoreModel(b) - scoreModel(a));
   const out: string[] = [];
   const add = (id: string) => {
-    if (!id || out.includes(id)) return;
+    if (!id || out.includes(id) || isProviderBrandModel(id)) return;
     if (out.length >= cap) return;
     out.push(id);
   };
@@ -168,7 +179,7 @@ export function pickProbeTargets(entries: CatalogEntry[], selectedIds: string[],
   }
   for (const row of ranked) add(row.id);
   for (const id of selectedIds) {
-    if (!known.has(id) && !out.includes(id)) {
+    if (!known.has(id) && !out.includes(id) && !isProviderBrandModel(id)) {
       if (out.length >= cap) out[out.length - 1] = id;
       else out.push(id);
     }
@@ -182,6 +193,32 @@ function recommendedRoleFor(index: number, family: ModelFamily): CouncilRole {
   if (family === "xai" || family === "deepseek") return "ADVERSARIAL";
   if (family === "anthropic") return "FORMAL_REVIEW";
   return COUNCIL_ROLES[Math.min(index, COUNCIL_ROLES.length - 1)];
+}
+
+export function availableModels(models: DiscoveredModel[]): DiscoveredModel[] {
+  return models.filter((row) => row.access === "AVAILABLE" && !isProviderBrandModel(row.id, row.name));
+}
+
+export function pruneToAvailable(ids: string[], models: DiscoveredModel[]): string[] {
+  const ok = new Set(availableModels(models).map((row) => row.id));
+  const out: string[] = [];
+  for (const raw of ids) {
+    const id = raw.trim();
+    if (!id || !ok.has(id) || out.includes(id)) continue;
+    out.push(id);
+  }
+  return out;
+}
+
+export function accessCounts(models: DiscoveredModel[]): Record<ModelAccess, number> {
+  const counts: Record<ModelAccess, number> = {
+    AVAILABLE: 0,
+    NOT_INCLUDED: 0,
+    UNAVAILABLE: 0,
+    UNKNOWN: 0,
+  };
+  for (const row of models) counts[row.access] += 1;
+  return counts;
 }
 
 export function buildDiscovery(
@@ -215,14 +252,13 @@ export function buildDiscovery(
     };
   });
   for (const id of selectedIds) {
-    if (models.some((row) => row.id === id)) continue;
+    if (!id.trim() || isProviderBrandModel(id) || models.some((row) => row.id === id)) continue;
     const probe = probeById.get(id);
-    const access = probe ? classifyProbe(probe, false) : "UNAVAILABLE";
     models.push({
       id,
       name: id,
       family: familyOf(id),
-      access,
+      access: "UNAVAILABLE",
       recommendedRole: null,
       contextTokens: null,
       reasoning: looksReasoning(id),
@@ -230,10 +266,8 @@ export function buildDiscovery(
       probed: Boolean(probe),
     });
   }
-  const available = models
-    .filter((row) => row.access === "AVAILABLE" || (row.access === "UNKNOWN" && !row.probed))
-    .sort((a, b) => b.score - a.score);
-  const recommended = pickDiverse(available, RECOMMEND_MAX);
+  const available = availableModels(models).sort((a, b) => b.score - a.score);
+  const recommended = pickDiverse(available, Math.min(RECOMMEND_MAX, Math.max(available.length, 0)));
   const recommendedIds = recommended.map((row) => row.id);
   const byId = new Map(models.map((row) => [row.id, row]));
   recommended.forEach((row, index) => {
@@ -243,22 +277,22 @@ export function buildDiscovery(
   models.sort((a, b) => {
     const rec = Number(recommendedIds.includes(b.id)) - Number(recommendedIds.includes(a.id));
     if (rec) return rec;
+    const av = Number(b.access === "AVAILABLE") - Number(a.access === "AVAILABLE");
+    if (av) return av;
     return b.score - a.score;
   });
   return { provider, fetchedAt, models, recommendedIds };
 }
 
 export function pickDiverse(models: DiscoveredModel[], count: number): DiscoveredModel[] {
-  const usable = models
-    .filter((row) => row.access === "AVAILABLE" || row.access === "UNKNOWN")
-    .sort((a, b) => {
-      const score = b.score - a.score;
-      if (score) return score;
-      return (
-        (FAMILY_PRIORITY as readonly string[]).indexOf(a.family) -
-        (FAMILY_PRIORITY as readonly string[]).indexOf(b.family)
-      );
-    });
+  const usable = availableModels(models).sort((a, b) => {
+    const score = b.score - a.score;
+    if (score) return score;
+    return (
+      (FAMILY_PRIORITY as readonly string[]).indexOf(a.family) -
+      (FAMILY_PRIORITY as readonly string[]).indexOf(b.family)
+    );
+  });
   const out: DiscoveredModel[] = [];
   const used = new Set<string>();
   for (const row of usable) {
@@ -276,5 +310,5 @@ export function pickDiverse(models: DiscoveredModel[], count: number): Discovere
 }
 
 export function accessBlocksRun(access: ModelAccess): boolean {
-  return access === "UNAVAILABLE" || access === "NOT_INCLUDED";
+  return access !== "AVAILABLE";
 }

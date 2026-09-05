@@ -4,10 +4,8 @@ import { sanitizeApiKey } from "./api-key";
 import { runWithPersistRetry } from "./persist-queue";
 import { runCredsFromReady } from "./orchestrate";
 import { coerceMembers, membersFromIds, type CouncilMember } from "./members";
+import { pruneToAvailable } from "./discover";
 import {
-  DEFAULT_CLAUDE,
-  DEFAULT_GPT,
-  DEFAULT_GROK,
   DEFAULT_MAX_COST_USD,
   DEFAULT_PROVIDER,
   isProviderId,
@@ -16,7 +14,6 @@ import {
 import type { AccountSettingsPublic, DiscoverySnapshot, ProviderCreds, ProviderId } from "./types";
 
 export type { ProviderCreds, ProviderId };
-export { DEFAULT_CLAUDE, DEFAULT_GPT, DEFAULT_GROK };
 
 export type SessionConfig = {
   provider: ProviderId;
@@ -28,6 +25,9 @@ export type SessionConfig = {
   grokModel: string;
   claudeModel: string;
   maxCostUsd: number;
+  lastTestLog: string;
+  lastTestAt: string | null;
+  lastTestOk: boolean | null;
   ready: boolean;
   nanogpt: { saved: boolean; masked: string };
   openrouter: { saved: boolean; masked: string };
@@ -39,7 +39,15 @@ type SessionApi = {
   creds: ProviderCreds | null;
   hydrateFromAccount: (settings: AccountSettingsPublic) => void;
   setProvider: (provider: ProviderId) => void;
-  save: (next: ProviderCreds & { selectedModelIds?: string[]; catalog?: DiscoverySnapshot | null }) => Promise<AccountSettingsPublic>;
+  save: (
+    next: ProviderCreds & {
+      selectedModelIds?: string[];
+      catalog?: DiscoverySnapshot | null;
+      lastTestLog?: string;
+      lastTestAt?: string | null;
+      lastTestOk?: boolean | null;
+    },
+  ) => Promise<AccountSettingsPublic>;
   clearKey: () => Promise<AccountSettingsPublic>;
 };
 
@@ -47,13 +55,16 @@ const SessionContext = createContext<SessionApi | null>(null);
 
 const emptySettings: AccountSettingsPublic = {
   provider: DEFAULT_PROVIDER,
-  selectedModelIds: [DEFAULT_GPT, DEFAULT_GROK, DEFAULT_CLAUDE],
+  selectedModelIds: [],
   synthesizerModel: "",
   catalog: null,
-  gptModel: DEFAULT_GPT,
-  grokModel: DEFAULT_GROK,
-  claudeModel: DEFAULT_CLAUDE,
+  gptModel: "",
+  grokModel: "",
+  claudeModel: "",
   maxCostUsd: DEFAULT_MAX_COST_USD,
+  lastTestLog: "",
+  lastTestAt: null,
+  lastTestOk: null,
   nanogpt: { saved: false, masked: "" },
   openrouter: { saved: false, masked: "" },
   openrusrouter: { saved: false, masked: "" },
@@ -62,27 +73,29 @@ const emptySettings: AccountSettingsPublic = {
 function fromPublic(settings: AccountSettingsPublic): SessionConfig {
   const provider = isProviderId(settings.provider) ? settings.provider : DEFAULT_PROVIDER;
   const slot = slotFor(settings, provider);
-  const selectedModelIds =
-    settings.selectedModelIds?.length >= 2
-      ? settings.selectedModelIds
-      : [settings.gptModel, settings.grokModel, settings.claudeModel].map((id) => id.trim()).filter(Boolean);
+  const catalog = settings.catalog ?? null;
+  const selectedModelIds = catalog?.models?.length
+    ? pruneToAvailable(settings.selectedModelIds ?? [], catalog.models)
+    : (settings.selectedModelIds ?? []).filter(Boolean);
   const members = coerceMembers({
     selectedModelIds,
-    catalog: settings.catalog?.models,
-    gptModel: settings.gptModel,
-    grokModel: settings.grokModel,
-    claudeModel: settings.claudeModel,
+    catalog: catalog?.models,
   });
   return {
     provider,
     selectedModelIds: members.map((row) => row.modelId),
-    synthesizerModel: settings.synthesizerModel ?? "",
-    catalog: settings.catalog ?? null,
+    synthesizerModel: selectedModelIds.includes(settings.synthesizerModel ?? "")
+      ? settings.synthesizerModel
+      : "",
+    catalog,
     members,
-    gptModel: members[0]?.modelId || settings.gptModel.trim() || DEFAULT_GPT,
-    grokModel: members[1]?.modelId || settings.grokModel.trim() || DEFAULT_GROK,
-    claudeModel: members[2]?.modelId || settings.claudeModel.trim() || DEFAULT_CLAUDE,
+    gptModel: members[0]?.modelId || "",
+    grokModel: members[1]?.modelId || "",
+    claudeModel: members[2]?.modelId || "",
     maxCostUsd: settings.maxCostUsd > 0 ? settings.maxCostUsd : DEFAULT_MAX_COST_USD,
+    lastTestLog: settings.lastTestLog ?? "",
+    lastTestAt: settings.lastTestAt ?? null,
+    lastTestOk: settings.lastTestOk ?? null,
     ready: slot.saved,
     nanogpt: settings.nanogpt,
     openrouter: settings.openrouter,
@@ -112,6 +125,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             selectedModelIds: [],
             members: [],
             synthesizerModel: "",
+            lastTestLog: "",
+            lastTestAt: null,
+            lastTestOk: null,
           };
           void runWithPersistRetry(() =>
             saveAccountSettings({
@@ -120,10 +136,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
                 selectedModelIds: [],
                 synthesizerModel: "",
                 catalog: null,
-                gptModel: next.gptModel,
-                grokModel: next.grokModel,
-                claudeModel: next.claudeModel,
+                gptModel: "",
+                grokModel: "",
+                claudeModel: "",
                 maxCostUsd: next.maxCostUsd,
+                lastTestLog: "",
+                lastTestAt: null,
+                lastTestOk: null,
               },
             }),
           ).then((saved) => setConfig(fromPublic(saved)));
@@ -133,10 +152,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       save: async (next) => {
         const provider = isProviderId(next.provider) ? next.provider : DEFAULT_PROVIDER;
         const apiKey = sanitizeApiKey(next.apiKey, provider);
+        const catalog = next.catalog === undefined ? config.catalog : next.catalog;
         const members = coerceMembers({
           members: next.members,
           selectedModelIds: next.selectedModelIds,
-          catalog: next.catalog?.models ?? config.catalog?.models,
+          catalog: catalog?.models,
         });
         const selectedModelIds = members.map((row) => row.modelId);
         const saved = await runWithPersistRetry(() =>
@@ -145,12 +165,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
               provider,
               ...(apiKey ? { apiKey } : {}),
               selectedModelIds,
-              synthesizerModel: next.synthesizerModel,
-              catalog: next.catalog === undefined ? config.catalog : next.catalog,
-              gptModel: selectedModelIds[0] || DEFAULT_GPT,
-              grokModel: selectedModelIds[1] || DEFAULT_GROK,
-              claudeModel: selectedModelIds[2] || DEFAULT_CLAUDE,
+              synthesizerModel: selectedModelIds.includes(next.synthesizerModel) ? next.synthesizerModel : "",
+              catalog,
+              gptModel: selectedModelIds[0] || "",
+              grokModel: selectedModelIds[1] || "",
+              claudeModel: selectedModelIds[2] || "",
               maxCostUsd: next.maxCostUsd > 0 ? next.maxCostUsd : DEFAULT_MAX_COST_USD,
+              lastTestLog: next.lastTestLog,
+              lastTestAt: next.lastTestAt,
+              lastTestOk: next.lastTestOk,
             },
           }),
         );
@@ -169,6 +192,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
               grokModel: config.grokModel,
               claudeModel: config.claudeModel,
               maxCostUsd: config.maxCostUsd,
+              lastTestLog: config.lastTestLog,
+              lastTestAt: config.lastTestAt,
+              lastTestOk: config.lastTestOk,
               clearKey: true,
             },
           }),

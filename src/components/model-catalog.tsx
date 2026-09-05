@@ -1,7 +1,7 @@
 import { Check } from "lucide-react";
 import { ROLE_LABEL, type CouncilRole } from "@/lib/council/roles";
-import { MAX_COUNCIL_MEMBERS, MIN_COUNCIL_MEMBERS } from "@/lib/council/members";
-import type { DiscoveredModel, DiscoverySnapshot, ModelAccess } from "@/lib/council/discover";
+import { MAX_COUNCIL_MEMBERS } from "@/lib/council/members";
+import { availableModels, type DiscoveredModel, type DiscoverySnapshot, type ModelAccess } from "@/lib/council/discover";
 
 const ACCESS_CLASS: Record<ModelAccess, string> = {
   AVAILABLE: "text-ok",
@@ -17,10 +17,6 @@ const ACCESS_LABEL: Record<ModelAccess, string> = {
   UNAVAILABLE: "UNAVAILABLE",
 };
 
-function canSelect(access: ModelAccess): boolean {
-  return access === "AVAILABLE" || access === "UNKNOWN";
-}
-
 export function ModelCatalogPanel({
   catalog,
   selectedIds,
@@ -28,7 +24,6 @@ export function ModelCatalogPanel({
   query,
   onQuery,
   onToggle,
-  onAcceptRecommended,
   onSynthesizer,
 }: {
   catalog: DiscoverySnapshot | null;
@@ -37,72 +32,73 @@ export function ModelCatalogPanel({
   query: string;
   onQuery: (value: string) => void;
   onToggle: (id: string) => void;
-  onAcceptRecommended: () => void;
   onSynthesizer: (id: string) => void;
 }) {
   if (!catalog) {
     return (
       <p className="m-0 max-w-measure text-muted">
-        Test Connection fetches the live model catalog and checks whether this account can actually call the
-        recommended models. Catalog presence is not treated as access.
+        Test Connection fetches this provider's catalog and probes whether the account can actually call those
+        models. Only AVAILABLE models can join the Council.
       </p>
     );
   }
 
   const needle = query.trim().toLowerCase();
   const selected = new Set(selectedIds);
-  const visible = catalog.models.filter((row) => {
-    if (!needle) {
-      return selected.has(row.id) || catalog.recommendedIds.includes(row.id) || row.score >= 80;
-    }
-    return `${row.id} ${row.name} ${row.family} ${row.recommendedRole ?? ""}`.toLowerCase().includes(needle);
-  });
-  const shown = (needle ? visible : visible.slice(0, 24)).sort((a, b) => {
-    const sel = Number(selected.has(b.id)) - Number(selected.has(a.id));
-    if (sel) return sel;
-    const rec = Number(catalog.recommendedIds.includes(b.id)) - Number(catalog.recommendedIds.includes(a.id));
-    if (rec) return rec;
-    return b.score - a.score;
-  });
-  const fetched = new Date(catalog.fetchedAt);
-  const stamp = Number.isNaN(fetched.getTime()) ? catalog.fetchedAt : fetched.toLocaleString();
+  const available = availableModels(catalog.models);
+  const others = catalog.models.filter((row) => row.access !== "AVAILABLE");
+  const filteredAvailable = available.filter((row) =>
+    needle ? `${row.id} ${row.name} ${row.family}`.toLowerCase().includes(needle) : true,
+  );
+  const filteredOthers = needle
+    ? others.filter((row) => `${row.id} ${row.name} ${row.family}`.toLowerCase().includes(needle))
+    : others.filter((row) => row.access === "NOT_INCLUDED" || row.access === "UNAVAILABLE").slice(0, 8);
 
   return (
     <section className="grid gap-3">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h2 className="font-display m-0 text-lg">Discovered models</h2>
-          <p className="mt-1 mb-0 text-sm text-muted">
-            {catalog.models.length} listed · cached {stamp}. Recommend {MIN_COUNCIL_MEMBERS}–{MAX_COUNCIL_MEMBERS}.
-            Selected {selectedIds.length}/{MAX_COUNCIL_MEMBERS}.
-          </p>
-        </div>
-        <button
-          type="button"
-          className="min-h-11 rounded-sm border border-line bg-transparent px-3.5 font-semibold text-fg"
-          onClick={onAcceptRecommended}
-        >
-          Accept recommended
-        </button>
+      <div>
+        <h2 className="font-display m-0 text-lg">Available models</h2>
+        <p className="mt-1 mb-0 text-sm text-muted">
+          {available.length} AVAILABLE of {catalog.models.length} discovered. Select 2–{MAX_COUNCIL_MEMBERS}. Provider
+          names are not models.
+        </p>
       </div>
       <input
         type="search"
         value={query}
         onChange={(e) => onQuery(e.target.value)}
-        placeholder="Search model id, family, or role"
+        placeholder="Search AVAILABLE model id or family"
         className="min-h-11 w-full rounded-sm border border-line bg-bg px-3 text-fg"
       />
-      <ul className="m-0 grid max-h-log list-none gap-2 overflow-auto p-0">
-        {shown.map((row) => (
-          <ModelRow
-            key={row.id}
-            row={row}
-            checked={selected.has(row.id)}
-            disabled={!selected.has(row.id) && (selectedIds.length >= MAX_COUNCIL_MEMBERS || !canSelect(row.access))}
-            onToggle={() => onToggle(row.id)}
-          />
-        ))}
-      </ul>
+      {filteredAvailable.length ? (
+        <ul className="m-0 grid max-h-log list-none gap-2 overflow-auto p-0">
+          {filteredAvailable.map((row) => (
+            <ModelRow
+              key={row.id}
+              row={row}
+              checked={selected.has(row.id)}
+              disabled={!selected.has(row.id) && selectedIds.length >= MAX_COUNCIL_MEMBERS}
+              onToggle={() => onToggle(row.id)}
+            />
+          ))}
+        </ul>
+      ) : (
+        <p className="m-0 text-sm text-muted">No AVAILABLE models in this scan.</p>
+      )}
+      {filteredOthers.length ? (
+        <div className="grid gap-2">
+          <p className="m-0 text-xs font-semibold tracking-widest text-muted uppercase">Not available on this account</p>
+          <ul className="m-0 grid list-none gap-1 p-0">
+            {filteredOthers.map((row) => (
+              <li key={row.id} className="text-sm text-muted">
+                <span className={ACCESS_CLASS[row.access]}>{ACCESS_LABEL[row.access]}</span>
+                {" · "}
+                <span className="font-mono break-all">{row.id}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       <label className="grid gap-1 text-sm">
         <span className="font-medium text-muted">Synthesis model</span>
         <select
@@ -110,7 +106,7 @@ export function ModelCatalogPanel({
           value={synthesizerModel}
           onChange={(e) => onSynthesizer(e.target.value)}
         >
-          <option value="">Automatic — strongest selected model</option>
+          <option value="">Automatic — strongest selected AVAILABLE model</option>
           {selectedIds.map((id) => (
             <option key={id} value={id}>
               {id}
@@ -159,7 +155,6 @@ function ModelRow({
             {row.recommendedRole ? (
               <span className="text-muted">Recommended: {roleName(row.recommendedRole)}</span>
             ) : null}
-            {row.probed ? <span className="text-faint">probed</span> : <span className="text-faint">catalog only</span>}
           </span>
         </span>
       </label>

@@ -1,11 +1,10 @@
-import { familyOf } from "./discover.ts";
+import { familyOf, pruneToAvailable, type DiscoveredModel } from "./discover.ts";
 import {
   COUNCIL_ROLES,
   DEFAULT_ROLES,
   ROLE_LABEL,
   type CouncilRole,
 } from "./roles.ts";
-import type { DiscoveredModel } from "./discover.ts";
 
 export const MIN_COUNCIL_MEMBERS = 2;
 export const MAX_COUNCIL_MEMBERS = 5;
@@ -39,6 +38,16 @@ export function assertCouncilSelection(ids: string[]): string | null {
   }
   if (unique.length > MAX_COUNCIL_MEMBERS) {
     return `Select at most ${MAX_COUNCIL_MEMBERS} Council models.`;
+  }
+  return null;
+}
+
+export function assertAvailableSelection(ids: string[], models: DiscoveredModel[]): string | null {
+  const countError = assertCouncilSelection(ids);
+  if (countError) return countError;
+  const missing = ids.filter((id) => !models.some((row) => row.id === id && row.access === "AVAILABLE"));
+  if (missing.length) {
+    return `MODEL_UNAVAILABLE: ${missing.join(", ")} is not in the current AVAILABLE set. Refresh models and pick a replacement.`;
   }
   return null;
 }
@@ -96,9 +105,10 @@ export function membersFromIds(
   ids: string[],
   catalog: DiscoveredModel[] = [],
 ): CouncilMember[] {
+  const pruned = catalog.length ? pruneToAvailable(ids, catalog) : ids.map((id) => id.trim()).filter(Boolean);
   const byId = new Map(catalog.map((row) => [row.id, row]));
   return assignRoles(
-    ids.map((id) => {
+    pruned.map((id) => {
       const hit = byId.get(id);
       return hit
         ? { id: hit.id, name: hit.name, family: hit.family, score: hit.score, reasoning: hit.reasoning }
@@ -126,19 +136,16 @@ export function coerceMembers(input: {
   claudeModel?: string;
   catalog?: DiscoveredModel[];
 }): CouncilMember[] {
+  const catalog = input.catalog ?? [];
   if (input.members && input.members.length) {
-    const seen = new Set<string>();
-    const unique = input.members.filter((row) => {
-      const id = row.modelId?.trim();
-      if (!id || seen.has(id)) return false;
-      seen.add(id);
-      return true;
-    });
-    return unique.slice(0, MAX_COUNCIL_MEMBERS);
+    const ids = catalog.length
+      ? pruneToAvailable(input.members.map((row) => row.modelId), catalog)
+      : input.members.map((row) => row.modelId);
+    if (ids.length) return membersFromIds(ids, catalog);
   }
   const ids = (input.selectedIds ?? input.selectedModelIds ?? []).map((id) => id.trim()).filter(Boolean);
-  if (ids.length) return membersFromIds(ids, input.catalog ?? []);
-  return membersFromLegacy(input.gptModel ?? "", input.grokModel ?? "", input.claudeModel ?? "");
+  if (ids.length) return membersFromIds(ids, catalog);
+  return [];
 }
 
 export function memberLabel(member: CouncilMember): string {

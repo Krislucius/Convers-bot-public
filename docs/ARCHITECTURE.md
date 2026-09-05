@@ -1,6 +1,6 @@
 # Conversation Bot architecture
 
-Current revision: **CB-ARCH-20260905-001**
+Current revision: **CB-ARCH-20260905-002**
 
 This document describes the system that is running now. Obsolete trees are listed only under History.
 
@@ -69,6 +69,7 @@ Applied migrations (basename order):
 6. `0006_closed_loop.sql` — council_results.review_verdict/structured, implementation_packets
 7. `0007_provider_budget.sql` — `account_settings.nanogpt_key`, `tasks.provider` freeze
 8. `0008_dynamic_council.sql` — `account_settings.selected_model_ids`, `synthesizer_model`, `model_catalog`; `tasks.selected_models`
+9. `0009_provider_scan.sql` — `account_settings.last_test_log`, `last_test_at`, `last_test_ok`
 
 `migrations/auth/` is a template copy. Appliers do not descend into subdirectories.
 
@@ -86,7 +87,7 @@ The boot, SSR/client boundary, auth bootstrap, Vite/Nitro config, and deploy ent
 
 ## Provider layer
 
-Settings UI writes `account_settings`. Council server functions resolve the stored key for the signed-in user and the selected provider. Client never keeps the secret after save. Empty Save keeps the stored key; Clear Key wipes it. A Council run freezes exactly one provider (NanoGPT or OpenRouter) and the selected models for Round 1, Round 2, synthesis, retries, and catalog/access preflight. Switching provider re-runs discovery. Missing or inaccessible selected models fail with `MODEL_UNAVAILABLE` before paid calls and are never silently substituted. USD cost is telemetry only. The hard execution gate is request attempts: expected successful calls = 2N+1, ceiling = 2N+1+N+2 (N=3 → 7 / 12). Empty completions are failures.
+Settings UI writes `account_settings`. Council server functions resolve the stored key for the signed-in user and the selected provider. Client never keeps the secret after save. Empty Save keeps the stored key; Clear Key wipes it. A Council run freezes exactly one provider (NanoGPT or OpenRouter) and the selected AVAILABLE models for Round 1, Round 2, synthesis, retries, and catalog/access preflight. NanoGPT and OpenRouter are API providers, never Council members. Switching provider re-runs discovery and drops stale selections. Membership and recommendations come only from models the current scan classified as AVAILABLE. Missing or inaccessible selected models fail with `MODEL_UNAVAILABLE` before paid calls and are never silently substituted. Hardcoded default IDs (including Grok 4.6) are never injected when absent from the scan. Test Connection always writes a sanitized persisted log. USD cost is telemetry only. The hard execution gate is request attempts: expected successful calls = 2N+1, ceiling = 2N+1+N+2 (N=3 → 7 / 12). Empty completions are failures.
 
 ## Council workflow
 

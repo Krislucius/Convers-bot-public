@@ -330,7 +330,7 @@ export async function runCouncil(input: {
     if (input.catalog?.length) {
       const blocked = members.filter((row) => {
         const hit = input.catalog?.find((item) => item.id === row.modelId);
-        return hit ? accessBlocksRun(hit.access) : false;
+        return !hit || accessBlocksRun(hit.access);
       });
       if (blocked.length) {
         return precheckOutput(

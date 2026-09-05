@@ -372,6 +372,9 @@ export type AccountSettingsPublic = {
   grokModel: string;
   claudeModel: string;
   maxCostUsd: number;
+  lastTestLog: string;
+  lastTestAt: string | null;
+  lastTestOk: boolean | null;
   nanogpt: { saved: boolean; masked: string };
   openrouter: { saved: boolean; masked: string };
   openrusrouter: { saved: boolean; masked: string };

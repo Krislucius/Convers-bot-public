@@ -42,6 +42,9 @@ export const saveAccountSettings = createServerFn({ method: "POST" })
       maxCostUsd: number;
       apiKey?: string;
       clearKey?: boolean;
+      lastTestLog?: string;
+      lastTestAt?: string | null;
+      lastTestOk?: boolean | null;
     }) => data,
   )
   .handler(async ({ context, data }): Promise<AccountSettingsPublic> => {
