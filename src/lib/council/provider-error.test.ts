@@ -10,13 +10,15 @@ import {
   providerFailure,
   retryDelayMs,
 } from "./provider-error.ts";
+import { normalizeAgentKey } from "./roles.ts";
 import type { AgentResponse } from "./types.ts";
 
-function response(agent: AgentResponse["agent"], error: string | null = null): AgentResponse {
+function response(agent: string, error: string | null = null): AgentResponse {
+  const key = normalizeAgentKey(agent);
   return {
-    id: agent,
+    id: key,
     taskId: "t",
-    agent,
+    agent: key,
     round: 1,
     model: "m",
     provider: "openrouter",
@@ -144,12 +146,15 @@ describe("provider failure formatting", () => {
     assert.equal(text.includes("Bearer secret"), false);
   });
 
-  it("retries only 429 and 5xx", () => {
+  it("retries 429, 5xx, timeout, network, and empty responses", () => {
     assert.equal(isRetryableFailure({ httpClass: "429" }), true);
     assert.equal(isRetryableFailure({ httpClass: "5xx" }), true);
+    assert.equal(isRetryableFailure({ httpClass: "timeout" }), true);
+    assert.equal(isRetryableFailure({ httpClass: "network" }), true);
+    assert.equal(isRetryableFailure({ httpClass: "empty" }), true);
     assert.equal(isRetryableFailure({ httpClass: "402" }), false);
     assert.equal(isRetryableFailure({ httpClass: "400" }), false);
-    assert.equal(isRetryableFailure({ httpClass: "timeout" }), false);
+    assert.equal(isRetryableFailure({ httpClass: "401" }), false);
     assert.equal(retryDelayMs(1) < 5000, true);
   });
 

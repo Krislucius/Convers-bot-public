@@ -1,7 +1,11 @@
 import { getSql } from "@/lib/db";
 import { runSerialQueries } from "./hydrate";
 import { maskKey, mergeStoredApiKeys, sanitizeApiKey } from "./api-key";
-import { DEFAULT_CLAUDE, DEFAULT_GPT, DEFAULT_GROK, DEFAULT_MAX_COST_USD, isProviderId } from "./providers";
+import { DEFAULT_CLAUDE, DEFAULT_GPT, DEFAULT_GROK, DEFAULT_MAX_COST_USD, DEFAULT_PROVIDER, isProviderId, normalizeProviderId } from "./providers";
+import { membersFromIds } from "./members";
+import { normalizeAgentKey } from "./roles";
+import type { DiscoverySnapshot } from "./discover";
+import type { CouncilMember } from "./members";
 import type { AgentResponse, AccountSettingsPublic, Artifact, ContextItem, ContextManifest, CouncilResult, ImplementationPacket, Project, ProjectFile, StoreShape, Task } from "./types";
 import type { ProviderId } from "./types";
 import type { ChatSource, HistoryMessage } from "@/lib/history/types";
@@ -10,12 +14,16 @@ import type { FileKind } from "./files";
 type SettingsRow = {
   user_id: string;
   provider: string;
+  nanogpt_key?: string;
   openrouter_key: string;
   openrusrouter_key: string;
   gpt_model: string;
   grok_model: string;
   claude_model: string;
   max_cost_usd: unknown;
+  selected_model_ids?: unknown;
+  synthesizer_model?: string;
+  model_catalog?: unknown;
 };
 
 function asString(value: unknown, fallback = ""): string {
@@ -55,14 +63,55 @@ function jsonParam(value: unknown): string | null {
   return JSON.stringify(value);
 }
 
+function asStringIds(value: unknown): string[] {
+  const parsed = asJson<unknown>(value, []);
+  if (!Array.isArray(parsed)) return [];
+  return parsed.map((row) => String(row).trim()).filter(Boolean);
+}
+
+function asMembers(value: unknown): CouncilMember[] | null {
+  const parsed = asJson<unknown>(value, null);
+  if (!Array.isArray(parsed) || !parsed.length) return null;
+  const rows = parsed
+    .map((row) => {
+      if (!row || typeof row !== "object") return null;
+      const rec = row as Record<string, unknown>;
+      const modelId = String(rec.modelId ?? rec.model_id ?? "").trim();
+      if (!modelId) return null;
+      return {
+        role: normalizeAgentKey(String(rec.role ?? "")),
+        modelId,
+        label: String(rec.label ?? modelId),
+        family: String(rec.family ?? ""),
+      } satisfies CouncilMember;
+    })
+    .filter((row): row is CouncilMember => Boolean(row));
+  return rows.length ? rows : null;
+}
+
+function selectedIdsFromRow(row: SettingsRow | null): string[] {
+  const stored = asStringIds(row?.selected_model_ids);
+  if (stored.length >= 2) return stored;
+  return [row?.gpt_model, row?.grok_model, row?.claude_model].map((id) => String(id ?? "").trim()).filter(Boolean);
+}
+
 function publicSettings(row: SettingsRow | null): AccountSettingsPublic {
-  const provider = isProviderId(row?.provider) ? row.provider : "openrouter";
+  const provider = normalizeProviderId(row?.provider);
+  const catalog = asJson<DiscoverySnapshot | null>(row?.model_catalog, null);
+  const selectedModelIds = selectedIdsFromRow(row);
   return {
     provider,
+    selectedModelIds,
+    synthesizerModel: row?.synthesizer_model?.trim() || "",
+    catalog,
     gptModel: row?.gpt_model?.trim() || DEFAULT_GPT,
     grokModel: row?.grok_model?.trim() || DEFAULT_GROK,
     claudeModel: row?.claude_model?.trim() || DEFAULT_CLAUDE,
     maxCostUsd: Number(row?.max_cost_usd) > 0 ? Number(row?.max_cost_usd) : DEFAULT_MAX_COST_USD,
+    nanogpt: {
+      saved: Boolean(sanitizeApiKey(row?.nanogpt_key ?? "", "nanogpt")),
+      masked: row?.nanogpt_key ? maskKey(row.nanogpt_key, "nanogpt") : "",
+    },
     openrouter: {
       saved: Boolean(sanitizeApiKey(row?.openrouter_key ?? "", "openrouter")),
       masked: row?.openrouter_key ? maskKey(row.openrouter_key, "openrouter") : "",
@@ -92,7 +141,12 @@ export async function resolveStoredKey(
   const sanitized = sanitizeApiKey(override, provider);
   if (sanitized) return sanitized;
   const row = await settingsRow(userId);
-  const stored = provider === "openrusrouter" ? row?.openrusrouter_key : row?.openrouter_key;
+  const stored =
+    provider === "openrouter"
+      ? row?.openrouter_key
+      : provider === "openrusrouter"
+        ? row?.openrusrouter_key
+        : row?.nanogpt_key;
   return sanitizeApiKey(stored ?? "", provider);
 }
 
@@ -100,9 +154,12 @@ export async function saveSettings(
   userId: string,
   input: {
     provider: ProviderId;
-    gptModel: string;
-    grokModel: string;
-    claudeModel: string;
+    gptModel?: string;
+    grokModel?: string;
+    claudeModel?: string;
+    selectedModelIds?: string[];
+    synthesizerModel?: string;
+    catalog?: DiscoverySnapshot | null;
     maxCostUsd: number;
     apiKey?: string;
     clearKey?: boolean;
@@ -110,35 +167,51 @@ export async function saveSettings(
 ): Promise<AccountSettingsPublic> {
   const sql = await getSql();
   const current = await settingsRow(userId);
-  const provider: ProviderId = isProviderId(input.provider) ? input.provider : "openrouter";
+  const provider: ProviderId = isProviderId(input.provider) ? input.provider : DEFAULT_PROVIDER;
   const merged = mergeStoredApiKeys(
     {
+      nanogptKey: current?.nanogpt_key ?? "",
       openrouterKey: current?.openrouter_key ?? "",
       openrusrouterKey: current?.openrusrouter_key ?? "",
     },
     { provider, apiKey: input.apiKey, clearKey: input.clearKey },
   );
+  const nanogptKey = merged.nanogptKey;
   const openrouterKey = merged.openrouterKey;
   const openrusrouterKey = merged.openrusrouterKey;
-  const gptModel = input.gptModel.trim() || DEFAULT_GPT;
-  const grokModel = input.grokModel.trim() || DEFAULT_GROK;
-  const claudeModel = input.claudeModel.trim() || DEFAULT_CLAUDE;
+  const selectedModelIds =
+    input.selectedModelIds && input.selectedModelIds.length
+      ? [...new Set(input.selectedModelIds.map((id) => id.trim()).filter(Boolean))]
+      : selectedIdsFromRow(current);
+  const members = membersFromIds(selectedModelIds);
+  const gptModel = members[0]?.modelId || input.gptModel?.trim() || current?.gpt_model?.trim() || DEFAULT_GPT;
+  const grokModel = members[1]?.modelId || input.grokModel?.trim() || current?.grok_model?.trim() || DEFAULT_GROK;
+  const claudeModel = members[2]?.modelId || input.claudeModel?.trim() || current?.claude_model?.trim() || DEFAULT_CLAUDE;
+  const synthesizerModel = input.synthesizerModel?.trim() ?? current?.synthesizer_model ?? "";
+  const catalog =
+    input.catalog === undefined ? asJson<DiscoverySnapshot | null>(current?.model_catalog, null) : input.catalog;
   const maxCostUsd = input.maxCostUsd > 0 ? input.maxCostUsd : DEFAULT_MAX_COST_USD;
   const updatedAt = new Date().toISOString();
   await sql`
     insert into account_settings (
-      user_id, provider, openrouter_key, openrusrouter_key, gpt_model, grok_model, claude_model, max_cost_usd, updated_at
+      user_id, provider, nanogpt_key, openrouter_key, openrusrouter_key, gpt_model, grok_model, claude_model, max_cost_usd,
+      selected_model_ids, synthesizer_model, model_catalog, updated_at
     ) values (
-      ${userId}, ${provider}, ${openrouterKey}, ${openrusrouterKey}, ${gptModel}, ${grokModel}, ${claudeModel}, ${maxCostUsd}, ${updatedAt}
+      ${userId}, ${provider}, ${nanogptKey}, ${openrouterKey}, ${openrusrouterKey}, ${gptModel}, ${grokModel}, ${claudeModel}, ${maxCostUsd},
+      ${jsonParam(selectedModelIds)}::jsonb, ${synthesizerModel}, ${jsonParam(catalog)}::jsonb, ${updatedAt}
     )
     on conflict (user_id) do update set
       provider = excluded.provider,
+      nanogpt_key = excluded.nanogpt_key,
       openrouter_key = excluded.openrouter_key,
       openrusrouter_key = excluded.openrusrouter_key,
       gpt_model = excluded.gpt_model,
       grok_model = excluded.grok_model,
       claude_model = excluded.claude_model,
       max_cost_usd = excluded.max_cost_usd,
+      selected_model_ids = excluded.selected_model_ids,
+      synthesizer_model = excluded.synthesizer_model,
+      model_catalog = excluded.model_catalog,
       updated_at = excluded.updated_at
   `;
   await durable();
@@ -146,12 +219,16 @@ export async function saveSettings(
   return publicSettings({
     user_id: userId,
     provider,
+    nanogpt_key: nanogptKey,
     openrouter_key: openrouterKey,
     openrusrouter_key: openrusrouterKey,
     gpt_model: gptModel,
     grok_model: grokModel,
     claude_model: claudeModel,
     max_cost_usd: maxCostUsd,
+    selected_model_ids: selectedModelIds,
+    synthesizer_model: synthesizerModel,
+    model_catalog: catalog,
   });
 }
 
@@ -199,6 +276,8 @@ function mapTask(row: Record<string, unknown>): Task {
     decisionQuestion: row.decision_question == null ? null : asString(row.decision_question),
     contextManifestId: row.context_manifest_id == null ? null : asString(row.context_manifest_id),
     contextHash: row.context_hash == null ? null : asString(row.context_hash),
+    provider: isProviderId(row.provider) ? row.provider : null,
+    selectedModels: asMembers(row.selected_models),
   };
 }
 
@@ -212,7 +291,7 @@ function mapResponse(row: Record<string, unknown>): AgentResponse {
   return {
     id: asString(row.id),
     taskId: asString(row.task_id),
-    agent: asString(row.agent) as AgentResponse["agent"],
+    agent: normalizeAgentKey(asString(row.agent)),
     round: (asNum(row.round) ?? 1) as 1 | 2 | 3,
     model: asString(row.model),
     provider: row.provider == null ? null : asString(row.provider),
@@ -241,7 +320,7 @@ function mapResult(row: Record<string, unknown>): CouncilResult {
     disagreements: asJson(row.disagreements, []),
     blockers: asJson(row.blockers, []),
     recommendation: asString(row.recommendation),
-    agentPositions: asJson(row.agent_positions, { gpt: "", grok: "", claude: "" }),
+    agentPositions: asJson(row.agent_positions, {}),
     synthesisRaw: row.synthesis_raw == null ? null : asString(row.synthesis_raw),
     synthesizerProposedStatus: row.synthesizer_proposed_status
       ? (asString(row.synthesizer_proposed_status) as CouncilResult["status"])
@@ -483,13 +562,13 @@ async function insertTaskRow(userId: string, task: Task) {
     insert into tasks (
       id, user_id, project_id, title, prompt, status, error, created_at, completed_at,
       total_input_tokens, total_output_tokens, total_cost_usd, total_latency_ms, diagnostics, selected_chat_source_ids,
-      selected_file_ids, mode, requires_historical_context, candidate_artifact_id, decision_question, context_manifest_id, context_hash
+      selected_file_ids, mode, requires_historical_context, candidate_artifact_id, decision_question, context_manifest_id, context_hash, provider, selected_models
     ) values (
       ${task.id}, ${userId}, ${task.projectId}, ${task.title}, ${task.prompt}, ${task.status}, ${task.error},
       ${task.createdAt}, ${task.completedAt}, ${task.totalInputTokens}, ${task.totalOutputTokens}, ${task.totalCostUsd},
       ${task.totalLatencyMs}, ${jsonParam(task.diagnostics)}::jsonb, ${jsonParam(task.selectedChatSourceIds) ?? "[]"}::jsonb,
       ${jsonParam(task.selectedFileIds) ?? "[]"}::jsonb, ${task.mode}, ${task.requiresHistoricalContext}, ${task.candidateArtifactId}, ${task.decisionQuestion},
-      ${task.contextManifestId}, ${task.contextHash}
+      ${task.contextManifestId}, ${task.contextHash}, ${task.provider}, ${jsonParam(task.selectedModels)}::jsonb
     )
     on conflict (id) do update set
       title = excluded.title,
@@ -509,7 +588,9 @@ async function insertTaskRow(userId: string, task: Task) {
       candidate_artifact_id = excluded.candidate_artifact_id,
       decision_question = excluded.decision_question,
       context_manifest_id = excluded.context_manifest_id,
-      context_hash = excluded.context_hash
+      context_hash = excluded.context_hash,
+      provider = excluded.provider,
+      selected_models = excluded.selected_models
     where tasks.user_id = ${userId}
   `;
 }

@@ -24,10 +24,10 @@ import {
   toProviderFailure,
 } from "./provider-error";
 
-const BASE = "https://openrusrouter.ru/v1";
-const PROVIDER = "openrusrouter" as const;
-const API_LABEL = "OpenRusRouter";
-const CREDIT_MESSAGE = "OpenRusRouter needs credits on this key. Add balance, then test again.";
+const BASE = "https://nano-gpt.com/api/v1";
+const PROVIDER = "nanogpt" as const;
+const CREDIT_MESSAGE = "NanoGPT needs credits on this key. Add balance at nano-gpt.com/api, then test again.";
+const API_LABEL = "NanoGPT";
 
 export type ModelPricing = { prompt: number | null; completion: number | null };
 
@@ -119,12 +119,10 @@ export function operatorError(err: unknown, apiKey = ""): string {
   if (err instanceof Error && /request limit was reached/i.test(err.message)) {
     return err.message;
   }
-  if (err instanceof Error && /not connected|save an api key|ключ/i.test(err.message)) {
-    return "OpenRusRouter is not connected. Connect your API key before running the Council.";
+  if (err instanceof Error && /not connected|save an api key/i.test(err.message)) {
+    return `${API_LABEL} is not connected. Connect your API key before running the Council.`;
   }
-  return formatProviderFailure(
-    toProviderFailure(err, { provider: PROVIDER, model: "", stage: "request" }, apiKey),
-  );
+  return formatProviderFailure(toProviderFailure(err, { provider: PROVIDER, model: "", stage: "request" }, apiKey));
 }
 
 function transport() {

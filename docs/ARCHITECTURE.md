@@ -1,6 +1,6 @@
 # Conversation Bot architecture
 
-Current revision: **CB-ARCH-20260901-002**
+Current revision: **CB-ARCH-20260905-001**
 
 This document describes the system that is running now. Obsolete trees are listed only under History.
 
@@ -14,7 +14,7 @@ Conversation Bot is a signed-in workspace for reconstructing project decisions f
 - Framework: TypeScript, React 19, TanStack Start/Router, Vite, Nitro
 - Auth: Better Auth via the Grok broker (Google, X, email/password)
 - Data: Postgres (Neon in production, PGLite in preview), scoped by `user_id`
-- Providers: NanoGPT (Connect API, `sk-nano-…`) and OpenRusRouter, keys on the account row
+- Providers: NanoGPT (`sk-nano-…`) and OpenRouter (`sk-or-…`) as selectable API providers, plus OpenRusRouter for existing keys. One selected provider is frozen per Council run. Keys stay on the account row.
 
 There is one production application and one production host. The Python tree `conversation-bot/` is SUPERSEDED and is not an implementation target.
 
@@ -30,7 +30,7 @@ UI (routes + council-ui)
 → task create (CREATE / REVIEW / DECIDE)
 → council.orchestrator (only path)
 → council.protocol (roles + synthesis schemas + gate)
-→ council.providers (NanoGPT / OpenRusRouter)
+→ council.providers (NanoGPT / OpenRouter)
 → Implementation Packet (when CREATE is APPROVED)
 → persist.postgres
 ```
@@ -67,6 +67,8 @@ Applied migrations (basename order):
 4. `0004_project_files.sql` — project_files, selected_file_ids
 5. `0005_evidence_ledger.sql` — evidence_chunks, evidence_items, extractor_cache
 6. `0006_closed_loop.sql` — council_results.review_verdict/structured, implementation_packets
+7. `0007_provider_budget.sql` — `account_settings.nanogpt_key`, `tasks.provider` freeze
+8. `0008_dynamic_council.sql` — `account_settings.selected_model_ids`, `synthesizer_model`, `model_catalog`; `tasks.selected_models`
 
 `migrations/auth/` is a template copy. Appliers do not descend into subdirectories.
 
@@ -84,13 +86,13 @@ The boot, SSR/client boundary, auth bootstrap, Vite/Nitro config, and deploy ent
 
 ## Provider layer
 
-Settings UI writes `account_settings`. Council server functions resolve the stored key for the signed-in user. Client never keeps the secret after save. Empty Save keeps the stored key; Clear Key wipes it.
+Settings UI writes `account_settings`. Council server functions resolve the stored key for the signed-in user and the selected provider. Client never keeps the secret after save. Empty Save keeps the stored key; Clear Key wipes it. A Council run freezes exactly one provider (NanoGPT or OpenRouter) and the selected models for Round 1, Round 2, synthesis, retries, and catalog/access preflight. Switching provider re-runs discovery. Missing or inaccessible selected models fail with `MODEL_UNAVAILABLE` before paid calls and are never silently substituted. USD cost is telemetry only. The hard execution gate is request attempts: expected successful calls = 2N+1, ceiling = 2N+1+N+2 (N=3 → 7 / 12). Empty completions are failures.
 
 ## Council workflow
 
-Modes: CREATE, REVIEW, DECIDE. Preflight lives in `council.task-mode`. Execution lives only in `src/lib/council/orchestrate.ts` (`runCouncil`). Round 1 is independent. Round 2 is cross-examination. Synthesis is structured JSON, not chat prose. CREATE writes an artifact. REVIEW returns PASS / PATCH / BLOCKED and must not silently replace a candidate. DECIDE returns decision, alternatives, rationale, evidence, and risks. Unresolved DECIDE disagreement or CONFLICTED evidence becomes `USER_DECISION_REQUIRED`. Two of three models may complete a run; a single survivor fails the council. Run-path dispatch does not wait on a model-catalog preflight; GPT/Grok/Claude are marked RUNNING as Round 1 starts. Stop aborts in-flight provider waits and marks `CANCELLED` with partial responses. Restart creates a new `run_id`, preserves the previous run for audit, and ignores late writes from the cancelled generation.
+Modes: CREATE, REVIEW, DECIDE. Preflight lives in `council.task-mode`. Execution lives only in `src/lib/council/orchestrate.ts` (`runCouncil`). Membership is 2–5 user-selected models discovered from the connected provider. Roles (LEAD_REASONER, ADVERSARIAL, FORMAL_REVIEW, RESEARCH, ALTERNATIVE_REASONER) are guidance, not vendor identities. Round 1 is independent. Round 2 is cross-examination. Synthesis is structured JSON from a selected surviving model (user override allowed, still must be selected). CREATE writes an artifact. REVIEW returns PASS / PATCH / BLOCKED and must not silently replace a candidate. DECIDE returns decision, alternatives, rationale, evidence, and risks. Unresolved DECIDE disagreement or CONFLICTED evidence becomes `USER_DECISION_REQUIRED`. Two of N models may complete a run; a single survivor fails the council. Catalog/access preflight blocks unavailable models before paid dispatch. Selected members are marked RUNNING as Round 1 starts. Stop aborts in-flight provider waits and marks `CANCELLED` with partial responses. Restart creates a new `run_id`, preserves the previous run for audit, and ignores late writes from the cancelled generation. A new run may switch provider; calls inside one run never mix providers.
 
-GPT = lead architect. Grok = adversarial reviewer. Claude = formal consistency reviewer. Positions, disagreements, blockers, resolved/unresolved issues, and citations are preserved on the Council result.
+Positions, disagreements, blockers, resolved/unresolved issues, and citations are preserved on the Council result.
 
 ## Context pipeline (current)
 

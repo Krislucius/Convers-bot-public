@@ -3,6 +3,7 @@ import { authMiddleware } from "@/lib/auth/middleware";
 import type { AgentResponse, AccountSettingsPublic, Artifact, ContextItem, ContextManifest, CouncilResult, ImplementationPacket, Project, ProjectFile, StoreShape, Task } from "./types";
 import type { ProviderId } from "./types";
 import type { ChatSource, HistoryMessage } from "@/lib/history/types";
+import type { DiscoverySnapshot } from "./discover";
 
 export type { AccountSettingsPublic };
 
@@ -32,9 +33,12 @@ export const saveAccountSettings = createServerFn({ method: "POST" })
   .validator(
     (data: {
       provider: ProviderId;
-      gptModel: string;
-      grokModel: string;
-      claudeModel: string;
+      gptModel?: string;
+      grokModel?: string;
+      claudeModel?: string;
+      selectedModelIds?: string[];
+      synthesizerModel?: string;
+      catalog?: DiscoverySnapshot | null;
       maxCostUsd: number;
       apiKey?: string;
       clearKey?: boolean;

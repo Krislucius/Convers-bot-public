@@ -1,4 +1,6 @@
-import type { AgentKey, AgentProgress, AgentResponse, TaskStatus } from "./types.ts";
+import type { CouncilMember } from "./members.ts";
+import type { AgentKey, AgentProgress, AgentResponse, ProviderId, TaskStatus } from "./types.ts";
+import type { RequestBudget } from "./request-budget.ts";
 
 export const RUN_ID_FIELD = "__runId";
 export const MAX_AUDITED_RUNS = 8;
@@ -15,6 +17,11 @@ export type CouncilRunSnapshot = {
   updatedAt: string;
   agents: Partial<Record<AgentKey, AgentProgress>>;
   message: string;
+  provider?: ProviderId;
+  members?: CouncilMember[];
+  synthesizerModel?: string;
+  requestBudget?: RequestBudget;
+  costUsd?: number | null;
 };
 
 export class CouncilCancelled extends Error {
@@ -79,41 +86,42 @@ export function activeCouncilRun(taskId: string): { runId: string; generation: n
   return { runId: row.runId, generation: row.generation };
 }
 
-export function releaseCouncilRun(taskId: string, runId: string): void {
+export function releaseCouncilRun(taskId: string, runId?: string): void {
   const row = byTask.get(taskId);
-  if (row && row.runId === runId) byTask.delete(taskId);
+  if (!row) return;
+  if (runId && row.runId !== runId) return;
+  byTask.delete(taskId);
 }
 
 export function resetCouncilRuns(): void {
-  for (const row of byTask.values()) row.controller.abort();
   byTask.clear();
   generationSeq = 0;
 }
 
-export function isCancelledSignal(signal: AbortSignal | undefined): boolean {
+export function isCancelledSignal(signal?: AbortSignal): boolean {
   return Boolean(signal?.aborted);
 }
 
-export function throwIfCancelled(runId: string, signal: AbortSignal | undefined): void {
+export function throwIfCancelled(runId: string, signal?: AbortSignal): void {
   if (signal?.aborted) throw new CouncilCancelled(runId);
 }
 
-export function ownedResponses(rows: AgentResponse[], currentRunId: string | null, claimedRunId?: string): AgentResponse[] {
-  if (claimedRunId && currentRunId && claimedRunId !== currentRunId) return [];
-  const owner = currentRunId ?? claimedRunId ?? null;
-  if (!owner) return rows;
-  return rows.filter((row) => !row.runId || row.runId === owner);
-}
-
-export function shouldAcceptRunWrite(currentRunId: string | null, incomingRunId: string | null | undefined): boolean {
-  if (!currentRunId || !incomingRunId) return true;
+export function shouldAcceptRunWrite(currentRunId: string | null, incomingRunId: string | null): boolean {
+  if (!currentRunId) return true;
+  if (!incomingRunId) return true;
   return currentRunId === incomingRunId;
 }
 
-export function archiveRuns(previous: CouncilRunSnapshot[] | undefined, current: CouncilRunSnapshot | undefined): CouncilRunSnapshot[] {
-  const rows = previous ? [...previous] : [];
-  if (current?.runId && !rows.some((row) => row.runId === current.runId)) {
-    rows.push(current);
-  }
-  return rows.slice(-MAX_AUDITED_RUNS);
+export function ownedResponses(rows: AgentResponse[], currentRunId: string | null, ownerRunId?: string | null): AgentResponse[] {
+  const want = currentRunId ?? ownerRunId;
+  if (!want) return rows;
+  return rows.filter((row) => !row.runId || row.runId === want);
+}
+
+export function archiveRuns(
+  previous: CouncilRunSnapshot[] | undefined,
+  snap: CouncilRunSnapshot,
+): CouncilRunSnapshot[] {
+  const rest = (previous ?? []).filter((row) => row.runId !== snap.runId);
+  return [snap, ...rest].slice(0, MAX_AUDITED_RUNS);
 }

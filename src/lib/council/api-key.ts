@@ -8,28 +8,36 @@ const NANO_TOKEN = /sk-nano-[A-Za-z0-9_-]+/i;
 const OPENROUTER_TOKEN = /sk-or-[A-Za-z0-9_-]+/i;
 const OPENRUS_TOKEN = /orr_(?:live|test)_[A-Za-z0-9_-]+/i;
 
+export type StoredApiKeys = {
+  nanogptKey: string;
+  openrouterKey: string;
+  openrusrouterKey: string;
+};
+
 export function mergeStoredApiKeys(
-  current: { openrouterKey: string; openrusrouterKey: string },
+  current: StoredApiKeys,
   input: { provider: ProviderId; apiKey?: string; clearKey?: boolean },
-): { openrouterKey: string; openrusrouterKey: string } {
-  let openrouterKey = current.openrouterKey;
-  let openrusrouterKey = current.openrusrouterKey;
+): StoredApiKeys {
+  const next: StoredApiKeys = { ...current };
   if (input.clearKey) {
-    if (input.provider === "openrusrouter") openrusrouterKey = "";
-    else openrouterKey = "";
-    return { openrouterKey, openrusrouterKey };
+    if (input.provider === "openrouter") next.openrouterKey = "";
+    else if (input.provider === "openrusrouter") next.openrusrouterKey = "";
+    else next.nanogptKey = "";
+    return next;
   }
-  const next = sanitizeApiKey(input.apiKey ?? "", input.provider);
-  if (!next) return { openrouterKey, openrusrouterKey };
-  if (input.provider === "openrusrouter") openrusrouterKey = next;
-  else openrouterKey = next;
-  return { openrouterKey, openrusrouterKey };
+  const value = sanitizeApiKey(input.apiKey ?? "", input.provider);
+  if (!value) return next;
+  if (input.provider === "openrouter") next.openrouterKey = value;
+  else if (input.provider === "openrusrouter") next.openrusrouterKey = value;
+  else next.nanogptKey = value;
+  return next;
 }
 
 export function detectProvider(raw: string): ProviderId | null {
   const cleaned = raw.replace(INVISIBLE, "");
   if (OPENRUS_TOKEN.test(cleaned)) return "openrusrouter";
-  if (NANO_TOKEN.test(cleaned)) return "openrouter";
+  if (NANO_TOKEN.test(cleaned)) return "nanogpt";
+  if (OPENROUTER_TOKEN.test(cleaned)) return "openrouter";
   return null;
 }
 
@@ -46,17 +54,24 @@ export function sanitizeApiKey(raw: string, provider?: ProviderId): string {
   key = key.replace(/^Bearer/i, "");
   const orr = key.match(OPENRUS_TOKEN);
   const nano = key.match(NANO_TOKEN);
+  const openrouter = key.match(OPENROUTER_TOKEN);
   if (provider === "openrusrouter") {
     if (orr) return orr[0];
     return key.replace(/[^A-Za-z0-9_-]/g, "");
   }
   if (provider === "openrouter") {
+    if (openrouter) return openrouter[0];
+    if (nano) return "";
+    return key.replace(/[^A-Za-z0-9_-]/g, "");
+  }
+  if (provider === "nanogpt") {
     if (nano) return nano[0];
-    if (OPENROUTER_TOKEN.test(key)) return "";
+    if (openrouter) return "";
     return key.replace(/[^A-Za-z0-9_-]/g, "");
   }
   if (orr) return orr[0];
   if (nano) return nano[0];
+  if (openrouter) return openrouter[0];
   return key.replace(/[^A-Za-z0-9_-]/g, "");
 }
 
@@ -73,14 +88,20 @@ export function maskKey(raw: string, provider?: ProviderId): string {
 
 export function keyFingerprint(raw: string, provider?: ProviderId): { chars: number; prefix: string } {
   const value = sanitizeApiKey(raw, provider);
-  const prefix = /^orr_/i.test(value) ? value.slice(0, 9) : value.slice(0, 8);
+  const prefix = /^orr_/i.test(value)
+    ? value.slice(0, 9)
+    : /^sk-or-/i.test(value)
+      ? value.slice(0, 8)
+      : value.slice(0, 8);
+  const fallback =
+    provider === "openrusrouter" ? "orr_live_" : provider === "openrouter" ? "sk-or-" : "sk-nano-";
   return {
     chars: value.length,
-    prefix: prefix || (provider === "openrusrouter" ? "orr_live_" : "sk-nano-"),
+    prefix: prefix || fallback,
   };
 }
 
-export function describeKey(key: string, provider: ProviderId = "openrouter"): { ok: boolean; text: string } {
+export function describeKey(key: string, provider: ProviderId = "nanogpt"): { ok: boolean; text: string } {
   if (!key.trim()) return { ok: false, text: "" };
   const meta = PROVIDERS[provider];
   if (looksMasked(key)) {
@@ -103,13 +124,7 @@ export function describeKey(key: string, provider: ProviderId = "openrouter"): {
       text: `This looks like an xAI key. ${meta.name} keys start with ${meta.keyPrefix}.`,
     };
   }
-  if (provider === "openrouter" && OPENROUTER_TOKEN.test(key)) {
-    return {
-      ok: false,
-      text: "That is an OpenRouter key. This app uses NanoGPT. Create a key at nano-gpt.com/api.",
-    };
-  }
-  if (/^sk-proj-/i.test(value) || (/^sk-(?!nano-|or-)/i.test(value) && provider === "openrouter")) {
+  if (/^sk-proj-/i.test(value) || (/^sk-(?!nano-|or-)/i.test(value) && provider !== "openrusrouter")) {
     return {
       ok: false,
       text: `This looks like an OpenAI key. Create a ${meta.name} key at ${meta.keysUrl.replace("https://", "")}.`,
@@ -119,7 +134,7 @@ export function describeKey(key: string, provider: ProviderId = "openrouter"): {
     if (!/^orr_(?:live|test)_/i.test(value)) {
       return {
         ok: false,
-        text: "OpenRusRouter keys start with orr_live_. NanoGPT, ChatGPT Plus, or Grok keys will not work here.",
+        text: "OpenRusRouter keys start with orr_live_. NanoGPT, OpenRouter, ChatGPT Plus, or Grok keys will not work here.",
       };
     }
     if (value.length < 20) {
@@ -131,6 +146,24 @@ export function describeKey(key: string, provider: ProviderId = "openrouter"): {
     return {
       ok: true,
       text: `Looks like an OpenRusRouter key · ${value.length} characters`,
+    };
+  }
+  if (provider === "openrouter") {
+    if (!/^sk-or-/i.test(value)) {
+      return {
+        ok: false,
+        text: "OpenRouter keys start with sk-or-. NanoGPT, ChatGPT Plus, or Grok keys will not work here.",
+      };
+    }
+    if (value.length < 20) {
+      return {
+        ok: false,
+        text: `Too short (${value.length} characters). Paste the full sk-or-… secret from openrouter.ai/keys.`,
+      };
+    }
+    return {
+      ok: true,
+      text: `Looks like an OpenRouter key · ${value.length} characters`,
     };
   }
   if (!/^sk-nano-/i.test(value)) {
@@ -155,9 +188,9 @@ export function keyRejectedMessage(
   status: number,
   body: string,
   fingerprint?: { chars: number; prefix: string },
-  provider: ProviderId = "openrouter",
+  provider: ProviderId = "nanogpt",
 ): string {
-  const meta: ProviderMeta = PROVIDERS[isProviderId(provider) ? provider : "openrouter"];
+  const meta: ProviderMeta = PROVIDERS[isProviderId(provider) ? provider : "nanogpt"];
   const low = body.toLowerCase();
   const sent = Boolean(fingerprint && fingerprint.chars > 0);
   const size = sent ? ` The app sent ${fingerprint!.chars} characters starting with ${fingerprint!.prefix}.` : "";
@@ -203,4 +236,10 @@ export function extractErrorMessage(payload: unknown, status: number): string {
     }
   }
   return `HTTP ${status}`;
+}
+
+export function storedKeyFor(keys: StoredApiKeys, provider: ProviderId): string {
+  if (provider === "openrouter") return keys.openrouterKey;
+  if (provider === "openrusrouter") return keys.openrusrouterKey;
+  return keys.nanogptKey;
 }

@@ -6,14 +6,40 @@ import { FilePicker } from "@/components/file-picker";
 import { EvidenceCoveragePanel } from "@/components/evidence-coverage";
 import { Panel, PrimaryButton, StatusPill } from "@/components/council-ui";
 import { CONTEXT_TOKEN_LIMIT, estimateCouncilRun } from "@/lib/council/protocol";
+import { attemptLimit, expectedSuccessfulCalls, memberLabel, type CouncilMember } from "@/lib/council/members";
+import { PROVIDER_IDS, PROVIDERS, providerName } from "@/lib/council/providers";
 import { patchTask } from "@/lib/council/store";
 import { councilPreflight } from "@/lib/council/task-mode";
-import type { Artifact, ContextItem, Project, ProjectFile, Task } from "@/lib/council/types";
+import type { Artifact, ContextItem, Project, ProjectFile, ProviderId, Task } from "@/lib/council/types";
 import { coverageBlocksCouncil } from "@/lib/evidence/pipeline";
 import { cachedEvidencePipeline, type EvidencePipelineResult } from "@/lib/evidence/pipeline-cache";
 import { ledgerFoldLabelFromManifest } from "@/lib/evidence/preview";
 import { formatTokens, formatUsd } from "@/lib/history/format";
 import type { ChatSource, HistoryMessage } from "@/lib/history/types";
+
+export function CouncilRunMeter({
+  provider,
+  used,
+  limit,
+  costUsd,
+}: {
+  provider: string;
+  used: number;
+  limit: number;
+  costUsd?: number | null;
+}) {
+  return (
+    <p className="m-0 flex flex-wrap gap-x-4 gap-y-1 text-sm tabular-nums">
+      <span>
+        Provider: <span className="text-fg">{provider}</span>
+      </span>
+      <span>
+        Calls: <span className="text-fg">{used} / {limit}</span>
+      </span>
+      <span>Cost: {costUsd != null ? `${formatUsd(costUsd)} (telemetry)` : "telemetry only"}</span>
+    </p>
+  );
+}
 
 export function CouncilRunPanel({
   project,
@@ -24,10 +50,13 @@ export function CouncilRunPanel({
   artifacts,
   maxCostUsd,
   ready,
+  provider,
   providerLabel,
+  members,
   busy,
   message,
   onRun,
+  onProviderChange,
   projectFiles,
 }: {
   project: Project;
@@ -38,10 +67,13 @@ export function CouncilRunPanel({
   artifacts: Artifact[];
   maxCostUsd: number;
   ready: boolean;
+  provider: ProviderId;
   providerLabel: string;
+  members: CouncilMember[];
   busy: boolean;
   message: string;
   onRun: (pipeline: EvidencePipelineResult) => void;
+  onProviderChange?: (provider: ProviderId) => void;
   projectFiles?: ProjectFile[];
 }) {
   const candidate = artifacts.find((row) => row.id === task.candidateArtifactId) ?? null;
@@ -55,12 +87,15 @@ export function CouncilRunPanel({
     candidateText: candidate ? `# ${candidate.title} v${candidate.version}\n\n${candidate.content}` : null,
   });
   const ctx = pipeline.pack.ok ? pipeline.pack.text : "";
-  const estimate = estimateCouncilRun(ctx, maxCostUsd);
-  const budget = maxCostUsd > 0 ? maxCostUsd : 1;
+  const memberCount = members.length || 3;
+  const expected = expectedSuccessfulCalls(memberCount);
+  const limit = attemptLimit(memberCount);
+  const estimate = estimateCouncilRun(ctx, maxCostUsd, memberCount);
   const precheck = councilPreflight({ task, artifacts });
   const coverageError = coverageBlocksCouncil(pipeline.coverage);
   const budgetError = pipeline.pack.ok ? null : "Mandatory context exceeds the Council token budget.";
-  const canPay = ready && precheck.ok && !busy && !coverageError && !budgetError;
+  const selectionError = members.length < 2 ? "Select at least 2 Council models in API Settings." : null;
+  const canPay = ready && precheck.ok && !busy && !coverageError && !budgetError && !selectionError;
   const audit = pipeline.manifest.audit;
   const selectedFiles = (task.selectedFileIds ?? []).length;
   const ledgerSummary = ledgerFoldLabelFromManifest(pipeline.manifest);
@@ -74,12 +109,37 @@ export function CouncilRunPanel({
         {task.requiresHistoricalContext ? <span className="text-xs text-faint">historical context required</span> : null}
       </div>
 
-      <dl className="m-0 grid grid-cols-3 gap-2 lg:grid-cols-5">
+      <fieldset className="mb-4 grid gap-2">
+        <legend className="text-sm font-medium text-muted">API Provider</legend>
+        <div className="flex flex-wrap gap-2">
+          {PROVIDER_IDS.map((id) => {
+            const selected = id === provider;
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => onProviderChange?.(id)}
+                className={`min-h-11 rounded-sm px-3.5 py-2.5 font-semibold ${
+                  selected
+                    ? "border border-accent bg-accent text-accent-fg"
+                    : "border border-line bg-transparent text-fg"
+                }`}
+              >
+                {PROVIDERS[id].name}
+              </button>
+            );
+          })}
+        </div>
+      </fieldset>
+
+      <CouncilRunMeter provider={providerName(provider)} used={0} limit={limit} costUsd={estimate.costUsd} />
+
+      <dl className="m-0 mt-4 grid grid-cols-3 gap-2 lg:grid-cols-5">
         <Stat label="Mode" value={task.mode} />
         <Stat label="Selected chats" value={String(task.selectedChatSourceIds.length)} />
         <Stat label="Selected files" value={String(selectedFiles)} />
         <Stat label="Estimated context" value={formatTokens(estimate.inputTokens)} />
-        <Stat label="Estimated cost" value={formatUsd(estimate.costUsd)} warn={estimate.overBudget} />
+        <Stat label="Expected calls" value={`${expected} / ${limit}`} />
         <Stat label="Coverage" value={pipeline.manifest.coverageStatus} />
         <Stat label="Chunks processed" value={String(audit.chunksProcessed)} />
         <Stat label="Evidence claims" value={String(audit.evidenceCount)} />
@@ -93,11 +153,9 @@ export function CouncilRunPanel({
         </p>
       ) : null}
 
-      {estimate.overBudget ? (
-        <p className="mt-3 mb-0 text-sm text-warn">
-          Estimated cost exceeds the {formatUsd(budget)} limit in API Settings. Council will stop if the limit is reached.
-        </p>
-      ) : null}
+      <p className="mt-3 mb-0 text-sm text-muted">
+        Cost is telemetry only. Council stops at {limit} provider attempts, not at a USD cap.
+      </p>
 
       {task.mode === "REVIEW" && candidate ? (
         <p className="mt-3 mb-0 text-sm text-muted">
@@ -114,6 +172,9 @@ export function CouncilRunPanel({
       {budgetError ? (
         <p className="mt-3 mb-0 rounded-md border border-danger bg-subtle px-3 py-3 text-sm text-danger">{budgetError}</p>
       ) : null}
+      {selectionError ? (
+        <p className="mt-3 mb-0 rounded-md border border-danger bg-subtle px-3 py-3 text-sm text-danger">{selectionError}</p>
+      ) : null}
 
       <div className="sticky top-0 z-10 mt-4 border-y border-line bg-elevated py-3">
         {ready ? (
@@ -121,15 +182,11 @@ export function CouncilRunPanel({
             <div className="min-w-0">
               <p className="m-0 text-ok">Council Ready</p>
               <ul className="m-0 flex list-none flex-wrap gap-3 p-0 text-sm">
-                <li className="inline-flex items-center gap-1.5">
-                  <Check className="size-4 text-ok" aria-hidden="true" /> GPT
-                </li>
-                <li className="inline-flex items-center gap-1.5">
-                  <Check className="size-4 text-ok" aria-hidden="true" /> Grok
-                </li>
-                <li className="inline-flex items-center gap-1.5">
-                  <Check className="size-4 text-ok" aria-hidden="true" /> Claude
-                </li>
+                {members.map((row) => (
+                  <li key={row.modelId} className="inline-flex items-center gap-1.5">
+                    <Check className="size-4 text-ok" aria-hidden="true" /> {memberLabel(row)}
+                  </li>
+                ))}
               </ul>
             </div>
             <PrimaryButton type="button" className="w-full sm:w-auto" disabled={!canPay} onClick={() => onRun(pipeline)}>
@@ -141,8 +198,8 @@ export function CouncilRunPanel({
             <div className="min-w-0">
               <h3 className="font-display mt-0 mb-1 text-lg">{providerLabel} is not connected.</h3>
               <p className="m-0 text-sm text-muted">
-                Connect your API key before running the Council. The numbers above are still the packet those three models
-                would read.
+                Connect your API key and select Council models before running. The numbers above are still the packet
+                those models would read.
               </p>
             </div>
             <Link

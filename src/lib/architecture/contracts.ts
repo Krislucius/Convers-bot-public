@@ -7,11 +7,13 @@ export const PROTECTED_INVARIANTS = [
   "PROJECT_ISOLATION",
   "CREATE_REVIEW_DECIDE",
   "HISTORY_NOT_CANONICAL",
-  "COUNCIL_THREE_AGENTS_TWO_ROUNDS",
+  "COUNCIL_DYNAMIC_MEMBERS_TWO_ROUNDS",
   "KEYS_ACCOUNT_NOT_BROWSER",
   "NO_PARALLEL_GROK_APP",
   "SINGLE_CONTEXT_PACKER",
   "IMPLEMENTATION_PACKET_HANDOFF",
+  "SINGLE_PROVIDER_PER_RUN",
+  "REQUEST_BUDGET_NOT_USD_GATE",
 ] as const;
 
 export type ProtectedInvariant = (typeof PROTECTED_INVARIANTS)[number];
@@ -21,5 +23,7 @@ export const CURRENT_CONTEXT_PACKER = "evidenceLedgerPacker";
 export const CURRENT_CONTEXT_TOKEN_LIMIT = 6000;
 /** Diagnostic only. Not the packer budget. */
 export const CURRENT_CONTEXT_CHAR_LIMIT = 24000;
+export const CURRENT_EXPECTED_COUNCIL_CALLS = 7;
+export const CURRENT_REQUEST_ATTEMPT_LIMIT = 12;
 export const COUNCIL_ORCHESTRATOR_PATH = "src/lib/council/orchestrate.ts";
 export const SUPERSEDED_PYTHON_TREE = "conversation-bot";

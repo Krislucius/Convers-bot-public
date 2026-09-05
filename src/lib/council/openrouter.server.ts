@@ -5,7 +5,16 @@ import {
   redact,
   sanitizeApiKey,
 } from "./api-key";
-import type { ChatMessage, Completion, ConnectionCheck, PreflightClientReport } from "./types";
+import type { ChatMessage, Completion, PreflightClientReport } from "./types";
+import { type CatalogCheckResult } from "./catalog";
+import {
+  accessCheckWith,
+  catalogCheckWith,
+  discoverAccountWith,
+  listCatalogWith,
+  preflightWith,
+  probeModelWith,
+} from "./provider-discover";
 import {
   COMPLETE_TIMEOUT_MS,
   ProviderError,
@@ -15,9 +24,10 @@ import {
   toProviderFailure,
 } from "./provider-error";
 
-const BASE = "https://nano-gpt.com/api/v1";
+const BASE = "https://openrouter.ai/api/v1";
 const PROVIDER = "openrouter" as const;
-const API_LABEL = "API";
+const CREDIT_MESSAGE = "OpenRouter needs credits on this key. Add balance at openrouter.ai/credits, then test again.";
+const API_LABEL = "OpenRouter";
 
 export type ModelPricing = { prompt: number | null; completion: number | null };
 
@@ -30,30 +40,11 @@ type Probe = {
   error?: string;
 };
 
-type LogStep = {
-  title: string;
-  url: string;
-  status: number | "NETWORK_ERROR";
-  latency_ms: number;
-  headers: Record<string, string>;
-  error?: string;
-  body?: unknown;
-};
-
-function asInt(value: unknown): number | null {
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.trunc(n) : null;
-}
-
-function asFloat(value: unknown): number | null {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-}
-
 function headersFor(apiKey: string, json = false): Record<string, string> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${apiKey}`,
     Accept: "application/json",
+    "HTTP-Referer": "https://swift-lake-solar-cosmic.grok.me",
     "X-Title": "Conversation Bot",
   };
   if (json) headers["Content-Type"] = "application/json";
@@ -125,80 +116,9 @@ async function probePost(path: string, apiKey: string, payload: unknown, timeout
   }
 }
 
-function parseBody(body: string): unknown {
-  try {
-    return JSON.parse(body);
-  } catch {
-    return null;
-  }
-}
-
-function jsonBody(probe: Probe, summarizeCatalog = false): unknown {
-  const parsed = parseBody(probe.body);
-  if (summarizeCatalog && parsed && typeof parsed === "object" && parsed !== null) {
-    const data = (parsed as { data?: Array<{ id?: string }> }).data;
-    if (Array.isArray(data)) {
-      return { model_count: data.length };
-    }
-  }
-  if (parsed !== null) return parsed;
-  return probe.body || undefined;
-}
-
-function toStep(title: string, probe: Probe, summarizeCatalog = false): LogStep {
-  const step: LogStep = {
-    title,
-    url: `${BASE}${probe.path}`,
-    status: probe.status || "NETWORK_ERROR",
-    latency_ms: probe.latencyMs,
-    headers: probe.headers,
-  };
-  if (probe.error) step.error = probe.error;
-  const body = jsonBody(probe, summarizeCatalog);
-  if (body !== undefined) step.body = body;
-  return step;
-}
-
-function formatLog(opts: {
-  ok: boolean;
-  error?: string;
-  fingerprint: { chars: number; prefix: string };
-  models: Record<string, string>;
-  checks: Record<string, ConnectionCheck>;
-  steps: LogStep[];
-  extra?: Record<string, unknown>;
-}): string {
-  const payload: Record<string, unknown> = {
-    title: "Conversation Bot · API test log",
-    result: opts.ok ? "PASS" : "FAIL",
-    time: new Date().toISOString(),
-    probe: "server",
-    provider: PROVIDER,
-    backend: "nanogpt",
-    key: {
-      chars: opts.fingerprint.chars,
-      prefix: opts.fingerprint.prefix,
-    },
-    models: opts.models,
-    error: opts.error ?? null,
-    steps: opts.steps,
-    checks: Object.fromEntries(
-      Object.entries(opts.checks).map(([id, row]) => [
-        id,
-        { label: row.label, result: row.ok ? "PASS" : "FAIL", detail: row.detail },
-      ]),
-    ),
-    note: "The API secret is not included in this log.",
-  };
-  if (opts.extra) {
-    for (const [key, value] of Object.entries(opts.extra)) payload[key] = value;
-  }
-  return JSON.stringify(payload, null, 2);
-}
-
 export function operatorError(err: unknown, apiKey = ""): string {
-  if (err instanceof Error && err.message.toLowerCase().includes("cost limit")) {
-    return "Council stopped because the configured cost limit was reached.";
+  if (err instanceof Error && /request limit was reached/i.test(err.message)) {
+    return err.message;
   }
   if (err instanceof Error && /not connected|save an api key/i.test(err.message)) {
     return `${API_LABEL} is not connected. Connect your API key before running the Council.`;
@@ -206,137 +126,67 @@ export function operatorError(err: unknown, apiKey = ""): string {
   return formatProviderFailure(toProviderFailure(err, { provider: PROVIDER, model: "", stage: "request" }, apiKey));
 }
 
+function transport() {
+  return {
+    provider: PROVIDER,
+    label: API_LABEL,
+    creditMessage: CREDIT_MESSAGE,
+    listModels: (apiKey: string) => probeGet("/models", apiKey, 20000),
+    pingModel: (apiKey: string, modelId: string) =>
+      probePost(
+        "/chat/completions",
+        apiKey,
+        {
+          model: modelId,
+          messages: [{ role: "user", content: "ping" }],
+          max_tokens: 1,
+          temperature: 0,
+        },
+        15000,
+      ),
+  };
+}
+
+export async function listCatalog(apiKey: string) {
+  return listCatalogWith(transport(), apiKey);
+}
+
+export async function probeModel(apiKey: string, modelId: string) {
+  return probeModelWith(transport(), apiKey, modelId);
+}
+
+export async function discoverAccount(apiKey: string, selectedIds: string[] = []) {
+  return discoverAccountWith(transport(), apiKey, selectedIds);
+}
+
 export async function preflightWithKey(opts: {
   apiKey: string;
-  gptModel: string;
-  grokModel: string;
-  claudeModel: string;
-}): Promise<PreflightClientReport & { pricing: Record<string, ModelPricing> }> {
-  const checks: Record<string, ConnectionCheck> = {
-    openrouter: { ok: false, label: API_LABEL, detail: "Not checked" },
-    gpt: { ok: false, label: "GPT Architect", detail: "Not checked" },
-    grok: { ok: false, label: "Grok Adversary", detail: "Not checked" },
-    claude: { ok: false, label: "Claude Formalist", detail: "Not checked" },
-  };
-  const models = {
-    gpt: opts.gptModel.trim(),
-    grok: opts.grokModel.trim(),
-    claude: opts.claudeModel.trim(),
-  };
-  const key = sanitizeApiKey(opts.apiKey, PROVIDER);
-  const fingerprint = keyFingerprint(key, PROVIDER);
-  const steps: LogStep[] = [];
-  const extra: Record<string, unknown> = {};
-  const done = (ok: boolean, error: string | undefined, pricing: Record<string, ModelPricing> = {}) => ({
-    ok,
-    error,
-    checks,
-    models,
-    pricing,
-    log: formatLog({ ok, error, fingerprint, models, checks, steps, extra }),
-  });
+  members?: import("./members").CouncilMember[];
+  selectedIds?: string[];
+  gptModel?: string;
+  grokModel?: string;
+  claudeModel?: string;
+  synthesizerModel?: string;
+}): Promise<PreflightClientReport & { catalog?: import("./discover").DiscoverySnapshot }> {
+  return preflightWith(transport(), opts);
+}
 
-  if (!key) {
-    const error = `${API_LABEL} is not connected. Connect your API key before running the Council.`;
-    checks.openrouter = { ok: false, label: API_LABEL, detail: error };
-    return done(false, error);
-  }
+export async function catalogCheck(opts: {
+  apiKey: string;
+  models?: string[];
+  gptModel?: string;
+  grokModel?: string;
+  claudeModel?: string;
+}): Promise<CatalogCheckResult> {
+  const models =
+    opts.models && opts.models.length
+      ? opts.models
+      : [opts.gptModel, opts.grokModel, opts.claudeModel].filter((id): id is string => Boolean(id));
+  return catalogCheckWith(transport(), opts.apiKey, models);
+}
 
-  const modelsProbe = await probeGet("/models", key, 20000);
-  steps.push(toStep("GET /api/v1/models", modelsProbe, true));
-  if (modelsProbe.error) {
-    const error = operatorError(modelsProbe.error, key);
-    checks.openrouter = { ok: false, label: API_LABEL, detail: error };
-    return done(false, error);
-  }
-  if (modelsProbe.status < 200 || modelsProbe.status >= 300) {
-    const error = redact(extractErrorMessage(parseBody(modelsProbe.body), modelsProbe.status), key);
-    checks.openrouter = { ok: false, label: API_LABEL, detail: error };
-    return done(false, error);
-  }
-
-  const catalog = ((parseBody(modelsProbe.body) as { data?: Array<{ id?: string; pricing?: Record<string, string> }> } | null)?.data ?? []);
-  extra.catalog = { model_count: catalog.length };
-  const known = new Set(catalog.map((m) => m.id).filter(Boolean) as string[]);
-  const pricing: Record<string, ModelPricing> = {};
-  const slots: Array<["gpt" | "grok" | "claude", string, string]> = [
-    ["gpt", models.gpt, "GPT Architect"],
-    ["grok", models.grok, "Grok Adversary"],
-    ["claude", models.claude, "Claude Formalist"],
-  ];
-  const requested: Array<{ slot: string; id: string; result: string }> = [];
-  for (const [slot, id, label] of slots) {
-    if (!id) {
-      checks[slot] = { ok: false, label, detail: `${label} model is missing.` };
-      requested.push({ slot, id: "", result: "FAIL (empty)" });
-      continue;
-    }
-    if (known.size > 0 && !known.has(id)) {
-      checks[slot] = {
-        ok: false,
-        label,
-        detail: `The selected ${label.replace(" Architect", "").replace(" Adversary", "").replace(" Formalist", "")} model is not currently available on NanoGPT. Choose another model in API Settings.`,
-      };
-      requested.push({ slot, id, result: "FAIL (not in catalog)" });
-      continue;
-    }
-    const row = catalog.find((m) => m.id === id);
-    pricing[id] = {
-      prompt: asFloat(row?.pricing?.prompt),
-      completion: asFloat(row?.pricing?.completion),
-    };
-    checks[slot] = { ok: true, label, detail: "Listed" };
-    requested.push({ slot, id, result: "PASS" });
-  }
-  extra.requested_models = requested;
-
-  const pingModel = models.gpt || models.grok || models.claude;
-  const ping = await probePost(
-    "/chat/completions",
-    key,
-    {
-      model: pingModel,
-      messages: [{ role: "user", content: "ping" }],
-      max_tokens: 1,
-      temperature: 0,
-    },
-    20000,
-  );
-  steps.push(toStep("POST /api/v1/chat/completions (model probe)", ping));
-
-  if (ping.error) {
-    const error = operatorError(ping.error, key);
-    checks.openrouter = { ok: false, label: API_LABEL, detail: error };
-    return done(false, error, pricing);
-  }
-  if (ping.status === 401 || ping.status === 403) {
-    const error = keyRejectedMessage(ping.status, extractErrorMessage(parseBody(ping.body), ping.status), fingerprint, PROVIDER);
-    checks.openrouter = { ok: false, label: API_LABEL, detail: error };
-    return done(false, error, pricing);
-  }
-  if (ping.status === 402) {
-    const error = "NanoGPT needs credits on this key. Add balance at nano-gpt.com/api, then test again.";
-    checks.openrouter = { ok: false, label: API_LABEL, detail: error };
-    return done(false, error, pricing);
-  }
-  if (ping.status < 200 || ping.status >= 300) {
-    const error = redact(extractErrorMessage(parseBody(ping.body), ping.status), key);
-    checks.openrouter = { ok: false, label: API_LABEL, detail: error };
-    return done(false, error, pricing);
-  }
-
-  checks.openrouter = {
-    ok: true,
-    label: API_LABEL,
-    detail: `Connected · ${fingerprint.chars} characters`,
-  };
-  for (const [slot, , label] of slots) {
-    if (checks[slot].ok) checks[slot] = { ok: true, label, detail: "Ready" };
-  }
-
-  const ok = Object.values(checks).every((c) => c.ok);
-  const failed = Object.values(checks).find((c) => !c.ok);
-  return done(ok, ok ? undefined : failed?.detail, pricing);
+export async function accessCheck(opts: { apiKey: string; models: string[] }) {
+  return accessCheckWith(transport(), opts.apiKey, opts.models);
 }
 
 export async function complete(opts: {
@@ -369,7 +219,12 @@ export async function complete(opts: {
     throw new ProviderError(toProviderFailure(err, { provider: PROVIDER, model: opts.model, stage: "complete" }, key));
   }
   const textBody = redact(await res.text(), key);
-  const payload = parseBody(textBody);
+  let payload: unknown = null;
+  try {
+    payload = JSON.parse(textBody);
+  } catch {
+    payload = null;
+  }
   if (res.status === 401 || res.status === 403) {
     throw new Error(keyRejectedMessage(res.status, extractErrorMessage(payload, res.status), keyFingerprint(key, PROVIDER), PROVIDER));
   }
@@ -396,6 +251,14 @@ export async function complete(opts: {
   const usage = data.usage ?? {};
   const promptDetails = (usage.prompt_tokens_details ?? {}) as Record<string, unknown>;
   const completionDetails = (usage.completion_tokens_details ?? {}) as Record<string, unknown>;
+  const asInt = (value: unknown): number | null => {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.trunc(n) : null;
+  };
+  const asFloat = (value: unknown): number | null => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  };
   return {
     text,
     model: String(data.model ?? opts.model),

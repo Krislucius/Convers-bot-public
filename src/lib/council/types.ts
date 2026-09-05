@@ -1,8 +1,11 @@
 import type { FileKind } from "./files";
 import type { EvidenceManifest } from "@/lib/evidence/types";
 import type { ChatSource, HistoryMessage } from "@/lib/history/types";
+import type { CouncilRole } from "./roles";
+import type { CouncilMember } from "./members";
+import type { DiscoverySnapshot } from "./discover";
 
-export type AgentKey = "GPT" | "GROK" | "CLAUDE";
+export type AgentKey = CouncilRole;
 
 export type TaskMode = "CREATE" | "REVIEW" | "DECIDE";
 
@@ -38,7 +41,7 @@ export type CouncilStatus = "APPROVED" | "PATCH" | "BLOCKED" | "USER_DECISION_RE
 
 export type ReviewVerdict = "PASS" | "PATCH" | "BLOCKED";
 
-export type ProviderId = "openrouter" | "openrusrouter";
+export type ProviderId = "nanogpt" | "openrouter" | "openrusrouter";
 
 export type ArtifactType =
   | "SPECIFICATION"
@@ -132,9 +135,8 @@ export type ContextManifest = {
 export type ProviderCreds = {
   provider: ProviderId;
   apiKey: string;
-  gptModel: string;
-  grokModel: string;
-  claudeModel: string;
+  members: CouncilMember[];
+  synthesizerModel: string;
   maxCostUsd: number;
 };
 
@@ -214,7 +216,7 @@ export type CouncilResult = {
   disagreements: string[];
   blockers: string[];
   recommendation: string;
-  agentPositions: { gpt: string; grok: string; claude: string };
+  agentPositions: Record<string, string>;
   synthesisRaw: string | null;
   synthesizerProposedStatus: CouncilStatus | null;
   finalEnforcedStatus: CouncilStatus | null;
@@ -287,6 +289,23 @@ export type ProjectQualitySummary = {
   rows: TaskQualityRow[];
 };
 
+export type RunDiagnostics = {
+  runId: string;
+  generation: number;
+  stage: "PREPARING" | "ROUND_1" | "ROUND_2" | "SYNTHESIS" | "COMPLETE" | "CANCELLED";
+  status: TaskStatus;
+  startedAt: string;
+  stageStartedAt: string;
+  updatedAt: string;
+  agents: Partial<Record<AgentKey, AgentProgress>>;
+  message: string;
+  provider?: ProviderId;
+  members?: CouncilMember[];
+  synthesizerModel?: string;
+  requestBudget?: { used: number; limit: number; expected: number };
+  costUsd?: number | null;
+};
+
 export type Task = {
   id: string;
   projectId: string;
@@ -304,28 +323,8 @@ export type Task = {
     structured_output?: string;
     round1_independent?: boolean;
     precheck?: string;
-    run?: {
-      runId: string;
-      generation: number;
-      stage: "PREPARING" | "ROUND_1" | "ROUND_2" | "SYNTHESIS" | "COMPLETE" | "CANCELLED";
-      status: TaskStatus;
-      startedAt: string;
-      stageStartedAt: string;
-      updatedAt: string;
-      agents: Partial<Record<AgentKey, AgentProgress>>;
-      message: string;
-    } | null;
-    runs?: Array<{
-      runId: string;
-      generation: number;
-      stage: "PREPARING" | "ROUND_1" | "ROUND_2" | "SYNTHESIS" | "COMPLETE" | "CANCELLED";
-      status: TaskStatus;
-      startedAt: string;
-      stageStartedAt: string;
-      updatedAt: string;
-      agents: Partial<Record<AgentKey, AgentProgress>>;
-      message: string;
-    }>;
+    run?: RunDiagnostics | null;
+    runs?: RunDiagnostics[];
   } | null;
   selectedChatSourceIds: string[];
   selectedFileIds: string[];
@@ -335,6 +334,8 @@ export type Task = {
   decisionQuestion: string | null;
   contextManifestId: string | null;
   contextHash: string | null;
+  provider: ProviderId | null;
+  selectedModels?: CouncilMember[] | null;
 };
 
 export type StoreShape = {
@@ -364,10 +365,14 @@ export type ConnectionCheck = { ok: boolean; label: string; detail: string };
 
 export type AccountSettingsPublic = {
   provider: ProviderId;
+  selectedModelIds: string[];
+  synthesizerModel: string;
+  catalog: DiscoverySnapshot | null;
   gptModel: string;
   grokModel: string;
   claudeModel: string;
   maxCostUsd: number;
+  nanogpt: { saved: boolean; masked: string };
   openrouter: { saved: boolean; masked: string };
   openrusrouter: { saved: boolean; masked: string };
 };
@@ -378,6 +383,8 @@ export type PreflightClientReport = {
   checks: Record<string, ConnectionCheck>;
   models: Record<string, string>;
   log: string;
+  catalog?: DiscoverySnapshot;
 };
 
 export type { ChatSource, HistoryMessage };
+export type { CouncilMember, DiscoverySnapshot };

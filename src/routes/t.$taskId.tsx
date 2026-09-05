@@ -2,7 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { ArtifactPanel, ContextManifestPanel } from "@/components/context-manifest-panel";
 import { CouncilFold } from "@/components/council-fold";
-import { CouncilRunPanel } from "@/components/council-run-panel";
+import { CouncilRunPanel, CouncilRunMeter } from "@/components/council-run-panel";
 import { CollapsibleText } from "@/components/collapsible-text";
 import { Crumb, DangerButton, GhostButton, Page, PageHeader, Panel, StatusPill } from "@/components/council-ui";
 import { ImplementationPacketPanel } from "@/components/implementation-packet-panel";
@@ -10,6 +10,7 @@ import { OpLogPanel } from "@/components/op-log";
 import { displayVerdict } from "@/lib/council/evaluate";
 import { runCouncil, isStaleDisconnectError, runCredsFromReady } from "@/lib/council/orchestrate";
 import { providerName } from "@/lib/council/providers";
+import { attemptLimit, expectedSuccessfulCalls, memberLabel } from "@/lib/council/members";
 import {
   applyCouncilOutput,
   getStoreSnapshot,
@@ -31,11 +32,6 @@ import { formatCouncilOpLog, formatExceptionLog, formatOpLog } from "@/lib/op-lo
 
 export const Route = createFileRoute("/t/$taskId")({ component: TaskPage });
 
-const AGENTS: Array<[AgentKey, string]> = [
-  ["GPT", "GPT analysis"],
-  ["GROK", "Grok analysis"],
-  ["CLAUDE", "Claude analysis"],
-];
 
 const RUNNING = new Set(["PREPARING", "COUNCIL_ROUND_1", "COUNCIL_ROUND_2", "SYNTHESIS"]);
 const STARTABLE = new Set(["CREATED", "FAILED", "CANCELLED"]);
@@ -62,7 +58,7 @@ function ListBlock({ title, rows }: { title: string; rows: string[] }) {
 function TaskPage() {
   const { taskId } = Route.useParams();
   const store = useStore();
-  const { config, creds } = useSession();
+  const { config, creds, setProvider } = useSession();
   const task = store.tasks.find((t) => t.id === taskId);
   const project = store.projects.find((p) => p.id === task?.projectId);
   const context = store.context.filter((c) => c.projectId === task?.projectId);
@@ -118,6 +114,13 @@ function TaskPage() {
   const priorResponses = currentRunId ? allResponses.filter((row) => row.runId && row.runId !== currentRunId) : [];
   const persistedStage = task.diagnostics?.run?.stage ?? stage;
   const persistedAgents = task.diagnostics?.run?.agents ?? agentState;
+  const members = task.selectedModels?.length ? task.selectedModels : config.members;
+  const agentList: Array<[AgentKey, string]> = members.map((row) => [row.role, memberLabel(row)]);
+  const waitingAgents = Object.fromEntries(
+    members.map((row) => [row.role, { state: "WAITING" as const, attempt: 0, maxAttempts: 3, error: null }]),
+  ) as Partial<Record<AgentKey, AgentProgress>>;
+  const callLimit = attemptLimit(members.length || 3);
+  const callExpected = expectedSuccessfulCalls(members.length || 3);
 
   function applyProgress(
     runId: string,
@@ -179,6 +182,7 @@ function TaskPage() {
       return;
     }
     if (busy && !opts?.force) return;
+    patchTask(currentTask.id, { provider: runCreds.provider, selectedModels: runCreds.members, error: null });
     const handle = beginCouncilRun(currentTask.id);
     runGen.current = handle.generation;
     setBusy(true);
@@ -186,11 +190,7 @@ function TaskPage() {
     setActiveRunId(handle.runId);
     setMsg("Preparing the evidence packet…");
     setStage("PREPARING");
-    setAgentState({
-      GPT: { state: "WAITING", attempt: 0, maxAttempts: 3, error: null },
-      GROK: { state: "WAITING", attempt: 0, maxAttempts: 3, error: null },
-      CLAUDE: { state: "WAITING", attempt: 0, maxAttempts: 3, error: null },
-    });
+    setAgentState(waitingAgents);
     const startedAt = new Date().toISOString();
     rememberCouncilProgress(currentTask.id, {
       runId: handle.runId,
@@ -200,12 +200,13 @@ function TaskPage() {
       startedAt,
       stageStartedAt: startedAt,
       updatedAt: startedAt,
-      agents: {
-        GPT: { state: "WAITING", attempt: 0, maxAttempts: 3, error: null },
-        GROK: { state: "WAITING", attempt: 0, maxAttempts: 3, error: null },
-        CLAUDE: { state: "WAITING", attempt: 0, maxAttempts: 3, error: null },
-      },
+      agents: waitingAgents,
+      members: runCreds.members,
+      synthesizerModel: runCreds.synthesizerModel,
       message: "Preparing the evidence packet…",
+      provider: runCreds.provider,
+      requestBudget: { used: 0, limit: callLimit, expected: callExpected },
+      costUsd: 0,
     });
     await new Promise<void>((resolve) => {
       window.setTimeout(resolve, 0);
@@ -222,6 +223,7 @@ function TaskPage() {
         projectFiles: store.projectFiles,
         parentPacket,
         pipeline: prepared,
+        catalog: config.catalog?.models,
         runId: handle.runId,
         generation: handle.generation,
         signal: handle.signal,
@@ -328,10 +330,13 @@ function TaskPage() {
           projectFiles={store.projectFiles}
           maxCostUsd={config.maxCostUsd}
           ready={config.ready}
+          provider={config.provider}
           providerLabel={providerName(config.provider)}
+          members={members}
           busy={busy}
           message={isStaleDisconnectError(msg, config.ready) ? "" : msg}
           onRun={(prepared) => void onRun(prepared)}
+          onProviderChange={setProvider}
         />
       ) : null}
 
@@ -351,19 +356,27 @@ function TaskPage() {
           <p className="mb-1 text-xs font-semibold tracking-widest text-muted uppercase">In progress</p>
           <h2 className="font-display mb-2 text-xl">Council is running</h2>
           <p className="text-muted">{msg || task.diagnostics?.run?.message || "Preparing…"}</p>
+          <div className="mt-3">
+            <CouncilRunMeter
+              provider={providerName(task.diagnostics?.run?.provider ?? task.provider ?? config.provider)}
+              used={task.diagnostics?.run?.requestBudget?.used ?? 0}
+              limit={task.diagnostics?.run?.requestBudget?.limit ?? callLimit}
+              costUsd={task.diagnostics?.run?.costUsd ?? task.totalCostUsd}
+            />
+          </div>
           <p className="mt-3 mb-1 text-xs font-semibold tracking-widest text-muted uppercase">{persistedStage}</p>
           <p className="m-0 mb-3 text-xs text-faint">
             Stage started {task.diagnostics?.run?.stageStartedAt ?? "just now"}
             {task.diagnostics?.run?.updatedAt ? ` · updated ${task.diagnostics.run.updatedAt}` : ""}
           </p>
           <ul className="m-0 grid list-none gap-2 p-0 sm:grid-cols-3">
-            {AGENTS.map(([agent]) => {
+            {agentList.map(([agent, label]) => {
               const row = persistedAgents[agent] ?? agentState[agent];
               const state = row?.state ?? "WAITING";
               return (
                 <li key={agent} className="rounded-md bg-subtle px-3 py-3">
                   <div className="flex items-center justify-between gap-2">
-                    <strong className="text-fg">{agent}</strong>
+                    <strong className="text-fg">{label}</strong>
                     <StatusPill status={state} />
                   </div>
                   <p className="m-0 mt-1 text-xs text-faint">
@@ -463,26 +476,19 @@ function TaskPage() {
             </>
           ) : null}
           <div className="mt-4">
-            <CouncilFold title="Model positions" summary="GPT · Grok · Claude">
+            <CouncilFold title="Model positions" summary={agentList.map(([, label]) => label).join(" · ") || "selected models"}>
               <dl className="m-0 grid gap-3">
-                <div>
-                  <dt className="text-xs tracking-wider text-faint uppercase">GPT</dt>
-                  <dd className="m-0">
-                    <CollapsibleText text={result.agentPositions.gpt || "—"} defaultCollapsed />
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-xs tracking-wider text-faint uppercase">Grok</dt>
-                  <dd className="m-0">
-                    <CollapsibleText text={result.agentPositions.grok || "—"} defaultCollapsed />
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-xs tracking-wider text-faint uppercase">Claude</dt>
-                  <dd className="m-0">
-                    <CollapsibleText text={result.agentPositions.claude || "—"} defaultCollapsed />
-                  </dd>
-                </div>
+                {agentList.map(([key, label]) => (
+                  <div key={key}>
+                    <dt className="text-xs tracking-wider text-faint uppercase">{label}</dt>
+                    <dd className="m-0">
+                      <CollapsibleText
+                        text={result.agentPositions[key] || result.agentPositions[key.toLowerCase()] || "—"}
+                        defaultCollapsed
+                      />
+                    </dd>
+                  </div>
+                ))}
               </dl>
             </CouncilFold>
           </div>
@@ -497,7 +503,7 @@ function TaskPage() {
 
       {responses.length || result ? (
       <div className="grid gap-2">
-        {AGENTS.map(([key, heading]) => {
+        {agentList.map(([key, heading]) => {
           const r1 = responses.find((r) => r.agent === key && r.round === 1);
           const r2 = responses.find((r) => r.agent === key && r.round === 2);
           const recorded = Boolean(r1 || r2);
@@ -547,7 +553,12 @@ function TaskPage() {
           }
         >
           <p className="mt-0 mb-3 flex flex-wrap gap-3 text-sm text-muted tabular-nums">
-            <span>Council cost: {task.totalCostUsd != null ? `$${task.totalCostUsd.toFixed(4)}` : "—"}</span>
+            <span>Council cost: {task.totalCostUsd != null ? `$${task.totalCostUsd.toFixed(4)} (telemetry)` : "telemetry only"}</span>
+            <span>
+              Calls: {task.diagnostics?.run?.requestBudget?.used ?? responses.length} /{" "}
+              {task.diagnostics?.run?.requestBudget?.limit ?? callLimit}
+            </span>
+            <span>Provider: {providerName(task.provider ?? task.diagnostics?.run?.provider ?? config.provider)}</span>
             <span>Input tokens: {task.totalInputTokens ?? "—"}</span>
             <span>Output tokens: {task.totalOutputTokens ?? "—"}</span>
             <span>Total latency: {task.totalLatencyMs != null ? `${task.totalLatencyMs} ms` : "—"}</span>

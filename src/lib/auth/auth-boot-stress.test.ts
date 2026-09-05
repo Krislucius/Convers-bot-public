@@ -19,10 +19,14 @@ function hang(): Promise<never> {
 
 const emptySettings = {
   provider: "openrouter" as const,
+  selectedModelIds: ["gpt", "claude"],
+  synthesizerModel: "",
+  catalog: null,
   gptModel: "gpt",
   grokModel: "grok",
   claudeModel: "claude",
   maxCostUsd: 1,
+  nanogpt: { saved: false, masked: "" },
   openrouter: { saved: false, masked: "" },
   openrusrouter: { saved: false, masked: "" },
 };

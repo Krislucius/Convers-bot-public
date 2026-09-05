@@ -24,6 +24,7 @@ import {
 } from "./task-mode.ts";
 import { coverageBlocksCouncil, runEvidencePipeline } from "../evidence/pipeline.ts";
 import { filterSelectedForProject } from "../history/provenance.ts";
+import { normalizeAgentKey } from "./roles.ts";
 import type {
   AgentResponse,
   Artifact,
@@ -59,6 +60,7 @@ function sampleTask(patch: Partial<Task> = {}): Task {
     decisionQuestion: null,
     contextManifestId: null,
     contextHash: null,
+    provider: null,
     ...patch,
   };
 }
@@ -130,13 +132,14 @@ function file(id: string, text: string, notes = ""): ProjectFile {
   };
 }
 
-function response(agent: AgentResponse["agent"], extra: Partial<AgentResponse> = {}): AgentResponse {
+function response(agent: string, extra: Partial<AgentResponse> = {}): AgentResponse {
+  const key = normalizeAgentKey(agent);
   return {
-    id: `${agent}-1`,
+    id: `${key}-1`,
     taskId: "t1",
-    agent,
+    agent: key,
     round: 2,
-    model: agent.toLowerCase(),
+    model: key.toLowerCase(),
     provider: "openrouter",
     promptSnapshot: "",
     responseText: extra.responseText ?? "POSITION\nok\nP0_BLOCKERS\nnone\nP1_ARCHITECTURE\nnone",
@@ -493,13 +496,13 @@ describe("completeOutput preserves structured synthesis", () => {
     assert.equal(gated.status, "PATCH");
     const out = completeOutput(sampleTask({ mode: "REVIEW", candidateArtifactId: "a1" }), [response("GPT")], parsed!, gated, {
       packedCitations: ["[CHAT:c1:1]"],
-      failedAgents: ["CLAUDE"],
+      failedAgents: [normalizeAgentKey("CLAUDE")],
     });
     assert.equal(out.result?.reviewVerdict, "PATCH");
     assert.deepEqual(out.result?.issues, ["title drift"]);
     assert.deepEqual(out.result?.proposedCorrections, ["rename"]);
     assert.ok(out.result?.citations.includes("[CHAT:c1:1]"));
-    assert.deepEqual(out.result?.failedAgents, ["CLAUDE"]);
+    assert.deepEqual(out.result?.failedAgents, [normalizeAgentKey("CLAUDE")]);
     assert.equal(out.packet, null);
   });
 });

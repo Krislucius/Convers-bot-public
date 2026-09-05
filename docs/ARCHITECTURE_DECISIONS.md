@@ -74,3 +74,21 @@ Only ACTIVE rows define current architecture.
 - RATIONALE: Artifact approval without a reviewable implementation packet and verdict leaves the decision loop open.
 - SUPERSEDES: none
 - AFFECTED_MODULES: council.packet, council.evaluate, council.review, council.orchestrator, council.protocol, account.persistence
+
+## ADR-009
+
+- DECISION: Each Council run uses exactly one selected API provider (NanoGPT or OpenRouter) for GPT, Grok, Claude, synthesis, retries, and catalog preflight. Provider selection persists on the task. Missing models fail with `MODEL_UNAVAILABLE_ON_PROVIDER` before paid calls. USD cost is telemetry only. The hard execution gate is 12 provider attempts per run (7 expected successful calls; max 3 attempts per agent/stage; retries count; completed calls are not repeated). Empty completions are failures.
+- STATUS: ACTIVE
+- ARCHITECTURE_REVISION: CB-ARCH-20260904-003
+- RATIONALE: Mixing aggregators inside a run made retries and cost accounting untrustworthy. A USD estimate gate stopped synthesis after successful rounds. Request counts are the recoverable safety limit.
+- SUPERSEDES: NanoGPT-only Connect API default from CB-BUILD-20260904-025
+- AFFECTED_MODULES: council.providers, council.orchestrator, council.protocol, account.persistence, ui.settings
+
+## ADR-010
+
+- DECISION: Council membership is provider-discovered and user-selected (2–5 models). Roles (LEAD_REASONER, ADVERSARIAL, FORMAL_REVIEW, RESEARCH, ALTERNATIVE_REASONER) are guidance, not vendor identities. Test Connection fetches the catalog and probes actual account access; catalog presence is not usable access. Unavailable or not-included selected models block a paid run with `MODEL_UNAVAILABLE` and are never silently substituted. Synthesis uses only a selected surviving model. Expected successful calls = 2N+1; attempt ceiling = 2N+1+N+2. Switching provider re-runs discovery and never mixes providers inside one run. USD remains telemetry.
+- STATUS: ACTIVE
+- ARCHITECTURE_REVISION: CB-ARCH-20260905-001
+- RATIONALE: Fixed GPT/Grok/Claude membership forced unavailable models and mixed vendor identity with review duty. Account access must be verified, not inferred from a catalog listing.
+- SUPERSEDES: fixed GPT/Grok/Claude membership implied by ADR-009
+- AFFECTED_MODULES: council.providers, council.orchestrator, council.protocol, council.discovery, account.persistence, ui.settings

@@ -43,6 +43,7 @@ function sampleTask(patch: Partial<Task> = {}): Task {
     decisionQuestion: null,
     contextManifestId: null,
     contextHash: null,
+    provider: null,
     ...patch,
   };
 }
@@ -297,12 +298,12 @@ describe("CREATE artifact synthesis", () => {
 
   it("CREATE agent contracts are not merely reviewer roles", () => {
     const create = rolesForMode("CREATE");
-    assert.match(create.GPT, /CREATE mode/);
-    assert.match(create.GPT, /producing the artifact/);
-    assert.match(create.GROK, /Do not reject CREATE/);
-    assert.match(create.CLAUDE, /not merely reviewing/);
+    assert.match(create.LEAD_REASONER, /CREATE mode/);
+    assert.match(create.LEAD_REASONER, /producing the artifact/);
+    assert.match(create.ADVERSARIAL, /Do not reject CREATE/);
+    assert.match(create.FORMAL_REVIEW, /not merely reviewing/);
     const review = rolesForMode("REVIEW");
-    assert.match(review.GPT, /Reviewer/);
+    assert.match(review.LEAD_REASONER, /Lead the reconstruction|Judge whether/);
   });
 });
 

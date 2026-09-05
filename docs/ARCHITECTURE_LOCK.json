@@ -1,14 +1,14 @@
 {
   "project_id": "01a048b8-c1f7-7382-9dfd-fb30bff7137d",
   "production_host": "https://swift-lake-solar-cosmic.grok.me",
-  "architecture_revision": "CB-ARCH-20260901-002",
-  "architecture_hash": "b0abe6a110f34ed831c7239f1b0481dcbff3bdb43bb8f09346cd2e248d45cc67",
-  "module_registry_hash": "b4d21471d19c862d6f0b48127e48fe50004425bd54f0af4f82d751b9ded868a9",
-  "schema_hash": "3f3c2bf60d21261d714c4ba3d133321d7f80f3de0d652b8ed7f75d90e40d5598",
-  "critical_contract_hash": "0a02962135339ead1fb13b76e7dbe94dc33530fde0456ca9bed7f12561500ffc",
+  "architecture_revision": "CB-ARCH-20260905-001",
+  "architecture_hash": "078f4e6b6fb5935a0f77ae126e364cdae0b66745a6317d353eac50c7376c5300",
+  "module_registry_hash": "e81ccd2c9ddf97935f9f9e6a18a5c98df1d73b90f3500d636bfd526f606900c3",
+  "schema_hash": "e3854d9cc2fceaec74bf956d3682d9894af4d20273ffe2314b1cb94ee5dfe733",
+  "critical_contract_hash": "62fcbe704f54cfd720f37a53d851ef688fa7dd18141986a91e6add0d1927717f",
   "created_at": "2026-08-29T18:45:00.000Z",
-  "build_id": "CB-BUILD-20260904-025",
-  "schema_version": "0006_closed_loop",
+  "build_id": "CB-BUILD-20260905-001",
+  "schema_version": "0008_dynamic_council",
   "source_root": "src",
   "protected_invariants": [
     "ONE_AUTHORITATIVE_PROJECT",
@@ -17,11 +17,13 @@
     "PROJECT_ISOLATION",
     "CREATE_REVIEW_DECIDE",
     "HISTORY_NOT_CANONICAL",
-    "COUNCIL_THREE_AGENTS_TWO_ROUNDS",
+    "COUNCIL_DYNAMIC_MEMBERS_TWO_ROUNDS",
     "KEYS_ACCOUNT_NOT_BROWSER",
     "NO_PARALLEL_GROK_APP",
     "SINGLE_CONTEXT_PACKER",
-    "IMPLEMENTATION_PACKET_HANDOFF"
+    "IMPLEMENTATION_PACKET_HANDOFF",
+    "SINGLE_PROVIDER_PER_RUN",
+    "REQUEST_BUDGET_NOT_USD_GATE"
   ],
   "runtime_shell_hash": "798ee8f88852ed3006b6624985eaeb669f26a525f917a0c4cbee1090331e19f5",
   "runtime_shell_id": "CB-SHELL-20260903-001"

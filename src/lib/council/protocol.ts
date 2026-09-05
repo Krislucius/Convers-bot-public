@@ -11,6 +11,7 @@ import type {
   EvidenceLabel,
   ProjectFile,
   ProviderCreds,
+  ProviderId,
   ReviewVerdict,
   RunCouncilOutput,
   Task,
@@ -22,8 +23,11 @@ import { asReviewVerdict, reviewVerdictFromStatus } from "./review.ts";
 import { buildMandatoryContext } from "../evidence/pack.ts";
 import { CURRENT_CONTEXT_TOKEN_LIMIT } from "../architecture/contracts.ts";
 import { countTokens } from "../evidence/tokens.ts";
+import { DEFAULT_ROLES, normalizeAgentKey, rolePrompt, type CouncilRole } from "./roles.ts";
+import type { CouncilMember } from "./members.ts";
+import { expectedSuccessfulCalls } from "./members.ts";
 
-export const AGENTS: AgentKey[] = ["GPT", "GROK", "CLAUDE"];
+export const AGENTS: AgentKey[] = [...DEFAULT_ROLES];
 
 export const HEADINGS = [
   "POSITION",
@@ -40,53 +44,17 @@ export const HEADINGS = [
   "REVISED_POSITION",
 ] as const;
 
-const TAXONOMY = `Severity taxonomy (mandatory):
-P0 = invariant / frozen contract violation
-P1 = architecture or fundamental logical flaw
-P2 = correctness defect
-P3 = robustness / edge-case issue
-P4 = optimization / style / optional improvement
-
-Return EXACTLY these headings, in this order, as plain text (not JSON):
-POSITION
-P0_BLOCKERS
-P1_ARCHITECTURE
-P2_CORRECTNESS
-P3_ROBUSTNESS
-P4_IMPROVEMENTS
-RECOMMENDATION
-
-If a section has no items write "none".
-Do not execute tools, shell, or code. You produce review text only.`;
-
-export const ROLES: Record<AgentKey, string> = {
-  GPT: `You are the Lead Architect / Reviewer. Judge whether the proposal fits the frozen architecture. ${TAXONOMY}`,
-  GROK: `You are the Adversarial / Research Reviewer. Hunt for hidden assumptions and invariant violations. ${TAXONOMY}`,
-  CLAUDE: `You are the Formal Consistency Reviewer. Check that claims follow from the frozen text. ${TAXONOMY}`,
-};
-
-const CREATE_ROLES: Record<AgentKey, string> = {
-  GPT: `You are the Lead Architect in CREATE mode. Reconstruct architecture from supplied evidence. Identify authoritative decisions, contradictions, a canonical structure, and P0/P1 uncertainty. Absence of a pre-existing candidate document is expected — you are producing the artifact, not reviewing one. Do not BLOCK the task merely because no candidate existed before this run. Repository/runtime absence means implementation status = UNKNOWN, not that the whole CREATE task is blocked. ${TAXONOMY}`,
-  GROK: `You are the Adversarial reviewer in CREATE mode. Challenge reconstructed assumptions, mark obsolete/superseded interpretations, identify missing evidence, and attack the proposed architecture. Do not reject CREATE because no candidate document existed beforehand. Missing repository evidence is UNKNOWN implementation status, not a reason to BLOCK the entire specification. ${TAXONOMY}`,
-  CLAUDE: `You are the Formalist in CREATE mode. Normalize terminology, flag ambiguous contracts, inconsistent states, and underspecified interfaces. You are not merely reviewing a nonexistent artifact. Cite evidence as [CHAT:source_id:message_sequence] when available. ${TAXONOMY}`,
-};
-
-const DECIDE_ROLES: Record<AgentKey, string> = {
-  GPT: `You are the Lead Architect in DECIDE mode. Answer the bounded decision question. Return a clear position, rationale, and residual P0/P1 concerns. ${TAXONOMY}`,
-  GROK: `You are the Adversary in DECIDE mode. Attack the implied default, surface dissent, and name what remains unresolved. ${TAXONOMY}`,
-  CLAUDE: `You are the Formalist in DECIDE mode. Check that the decision is stated as a contract, with unambiguous terms and failure modes. ${TAXONOMY}`,
-};
-
-export function rolesForMode(mode: TaskMode | string | null | undefined): Record<AgentKey, string> {
+export function rolesForMode(
+  mode: TaskMode | string | null | undefined,
+  agents: AgentKey[] = AGENTS,
+): Record<string, string> {
   const resolved = normalizeTaskMode(mode);
-  if (resolved === "CREATE") return CREATE_ROLES;
-  if (resolved === "DECIDE") return DECIDE_ROLES;
-  return ROLES;
+  return Object.fromEntries(agents.map((role) => [role, rolePrompt(role, resolved)]));
 }
 
 export const ROUND2 = `ROUND 2 — Cross review.
-You previously produced an independent Round 1 analysis. You now see all three
-Round 1 positions with explicit attribution.
+You previously produced an independent Round 1 analysis. You now see the other
+Council positions with explicit attribution.
 
 Return EXACTLY these headings:
 POSITION
@@ -104,11 +72,29 @@ RECOMMENDATION
 
 If a section has no items write "none".`;
 
-export const SYNTHESIS = `You are the council synthesizer. Output a single JSON object matching:
-{"status":"APPROVED|PATCH|BLOCKED|USER_DECISION_REQUIRED","review_verdict":"PASS|PATCH|BLOCKED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"","agent_positions":{"gpt":"","grok":"","claude":""},"issues":[],"proposed_corrections":[],"resolved_issues":[],"unresolved_issues":[],"citations":[]}
-REVIEW: PASS = candidate is acceptable, PATCH = issues with proposed corrections, BLOCKED = P0/P1. Preserve each model position, disagreements, and citations. Any substantiated P0 or unresolved P1 => BLOCKED. P4 never blocks.`;
+function agentPositionSchema(roles: AgentKey[]) {
+  const properties = Object.fromEntries(roles.map((role) => [role, { type: "string" }]));
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties,
+    required: roles,
+  };
+}
 
-export const CREATE_SYNTHESIS = `You are the CREATE-mode artifact synthesizer.
+function positionsPrompt(roles: AgentKey[]): string {
+  const body = roles.map((role) => `"${role}":""`).join(",");
+  return `"agent_positions":{${body}}`;
+}
+
+export function reviewSynthesisPrompt(roles: AgentKey[] = AGENTS): string {
+  return `You are the council synthesizer. Output a single JSON object matching:
+{"status":"APPROVED|PATCH|BLOCKED|USER_DECISION_REQUIRED","review_verdict":"PASS|PATCH|BLOCKED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"",${positionsPrompt(roles)},"issues":[],"proposed_corrections":[],"resolved_issues":[],"unresolved_issues":[],"citations":[]}
+REVIEW: PASS = candidate is acceptable, PATCH = issues with proposed corrections, BLOCKED = P0/P1. Preserve each model position, disagreements, and citations. Any substantiated P0 or unresolved P1 => BLOCKED. P4 never blocks. Use only the selected Council roles as keys in agent_positions.`;
+}
+
+export function createSynthesisPrompt(roles: AgentKey[] = AGENTS): string {
+  return `You are the CREATE-mode artifact synthesizer.
 The Council's job is to PRODUCE the requested canonical artifact from TASK + CONTEXT MANIFEST + ROUND 1 + ROUND 2.
 Absence of a pre-existing candidate is not a blocker.
 No repository/runtime evidence => implementation status UNKNOWN. Do not mark claims IMPLEMENTED from chat history alone. Chat history may support HISTORICALLY_ASSERTED. Frozen decisions require an explicit citation [CHAT:source_id:message_sequence] and status HISTORICALLY_FROZEN — never invent frozen invariants.
@@ -116,177 +102,74 @@ Critical claims should cite evidence.
 Distinguish provenance: EVIDENCED, INFERRED, UNKNOWN, CONFLICTED, HISTORICALLY_ASSERTED, HISTORICALLY_FROZEN.
 
 Output a single JSON object:
-{"status":"APPROVED|BLOCKED|USER_DECISION_REQUIRED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"","agent_positions":{"gpt":"","grok":"","claude":""},"citations":[],"resolved_issues":[],"unresolved_issues":[],"artifact":{"type":"SPECIFICATION|ARCHITECTURE|PLAN|ADR|PROJECT_STATE|OTHER","title":"","version":"1.0","content":"markdown artifact","evidenceLabels":[{"claim":"","status":"EVIDENCED","citation":"[CHAT:source_id:1]"}]}}
-P4 never blocks. Do not BLOCK only because a candidate or repository was missing.`;
+{"status":"APPROVED|BLOCKED|USER_DECISION_REQUIRED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"",${positionsPrompt(roles)},"citations":[],"resolved_issues":[],"unresolved_issues":[],"artifact":{"type":"SPECIFICATION|ARCHITECTURE|PLAN|ADR|PROJECT_STATE|OTHER","title":"","version":"1.0","content":"markdown artifact","evidenceLabels":[{"claim":"","status":"EVIDENCED","citation":"[CHAT:source_id:1]"}]}}
+P4 never blocks. Do not BLOCK only because a candidate or repository was missing. Use only the selected Council roles as keys in agent_positions.`;
+}
 
-export const DECIDE_SYNTHESIS = `You are the DECIDE-mode synthesizer. Output a single JSON object:
-{"status":"APPROVED|BLOCKED|USER_DECISION_REQUIRED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"","agent_positions":{"gpt":"","grok":"","claude":""},"decision":"","alternatives":[],"rationale":"","dissent":[],"evidence":[{"claim":"","status":"EVIDENCED","citation":"[CHAT:source_id:1]"}],"risks":[],"citations":[]}
-Unresolved material disagreement or CONFLICTED evidence => USER_DECISION_REQUIRED. Substantiated P0/P1 => BLOCKED.`;
+export function decideSynthesisPrompt(roles: AgentKey[] = AGENTS): string {
+  return `You are the DECIDE-mode synthesizer. Output a single JSON object:
+{"status":"APPROVED|BLOCKED|USER_DECISION_REQUIRED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"",${positionsPrompt(roles)},"decision":"","alternatives":[],"rationale":"","dissent":[],"evidence":[{"claim":"","status":"EVIDENCED","citation":"[CHAT:source_id:1]"}],"risks":[],"citations":[]}
+Unresolved material disagreement or CONFLICTED evidence => USER_DECISION_REQUIRED. Substantiated P0/P1 => BLOCKED. Use only the selected Council roles as keys in agent_positions.`;
+}
 
-export const REVIEW_SYNTHESIS = `You are the REVIEW-mode synthesizer. The candidate artifact is under review.
-Output a single JSON object:
-{"status":"APPROVED|PATCH|BLOCKED|USER_DECISION_REQUIRED","review_verdict":"PASS|PATCH|BLOCKED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"","agent_positions":{"gpt":"","grok":"","claude":""},"issues":[],"proposed_corrections":[],"resolved_issues":[],"unresolved_issues":[],"citations":[]}
-PASS when the candidate is acceptable. PATCH when issues have proposed corrections and no P0/P1 remains. BLOCKED on substantiated P0/P1. Preserve each model position.`;
+export const SYNTHESIS = reviewSynthesisPrompt();
+export const CREATE_SYNTHESIS = createSynthesisPrompt();
+export const DECIDE_SYNTHESIS = decideSynthesisPrompt();
+export const REVIEW_SYNTHESIS = reviewSynthesisPrompt();
 
-export const SCHEMA = {
-  type: "json_schema",
-  json_schema: {
-    name: "council_result",
-    strict: true,
-    schema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        status: { type: "string", enum: ["APPROVED", "PATCH", "BLOCKED", "USER_DECISION_REQUIRED"] },
-        review_verdict: { type: "string", enum: ["PASS", "PATCH", "BLOCKED"] },
-        consensus: { type: "array", items: { type: "string" } },
-        disagreements: { type: "array", items: { type: "string" } },
-        blockers: { type: "array", items: { type: "string" } },
-        recommendation: { type: "string" },
-        agent_positions: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            gpt: { type: "string" },
-            grok: { type: "string" },
-            claude: { type: "string" },
-          },
-          required: ["gpt", "grok", "claude"],
-        },
-        issues: { type: "array", items: { type: "string" } },
-        proposed_corrections: { type: "array", items: { type: "string" } },
-        resolved_issues: { type: "array", items: { type: "string" } },
-        unresolved_issues: { type: "array", items: { type: "string" } },
-        citations: { type: "array", items: { type: "string" } },
+function baseResultProperties(roles: AgentKey[]) {
+  return {
+    status: { type: "string", enum: ["APPROVED", "PATCH", "BLOCKED", "USER_DECISION_REQUIRED"] },
+    consensus: { type: "array", items: { type: "string" } },
+    disagreements: { type: "array", items: { type: "string" } },
+    blockers: { type: "array", items: { type: "string" } },
+    recommendation: { type: "string" },
+    agent_positions: agentPositionSchema(roles),
+    citations: { type: "array", items: { type: "string" } },
+  };
+}
+
+export function makeReviewSchema(roles: AgentKey[] = AGENTS) {
+  const properties = {
+    ...baseResultProperties(roles),
+    review_verdict: { type: "string", enum: ["PASS", "PATCH", "BLOCKED"] },
+    issues: { type: "array", items: { type: "string" } },
+    proposed_corrections: { type: "array", items: { type: "string" } },
+    resolved_issues: { type: "array", items: { type: "string" } },
+    unresolved_issues: { type: "array", items: { type: "string" } },
+  };
+  return {
+    type: "json_schema",
+    json_schema: {
+      name: "council_result",
+      strict: true,
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties,
+        required: Object.keys(properties),
       },
-      required: [
-        "status",
-        "review_verdict",
-        "consensus",
-        "disagreements",
-        "blockers",
-        "recommendation",
-        "agent_positions",
-        "issues",
-        "proposed_corrections",
-        "resolved_issues",
-        "unresolved_issues",
-        "citations",
-      ],
     },
-  },
-};
+  };
+}
 
-export const CREATE_SCHEMA = {
-  type: "json_schema",
-  json_schema: {
-    name: "create_artifact_result",
-    strict: true,
-    schema: {
+export function makeCreateSchema(roles: AgentKey[] = AGENTS) {
+  const properties = {
+    ...baseResultProperties(roles),
+    resolved_issues: { type: "array", items: { type: "string" } },
+    unresolved_issues: { type: "array", items: { type: "string" } },
+    artifact: {
       type: "object",
       additionalProperties: false,
       properties: {
-        status: { type: "string", enum: ["APPROVED", "PATCH", "BLOCKED", "USER_DECISION_REQUIRED"] },
-        consensus: { type: "array", items: { type: "string" } },
-        disagreements: { type: "array", items: { type: "string" } },
-        blockers: { type: "array", items: { type: "string" } },
-        recommendation: { type: "string" },
-        agent_positions: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            gpt: { type: "string" },
-            grok: { type: "string" },
-            claude: { type: "string" },
-          },
-          required: ["gpt", "grok", "claude"],
+        type: {
+          type: "string",
+          enum: ["SPECIFICATION", "ARCHITECTURE", "PLAN", "ADR", "PROJECT_STATE", "OTHER"],
         },
-        citations: { type: "array", items: { type: "string" } },
-        resolved_issues: { type: "array", items: { type: "string" } },
-        unresolved_issues: { type: "array", items: { type: "string" } },
-        artifact: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            type: {
-              type: "string",
-              enum: ["SPECIFICATION", "ARCHITECTURE", "PLAN", "ADR", "PROJECT_STATE", "OTHER"],
-            },
-            title: { type: "string" },
-            version: { type: "string" },
-            content: { type: "string" },
-            evidenceLabels: {
-              type: "array",
-              items: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  claim: { type: "string" },
-                  status: {
-                    type: "string",
-                    enum: [
-                      "EVIDENCED",
-                      "INFERRED",
-                      "UNKNOWN",
-                      "CONFLICTED",
-                      "HISTORICALLY_ASSERTED",
-                      "HISTORICALLY_FROZEN",
-                    ],
-                  },
-                  citation: { type: "string" },
-                },
-                required: ["claim", "status", "citation"],
-              },
-            },
-          },
-          required: ["type", "title", "version", "content", "evidenceLabels"],
-        },
-      },
-      required: [
-        "status",
-        "consensus",
-        "disagreements",
-        "blockers",
-        "recommendation",
-        "agent_positions",
-        "citations",
-        "resolved_issues",
-        "unresolved_issues",
-        "artifact",
-      ],
-    },
-  },
-};
-
-export const DECIDE_SCHEMA = {
-  type: "json_schema",
-  json_schema: {
-    name: "decide_result",
-    strict: true,
-    schema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        status: { type: "string", enum: ["APPROVED", "PATCH", "BLOCKED", "USER_DECISION_REQUIRED"] },
-        consensus: { type: "array", items: { type: "string" } },
-        disagreements: { type: "array", items: { type: "string" } },
-        blockers: { type: "array", items: { type: "string" } },
-        recommendation: { type: "string" },
-        agent_positions: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            gpt: { type: "string" },
-            grok: { type: "string" },
-            claude: { type: "string" },
-          },
-          required: ["gpt", "grok", "claude"],
-        },
-        decision: { type: "string" },
-        rationale: { type: "string" },
-        dissent: { type: "array", items: { type: "string" } },
-        alternatives: { type: "array", items: { type: "string" } },
-        evidence: {
+        title: { type: "string" },
+        version: { type: "string" },
+        content: { type: "string" },
+        evidenceLabels: {
           type: "array",
           items: {
             type: "object",
@@ -309,40 +192,87 @@ export const DECIDE_SCHEMA = {
             required: ["claim", "status", "citation"],
           },
         },
-        risks: { type: "array", items: { type: "string" } },
-        citations: { type: "array", items: { type: "string" } },
       },
-      required: [
-        "status",
-        "consensus",
-        "disagreements",
-        "blockers",
-        "recommendation",
-        "agent_positions",
-        "decision",
-        "rationale",
-        "dissent",
-        "alternatives",
-        "evidence",
-        "risks",
-        "citations",
-      ],
+      required: ["type", "title", "version", "content", "evidenceLabels"],
     },
-  },
-};
+  };
+  return {
+    type: "json_schema",
+    json_schema: {
+      name: "create_artifact_result",
+      strict: true,
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties,
+        required: Object.keys(properties),
+      },
+    },
+  };
+}
 
-export const REVIEW_SCHEMA = SCHEMA;
+export function makeDecideSchema(roles: AgentKey[] = AGENTS) {
+  const properties = {
+    ...baseResultProperties(roles),
+    decision: { type: "string" },
+    rationale: { type: "string" },
+    dissent: { type: "array", items: { type: "string" } },
+    alternatives: { type: "array", items: { type: "string" } },
+    evidence: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          claim: { type: "string" },
+          status: {
+            type: "string",
+            enum: [
+              "EVIDENCED",
+              "INFERRED",
+              "UNKNOWN",
+              "CONFLICTED",
+              "HISTORICALLY_ASSERTED",
+              "HISTORICALLY_FROZEN",
+            ],
+          },
+          citation: { type: "string" },
+        },
+        required: ["claim", "status", "citation"],
+      },
+    },
+    risks: { type: "array", items: { type: "string" } },
+  };
+  return {
+    type: "json_schema",
+    json_schema: {
+      name: "decide_result",
+      strict: true,
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties,
+        required: Object.keys(properties),
+      },
+    },
+  };
+}
 
-const EMPTY = new Set(["", "none", "none.", "n/a", "na", "no blockers", "no issues", "-", "—", "nil"]);
-const PROMPT_RATE = 8 / 1_000_000;
-const COMPLETION_RATE = 20 / 1_000_000;
+export const SCHEMA = makeReviewSchema();
+export const CREATE_SCHEMA = makeCreateSchema();
+export const DECIDE_SCHEMA = makeDecideSchema();
+export const REVIEW_SCHEMA = makeReviewSchema();
+
+const PROMPT_RATE = 0.0000025;
+const COMPLETION_RATE = 0.00001;
+const EMPTY = new Set(["none", "n/a", "na", "-", "nil", "null", "no items"]);
+
 export const AGENT_MAX = 6000;
 export const SYNTH_MAX = 4000;
 export const CREATE_SYNTH_MAX = 8000;
 export const TYPICAL_AGENT_OUT = 1500;
 export const TYPICAL_SYNTH_OUT = 800;
 export const CONTEXT_TOKEN_LIMIT = CURRENT_CONTEXT_TOKEN_LIMIT;
-/** Diagnostic only. Packing and boundContext use CONTEXT_TOKEN_LIMIT. */
 export const CONTEXT_CHAR_LIMIT = CONTEXT_TOKEN_LIMIT * 4;
 
 export function nid(): string {
@@ -353,12 +283,8 @@ export function estimateCost(inputTokens: number, maxOut: number): number {
   return Math.max(1, inputTokens) * PROMPT_RATE + maxOut * COMPLETION_RATE;
 }
 
-export function modelFor(creds: ProviderCreds): Record<AgentKey, string> {
-  return {
-    GPT: creds.gptModel.trim(),
-    GROK: creds.grokModel.trim(),
-    CLAUDE: creds.claudeModel.trim(),
-  };
+export function modelFor(creds: ProviderCreds): Record<string, string> {
+  return Object.fromEntries(creds.members.map((row) => [row.role, row.modelId.trim()]));
 }
 
 export function buildContext(
@@ -377,7 +303,6 @@ export function buildContext(
   return mandatory;
 }
 
-/** Safety check only. The ledger packer already enforces the token budget; this must not slice. */
 export function boundContext(ctx: string): string {
   if (countTokens(ctx) > CONTEXT_TOKEN_LIMIT) {
     throw new Error("CONTEXT_BUDGET_EXCEEDED");
@@ -388,6 +313,7 @@ export function boundContext(ctx: string): string {
 export function estimateCouncilRun(
   ctx: string,
   maxCostUsd = 1,
+  memberCount = AGENTS.length,
 ): {
   inputChars: number;
   inputTokens: number;
@@ -396,9 +322,11 @@ export function estimateCouncilRun(
   capped: boolean;
   costUsd: number;
   overBudget: boolean;
+  expectedCalls: number;
 } {
   const uncappedTokens = countTokens(ctx);
   const uncappedChars = ctx.length;
+  const expected = expectedSuccessfulCalls(memberCount);
   if (uncappedTokens > CONTEXT_TOKEN_LIMIT) {
     return {
       inputChars: 0,
@@ -408,30 +336,29 @@ export function estimateCouncilRun(
       capped: true,
       costUsd: 0,
       overBudget: true,
+      expectedCalls: expected,
     };
   }
-  const sent = ctx;
   const sentTokens = uncappedTokens;
   let costUsd = 0;
-  for (const agent of AGENTS) {
-    costUsd += estimateCost(countTokens(ROLES[agent]) + sentTokens, TYPICAL_AGENT_OUT);
+  const n = Math.max(2, memberCount);
+  for (let i = 0; i < n; i += 1) {
+    costUsd += estimateCost(80 + sentTokens, TYPICAL_AGENT_OUT);
   }
-  for (const agent of AGENTS) {
-    costUsd += estimateCost(
-      countTokens(ROLES[agent] + ROUND2) + sentTokens + 4 * TYPICAL_AGENT_OUT,
-      TYPICAL_AGENT_OUT,
-    );
+  for (let i = 0; i < n; i += 1) {
+    costUsd += estimateCost(120 + sentTokens + 4 * TYPICAL_AGENT_OUT, TYPICAL_AGENT_OUT);
   }
-  costUsd += estimateCost(countTokens(SYNTHESIS) + sentTokens + 3 * TYPICAL_AGENT_OUT, TYPICAL_SYNTH_OUT);
+  costUsd += estimateCost(160 + sentTokens + n * TYPICAL_AGENT_OUT, TYPICAL_SYNTH_OUT);
   const budget = maxCostUsd > 0 ? maxCostUsd : 1;
   return {
-    inputChars: sent.length,
+    inputChars: ctx.length,
     inputTokens: sentTokens,
     uncappedChars,
     uncappedTokens,
     capped: false,
     costUsd,
     overBudget: costUsd > budget,
+    expectedCalls: expected,
   };
 }
 
@@ -473,7 +400,7 @@ export type ParsedSynth = {
   disagreements: string[];
   blockers: string[];
   recommendation: string;
-  agent_positions: { gpt: string; grok: string; claude: string };
+  agent_positions: Record<string, string>;
   decision: string | null;
   rationale: string | null;
   dissent: string[];
@@ -503,6 +430,15 @@ function asCouncilStatus(value: unknown): CouncilStatus | null {
   return null;
 }
 
+export function normalizePositions(pos: Record<string, unknown> | null | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!pos || typeof pos !== "object") return out;
+  for (const [key, value] of Object.entries(pos)) {
+    out[normalizeAgentKey(key)] = String(value ?? "");
+  }
+  return out;
+}
+
 export function parseJson(text: string): ParsedSynth | null {
   const candidates = [text.trim()];
   const fence = text.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/);
@@ -514,18 +450,14 @@ export function parseJson(text: string): ParsedSynth | null {
       const data = JSON.parse(raw) as Record<string, unknown>;
       const status = asCouncilStatus(data.status);
       if (!status) continue;
-      const pos = (data.agent_positions ?? data.agentPositions ?? {}) as Record<string, string>;
+      const pos = (data.agent_positions ?? data.agentPositions ?? {}) as Record<string, unknown>;
       return {
         status,
         consensus: asStringList(data.consensus),
         disagreements: asStringList(data.disagreements),
         blockers: asStringList(data.blockers),
         recommendation: String(data.recommendation ?? ""),
-        agent_positions: {
-          gpt: String(pos.gpt ?? ""),
-          grok: String(pos.grok ?? ""),
-          claude: String(pos.claude ?? ""),
-        },
+        agent_positions: normalizePositions(pos),
         decision: data.decision == null || data.decision === "" ? null : String(data.decision),
         rationale: data.rationale == null || data.rationale === "" ? null : String(data.rationale),
         dissent: asStringList(data.dissent),
@@ -631,6 +563,7 @@ export function responseFromCompletion(
   user: string,
   out: Completion,
   manifest: ContextManifest | null = null,
+  provider: ProviderId = "nanogpt",
 ): AgentResponse {
   return attachManifest(
     {
@@ -639,7 +572,7 @@ export function responseFromCompletion(
       agent,
       round,
       model: out.model,
-      provider: "openrouter",
+      provider,
       promptSnapshot: `[SYSTEM]\n${system}\n[USER]\n${user}`,
       responseText: out.text,
       structured: round === 3 ? null : parseHeadings(out.text),
@@ -668,6 +601,7 @@ export function responseFromError(
   user: string,
   error: string,
   manifest: ContextManifest | null = null,
+  provider: ProviderId = "nanogpt",
 ): AgentResponse {
   return attachManifest(
     {
@@ -676,7 +610,7 @@ export function responseFromError(
       agent,
       round,
       model,
-      provider: "openrouter",
+      provider,
       promptSnapshot: `[SYSTEM]\n${system}\n[USER]\n${user}`,
       responseText: "",
       structured: null,
@@ -702,12 +636,14 @@ export function failedOutput(
   error: string,
   extras?: { manifest?: ContextManifest | null; artifact?: Artifact | null; packet?: import("./types.ts").ImplementationPacket | null },
 ): RunCouncilOutput {
+  const costs = responses.map((row) => row.cost).filter((value): value is number => value != null);
   return {
     task: {
       ...task,
       status: "FAILED",
       error,
       completedAt: new Date().toISOString(),
+      totalCostUsd: costs.length ? costs.reduce((a, b) => a + b, 0) : task.totalCostUsd,
       contextManifestId: extras?.manifest?.id ?? task.contextManifestId,
       contextHash: extras?.manifest?.hash ?? task.contextHash,
     },
@@ -841,9 +777,18 @@ export function chat(system: string, user: string): ChatMessage[] {
   ];
 }
 
-export function synthesisForMode(mode: TaskMode | string | null | undefined) {
+export function synthesisForMode(
+  mode: TaskMode | string | null | undefined,
+  roles: AgentKey[] = AGENTS,
+) {
   const resolved = normalizeTaskMode(mode);
-  if (resolved === "CREATE") return { prompt: CREATE_SYNTHESIS, schema: CREATE_SCHEMA, max: CREATE_SYNTH_MAX };
-  if (resolved === "DECIDE") return { prompt: DECIDE_SYNTHESIS, schema: DECIDE_SCHEMA, max: SYNTH_MAX };
-  return { prompt: REVIEW_SYNTHESIS, schema: REVIEW_SCHEMA, max: SYNTH_MAX };
+  if (resolved === "CREATE") {
+    return { prompt: createSynthesisPrompt(roles), schema: makeCreateSchema(roles), max: CREATE_SYNTH_MAX };
+  }
+  if (resolved === "DECIDE") {
+    return { prompt: decideSynthesisPrompt(roles), schema: makeDecideSchema(roles), max: SYNTH_MAX };
+  }
+  return { prompt: reviewSynthesisPrompt(roles), schema: makeReviewSchema(roles), max: SYNTH_MAX };
 }
+
+export type { CouncilMember, CouncilRole };

@@ -95,7 +95,8 @@ describe("PGLite filesystem persistence", { timeout: 90_000 }, () => {
       const schema = `
         create table if not exists account_settings (
           user_id text primary key,
-          provider text not null default 'openrouter',
+          provider text not null default 'nanogpt',
+          nanogpt_key text not null default '',
           openrouter_key text not null default '',
           openrusrouter_key text not null default '',
           gpt_model text not null,
@@ -110,11 +111,12 @@ describe("PGLite filesystem persistence", { timeout: 90_000 }, () => {
       await first.exec(schema);
       await first.query(
         `insert into account_settings (
-          user_id, provider, openrouter_key, openrusrouter_key, gpt_model, grok_model, claude_model, max_cost_usd, updated_at
-        ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+          user_id, provider, nanogpt_key, openrouter_key, openrusrouter_key, gpt_model, grok_model, claude_model, max_cost_usd, updated_at
+        ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
         [
           "user-sandbox",
-          "openrouter",
+          "nanogpt",
+          "sk-nano-persist-keep-aaaaaaaaaaaa",
           "sk-or-v1-persist-keep",
           "",
           "openai/gpt-5",
@@ -130,12 +132,13 @@ describe("PGLite filesystem persistence", { timeout: 90_000 }, () => {
       const second = new PGlite({ dataDir: keysDir, relaxedDurability: false });
       await second.waitReady;
       await second.exec(schema);
-      const rows = await second.query<{ openrouter_key: string; provider: string }>(
-        "select provider, openrouter_key from account_settings where user_id = $1",
+      const rows = await second.query<{ nanogpt_key: string; openrouter_key: string; provider: string }>(
+        "select provider, nanogpt_key, openrouter_key from account_settings where user_id = $1",
         ["user-sandbox"],
       );
       assert.equal(rows.rows.length, 1);
-      assert.equal(rows.rows[0]?.provider, "openrouter");
+      assert.equal(rows.rows[0]?.provider, "nanogpt");
+      assert.equal(rows.rows[0]?.nanogpt_key, "sk-nano-persist-keep-aaaaaaaaaaaa");
       assert.equal(rows.rows[0]?.openrouter_key, "sk-or-v1-persist-keep");
       await second.close();
     } finally {

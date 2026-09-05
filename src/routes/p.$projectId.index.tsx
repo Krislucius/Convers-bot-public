@@ -6,6 +6,7 @@ import { QualitySummary } from "@/components/quality-summary";
 import { Field, Panel, PrimaryButton, TextArea, TextInput } from "@/components/council-ui";
 import { evaluateProject } from "@/lib/council/evaluate";
 import { createTask, useStore } from "@/lib/council/store";
+import { useSession } from "@/lib/council/session";
 import { MODE_COPY, TASK_MODES, defaultRequiresHistorical } from "@/lib/council/task-mode";
 import type { TaskMode } from "@/lib/council/types";
 import { memoryChatIds } from "@/lib/history/provenance";
@@ -15,6 +16,7 @@ export const Route = createFileRoute("/p/$projectId/")({ component: TasksPage })
 function TasksPage() {
   const { projectId } = Route.useParams();
   const store = useStore();
+  const { config } = useSession();
   const navigate = useNavigate();
   const tasks = store.tasks.filter((row) => row.projectId === projectId);
   const artifacts = store.artifacts.filter((row) => row.projectId === projectId);
@@ -59,6 +61,8 @@ function TasksPage() {
       requiresHistoricalContext: requiresHistory,
       candidateArtifactId: resolvedMode === "REVIEW" ? candidateId || null : null,
       decisionQuestion: resolvedMode === "DECIDE" ? prompt.trim() : null,
+      provider: config.provider,
+      selectedModels: config.members,
     });
     void navigate({ to: "/t/$taskId", params: { taskId: task.id } });
   }

@@ -44,6 +44,7 @@ function task(over: Partial<Task> = {}): Task {
     decisionQuestion: null,
     contextManifestId: null,
     contextHash: null,
+    provider: null,
     ...over,
   };
 }

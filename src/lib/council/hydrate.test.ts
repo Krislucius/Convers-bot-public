@@ -31,11 +31,15 @@ const emptySnapshot: StoreShape = {
 };
 
 const emptySettings: AccountSettingsPublic = {
-  provider: "openrouter",
+  provider: "nanogpt",
+  selectedModelIds: ["gpt", "claude"],
+  synthesizerModel: "",
+  catalog: null,
   gptModel: "gpt",
   grokModel: "grok",
   claudeModel: "claude",
   maxCostUsd: 1,
+  nanogpt: { saved: false, masked: "" },
   openrouter: { saved: false, masked: "" },
   openrusrouter: { saved: false, masked: "" },
 };
@@ -117,7 +121,7 @@ describe("hydrate timeout", () => {
       timeoutMs: 100,
     });
     assert.deepEqual(out.snapshot.projects, []);
-    assert.equal(out.settings.provider, "openrouter");
+    assert.equal(out.settings.provider, "nanogpt");
   });
 
   it("maps a large project list without hanging", async () => {
@@ -183,7 +187,7 @@ describe("single hydrate load", () => {
       timeoutMs: 100,
       load: async () => ({ snapshot: emptySnapshot, settings: emptySettings }),
     });
-    assert.equal(out.settings.provider, "openrouter");
+    assert.equal(out.settings.provider, "nanogpt");
   });
 
   it("stress: 80 concurrent hanging combined loads all time out", async () => {

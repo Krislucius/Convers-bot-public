@@ -6,7 +6,7 @@ export const COMPLETE_TIMEOUT_MS = 120_000;
 export const PROVIDER_RETRY_LIMIT = 2;
 export const PROVIDER_ATTEMPTS = PROVIDER_RETRY_LIMIT + 1;
 
-export type HttpClass = "400" | "401" | "402" | "429" | "5xx" | "timeout" | "network" | "unknown";
+export type HttpClass = "400" | "401" | "402" | "429" | "5xx" | "timeout" | "network" | "empty" | "unknown";
 
 export type ProviderFailure = {
   provider: ProviderId;
@@ -65,7 +65,13 @@ export function httpClassOfStatus(status: number): HttpClass {
 }
 
 export function isRetryableFailure(failure: Pick<ProviderFailure, "httpClass"> | null | undefined): boolean {
-  return failure?.httpClass === "429" || failure?.httpClass === "5xx";
+  return (
+    failure?.httpClass === "429" ||
+    failure?.httpClass === "5xx" ||
+    failure?.httpClass === "timeout" ||
+    failure?.httpClass === "network" ||
+    failure?.httpClass === "empty"
+  );
 }
 
 export function retryDelayMs(attempt: number): number {
@@ -75,6 +81,7 @@ export function retryDelayMs(attempt: number): number {
 function classLabel(httpClass: HttpClass, httpStatus: number | null): string {
   if (httpClass === "timeout") return "timeout";
   if (httpClass === "network") return "network error";
+  if (httpClass === "empty") return "empty response";
   if (httpClass === "5xx") return `HTTP ${httpStatus ?? 500}`;
   if (httpClass === "unknown") return httpStatus ? `HTTP ${httpStatus}` : "provider error";
   return `HTTP ${httpClass}`;
@@ -96,6 +103,8 @@ function classAdvice(httpClass: HttpClass): string {
       return `No response within ${COMPLETE_TIMEOUT_MS / 1000}s.`;
     case "network":
       return "The provider could not be reached.";
+    case "empty":
+      return "The provider returned no text.";
     default:
       return "The Council run was stopped.";
   }
@@ -167,5 +176,5 @@ export function toProviderFailure(
 }
 
 export function containsSecret(text: string): boolean {
-  return /sk-or-[A-Za-z0-9_-]{8,}|orr_(?:live|test)_[A-Za-z0-9_-]{8,}|Bearer\s+\S+/i.test(text);
+  return /sk-or-[A-Za-z0-9_-]{8,}|sk-nano-[A-Za-z0-9_-]{8,}|orr_(?:live|test)_[A-Za-z0-9_-]{8,}|Bearer\s+\S+/i.test(text);
 }

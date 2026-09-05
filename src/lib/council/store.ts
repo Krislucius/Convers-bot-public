@@ -265,6 +265,8 @@ export type CreateTaskInput = {
   requiresHistoricalContext?: boolean;
   candidateArtifactId?: string | null;
   decisionQuestion?: string | null;
+  provider?: Task["provider"];
+  selectedModels?: Task["selectedModels"];
 };
 
 export function createTask(input: CreateTaskInput): Task {
@@ -304,6 +306,8 @@ export function createTask(input: CreateTaskInput): Task {
     decisionQuestion: input.decisionQuestion ?? (mode === "DECIDE" ? input.prompt : null),
     contextManifestId: null,
     contextHash: null,
+    provider: input.provider ?? null,
+    selectedModels: input.selectedModels ?? null,
   };
   persist({ ...memory, tasks: [task, ...memory.tasks] });
   enqueue(() => persistAccountTask({ data: task }));
@@ -396,7 +400,7 @@ export function markTaskCancelled(taskId: string, error = "Council run stopped."
         status: "CANCELLED",
         error,
         completedAt: now,
-        diagnostics: { ...prev, run, runs: archiveRuns(prev.runs, run ?? undefined) },
+        diagnostics: { ...prev, run, runs: run ? archiveRuns(prev.runs, run) : prev.runs },
       };
     }),
   });

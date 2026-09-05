@@ -26,6 +26,7 @@ const task: Task = {
   decisionQuestion: null,
   contextManifestId: null,
   contextHash: null,
+  provider: null,
 };
 
 describe("council estimate", () => {

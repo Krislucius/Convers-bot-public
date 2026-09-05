@@ -1,20 +1,46 @@
 import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { redact, sanitizeApiKey } from "./api-key";
-import { isProviderId } from "./providers";
+import { catalogFromIds, type CatalogCheckResult } from "./catalog";
+import { coerceMembers } from "./members";
+import { isProviderId, normalizeProviderId } from "./providers";
 import type { ChatMessage, Completion, PreflightClientReport, ProviderCreds, ProviderId } from "./types";
 import type { ProviderFailure } from "./provider-error";
+import type { DiscoverySnapshot } from "./discover";
 
-function normalizeCreds(data: ProviderCreds): ProviderCreds {
-  const provider: ProviderId = isProviderId(data.provider) ? data.provider : "openrouter";
+function normalizeCreds(data: ProviderCreds & {
+  gptModel?: string;
+  grokModel?: string;
+  claudeModel?: string;
+  selectedIds?: string[];
+}): ProviderCreds {
+  const provider: ProviderId = isProviderId(data.provider) ? data.provider : "nanogpt";
+  const members = coerceMembers(data);
   return {
     provider,
     apiKey: typeof data.apiKey === "string" ? sanitizeApiKey(data.apiKey, provider) : "",
-    gptModel: String(data.gptModel ?? ""),
-    grokModel: String(data.grokModel ?? ""),
-    claudeModel: String(data.claudeModel ?? ""),
+    members,
+    synthesizerModel: String(data.synthesizerModel ?? ""),
     maxCostUsd: Number(data.maxCostUsd) > 0 ? Number(data.maxCostUsd) : 1,
   };
+}
+
+function requestedModels(data: {
+  models?: string[];
+  members?: ProviderCreds["members"];
+  gptModel?: string;
+  grokModel?: string;
+  claudeModel?: string;
+  selectedIds?: string[];
+}): string[] {
+  if (data.models?.length) return data.models.map((id) => id.trim()).filter(Boolean);
+  return coerceMembers(data).map((row) => row.modelId);
+}
+
+async function loadProvider(id: ProviderId) {
+  if (id === "openrusrouter") return import("./openrusrouter.server");
+  if (id === "openrouter") return import("./openrouter.server");
+  return import("./nanogpt.server");
 }
 
 export const testProvider = createServerFn({ method: "POST" })
@@ -32,19 +58,124 @@ export const testProvider = createServerFn({ method: "POST" })
       throw new Error("The AI provider is not connected. Save an API key on this account first.");
     }
     const creds = { ...data, apiKey };
-    const mod =
-      data.provider === "openrusrouter"
-        ? await import("./openrusrouter.server")
-        : await import("./openrouter.server");
-    const report = await mod.preflightWithKey(creds);
+    const mod = await loadProvider(data.provider);
+    const report = await mod.preflightWithKey({
+      apiKey,
+      members: creds.members,
+      selectedIds: creds.members.map((row) => row.modelId),
+      synthesizerModel: creds.synthesizerModel,
+    });
     return {
       ok: report.ok,
       error: report.error ? redact(report.error, apiKey) : undefined,
       checks: report.checks,
       models: report.models,
       log: redact(report.log, apiKey),
+      catalog: report.catalog,
     };
   });
+
+export const discoverModels = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((data: { provider?: ProviderId; apiKey?: string; selectedIds?: string[] }) => data)
+  .handler(
+    async ({
+      context,
+      data,
+    }): Promise<{
+      ok: boolean;
+      error?: string;
+      catalog: DiscoverySnapshot | null;
+      checks: PreflightClientReport["checks"];
+      log: string;
+    }> => {
+      const provider = normalizeProviderId(data.provider);
+      const { resolveStoredKey } = await import("./account.server");
+      const apiKey = await resolveStoredKey(context.userId, provider, data.apiKey ?? "");
+      if (!apiKey) {
+        return {
+          ok: false,
+          error: "The AI provider is not connected. Save an API key on this account first.",
+          catalog: null,
+          checks: {},
+          log: "",
+        };
+      }
+      const mod = await loadProvider(provider);
+      const discovered = await mod.discoverAccount(apiKey, data.selectedIds ?? []);
+      return {
+        ok: discovered.ok,
+        error: discovered.error ? redact(discovered.error, apiKey) : undefined,
+        catalog: discovered.snapshot,
+        checks: discovered.checks,
+        log: redact(discovered.log, apiKey),
+      };
+    },
+  );
+
+export const checkCatalog = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator(
+    (data: {
+      provider?: ProviderId;
+      apiKey?: string;
+      models?: string[];
+      gptModel?: string;
+      grokModel?: string;
+      claudeModel?: string;
+    }) => data,
+  )
+  .handler(async ({ context, data }): Promise<CatalogCheckResult> => {
+    const provider = normalizeProviderId(data.provider);
+    const models = requestedModels(data);
+    const { resolveStoredKey } = await import("./account.server");
+    const apiKey = await resolveStoredKey(context.userId, provider, data.apiKey ?? "");
+    if (!apiKey) {
+      return {
+        ok: false,
+        code: "KEY_REJECTED",
+        error: "The AI provider is not connected. Save an API key on this account first.",
+        missing: models,
+        available: [],
+      };
+    }
+    const mod = await loadProvider(provider);
+    const result = await mod.catalogCheck({ apiKey, models });
+    return {
+      ...result,
+      error: result.error ? redact(result.error, apiKey) : undefined,
+      available: result.available ?? [],
+      missing: result.missing ?? [],
+    };
+  });
+
+export const checkAccess = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((data: { provider?: ProviderId; apiKey?: string; models: string[] }) => data)
+  .handler(
+    async ({
+      context,
+      data,
+    }): Promise<{ ok: boolean; blocked: Array<{ id: string; access: string }>; error?: string }> => {
+      const provider = normalizeProviderId(data.provider);
+      const { resolveStoredKey } = await import("./account.server");
+      const apiKey = await resolveStoredKey(context.userId, provider, data.apiKey ?? "");
+      if (!apiKey) {
+        return {
+          ok: false,
+          blocked: data.models.map((id) => ({ id, access: "UNAVAILABLE" })),
+          error: "The AI provider is not connected. Save an API key on this account first.",
+        };
+      }
+      const mod = await loadProvider(provider);
+      const result = await mod.accessCheck({ apiKey, models: data.models });
+      return {
+        ok: result.ok,
+        blocked: result.blocked,
+        error: result.error ? redact(result.error, apiKey) : undefined,
+      };
+    },
+  );
 
 export const completeChat = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
@@ -64,13 +195,10 @@ export const completeChat = createServerFn({ method: "POST" })
       context,
       data,
     }): Promise<{ ok: true; completion: Completion } | { ok: false; error: string; failure?: ProviderFailure }> => {
-      const provider: ProviderId = isProviderId(data.provider) ? data.provider : "openrouter";
+      const provider: ProviderId = isProviderId(data.provider) ? data.provider : "nanogpt";
       const { resolveStoredKey } = await import("./account.server");
       const apiKey = await resolveStoredKey(context.userId, provider, data.apiKey ?? "");
-      const mod =
-        provider === "openrusrouter"
-          ? await import("./openrusrouter.server")
-          : await import("./openrouter.server");
+      const mod = await loadProvider(provider);
       if (!apiKey) {
         return { ok: false, error: "The AI provider is not connected. Save an API key on this account first." };
       }
@@ -86,3 +214,5 @@ export const completeChat = createServerFn({ method: "POST" })
       }
     },
   );
+
+export { catalogFromIds };
