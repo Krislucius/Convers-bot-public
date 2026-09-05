@@ -5,9 +5,11 @@ import {
   availableModels,
   buildDiscovery,
   classifyProbe,
+  classifyVerified,
   currentConnectionView,
   familyOf,
   isProviderBrandModel,
+  isVerifiedAvailable,
   normalizeCatalogPayload,
   parseCatalogBody,
   pickDiverse,
@@ -15,7 +17,7 @@ import {
   pruneToAvailable,
   scoreModel,
 } from "./discover.ts";
-import { discoverAccountWith, listCatalogWith, preflightWith, type ProviderTransport } from "./provider-discover.ts";
+import { discoverAccountWith, listCatalogWith, preflightWith, verifySelectedWith, type ProviderTransport } from "./provider-discover.ts";
 import { formatTestLog } from "./test-log.ts";
 import { containsSecret } from "./provider-error.ts";
 import { assertAvailableSelection, assertCouncilSelection, attemptLimit, expectedSuccessfulCalls, assignRoles, membersFromIds, MIN_COUNCIL_MEMBERS } from "./members.ts";
@@ -761,5 +763,53 @@ describe("discoverAccountWith catalog parse and auth", () => {
     assert.equal(listed.ok, false);
     if (listed.ok) throw new Error("expected parse failure");
     assert.equal(listed.code, "CATALOG_PARSE_ERROR");
+  });
+});
+
+describe("verified access vs catalog scan", () => {
+  it("maps a live 200 probe to VERIFIED_AVAILABLE, 403 subscription-denied to NOT_INCLUDED", () => {
+    assert.equal(classifyVerified({ id: "openai/gpt-5", status: 200, body: "{}" }), "VERIFIED_AVAILABLE");
+    assert.equal(
+      classifyVerified({ id: "openai/gpt-5-premium-only", status: 403, body: "model not included in your subscription" }),
+      "NOT_INCLUDED",
+    );
+    assert.equal(classifyVerified({ id: "missing/vanished", status: 404, body: "model not found" }), "UNAVAILABLE");
+    assert.equal(classifyVerified({ id: "x", status: 429, body: "rate" }), "UNKNOWN");
+    assert.equal(isVerifiedAvailable("VERIFIED_AVAILABLE"), true);
+    assert.equal(isVerifiedAvailable("AVAILABLE"), true);
+    assert.equal(isVerifiedAvailable("NOT_INCLUDED"), false);
+    assert.equal(isVerifiedAvailable("UNAVAILABLE"), false);
+    assert.equal(isVerifiedAvailable("UNKNOWN"), false);
+  });
+
+  it("verifySelectedWith probes every selected model and does not treat catalog presence as access", async () => {
+    const pings: string[] = [];
+    const transport: ProviderTransport = {
+      provider: "nanogpt",
+      label: "NanoGPT",
+      creditMessage: "Add NanoGPT credits.",
+      listModels: async () => ({ status: 200, body: JSON.stringify({ data: [{ id: "openai/gpt-5" }] }), latencyMs: 1 }),
+      pingModel: async (_key, id) => {
+        pings.push(id);
+        if (id.includes("premium")) return { status: 403, body: "not included in your subscription" };
+        if (id.includes("missing")) return { status: 404, body: "model not found" };
+        return { status: 200, body: "{}" };
+      },
+    };
+    const denied = await verifySelectedWith(transport, "sk-nano-THISISASECRETKEYVALUE99", [
+      "openai/gpt-5",
+      "openai/gpt-5-premium-only",
+      "missing/vanished",
+    ]);
+    assert.equal(denied.ok, false);
+    assert.deepEqual(pings.sort(), ["missing/vanished", "openai/gpt-5", "openai/gpt-5-premium-only"].sort());
+    assert.equal(denied.verified?.find((row) => row.id === "openai/gpt-5")?.access, "VERIFIED_AVAILABLE");
+    assert.equal(denied.verified?.find((row) => row.id === "openai/gpt-5-premium-only")?.access, "NOT_INCLUDED");
+    assert.equal(denied.verified?.find((row) => row.id === "missing/vanished")?.access, "UNAVAILABLE");
+    assert.match(denied.error ?? "", /NOT_INCLUDED/);
+    assert.match(denied.error ?? "", /VERIFIED_AVAILABLE/);
+    const ok = await verifySelectedWith(transport, "sk-nano-THISISASECRETKEYVALUE99", ["openai/gpt-5", "anthropic/claude-sonnet-4"]);
+    assert.equal(ok.ok, true);
+    assert.ok(ok.verified?.every((row) => row.access === "VERIFIED_AVAILABLE"));
   });
 });

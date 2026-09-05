@@ -304,6 +304,8 @@ export type RunDiagnostics = {
   synthesizerModel?: string;
   requestBudget?: { used: number; limit: number; expected: number };
   costUsd?: number | null;
+  partial?: boolean;
+  synthesisSkipped?: string | null;
 };
 
 export type Task = {

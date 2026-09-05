@@ -10,6 +10,8 @@ import {
   accessCounts,
   availableModels,
   buildDiscovery,
+  classifyVerified,
+  isVerifiedAvailable,
   normalizeCatalogPayload,
   pickProbeTargets,
   pruneToAvailable,
@@ -19,6 +21,7 @@ import {
   type CatalogShapeMeta,
   type DiscoverySnapshot,
   type ModelProbe,
+  type VerifiedAccess,
 } from "./discover.ts";
 import { coerceMembers } from "./members.ts";
 import { providerName } from "./providers.ts";
@@ -362,27 +365,77 @@ export async function accessCheckWith(
   transport: ProviderTransport,
   apiKey: string,
   models: string[],
-): Promise<{ ok: boolean; blocked: Array<{ id: string; access: string }>; error?: string; snapshot?: DiscoverySnapshot }> {
+): Promise<{
+  ok: boolean;
+  blocked: Array<{ id: string; access: string }>;
+  error?: string;
+  snapshot?: DiscoverySnapshot;
+  verified?: Array<{ id: string; access: VerifiedAccess; status: number }>;
+}> {
+  return verifySelectedWith(transport, apiKey, models);
+}
+
+export async function verifySelectedWith(
+  transport: ProviderTransport,
+  apiKey: string,
+  models: string[],
+): Promise<{
+  ok: boolean;
+  blocked: Array<{ id: string; access: string }>;
+  error?: string;
+  snapshot?: DiscoverySnapshot;
+  verified?: Array<{ id: string; access: VerifiedAccess; status: number }>;
+}> {
   const unique = [...new Set(models.map((id) => id.trim()).filter(Boolean))];
-  const discovered = await discoverAccountWith(transport, apiKey, unique);
-  if (!discovered.snapshot) {
-    return { ok: false, blocked: unique.map((id) => ({ id, access: "UNAVAILABLE" })), error: discovered.error };
+  if (!unique.length) {
+    return {
+      ok: false,
+      blocked: [],
+      error: `${MODEL_UNAVAILABLE}: no selected models to verify on ${providerName(transport.provider)}.`,
+    };
   }
-  const blocked = unique
-    .map((id) => {
-      const row = discovered.snapshot?.models.find((item) => item.id === id);
-      return { id, access: row?.access ?? "UNAVAILABLE" };
-    })
-    .filter((row) => row.access !== "AVAILABLE");
+  const key = sanitizeApiKey(apiKey, transport.provider);
+  if (!key) {
+    return {
+      ok: false,
+      blocked: unique.map((id) => ({ id, access: "UNAVAILABLE" })),
+      error: `${transport.label} is not connected. Connect your API key before running the Council.`,
+    };
+  }
+  const probes = await Promise.all(unique.map((id) => probeModelWith(transport, key, id)));
+  const authFail = probes.find((row) => row.status === 401);
+  if (authFail) {
+    const error = keyRejectedMessage(
+      authFail.status,
+      extractErrorMessage(jsonPayload(authFail.body ?? ""), authFail.status),
+      keyFingerprint(key, transport.provider),
+      transport.provider,
+    );
+    return {
+      ok: false,
+      blocked: unique.map((id) => ({ id, access: "UNAVAILABLE" })),
+      error,
+    };
+  }
+  const verified = probes.map((probe) => ({
+    id: probe.id,
+    access: classifyVerified(probe),
+    status: probe.status,
+  }));
+  const blocked = verified
+    .filter((row) => !isVerifiedAvailable(row.access))
+    .map((row) => ({ id: row.id, access: row.access }));
   if (blocked.length) {
     return {
       ok: false,
       blocked,
-      snapshot: discovered.snapshot,
-      error: `${MODEL_UNAVAILABLE}: ${blocked.map((row) => row.id).join(", ")} is not accessible on ${providerName(transport.provider)}. Refresh models and pick a replacement.`,
+      verified,
+      error: `${MODEL_UNAVAILABLE}: ${blocked
+        .map((row) => `${row.id} (${row.access})`)
+        .join(", ")} is not VERIFIED_AVAILABLE on ${providerName(transport.provider)}. Refresh models and pick a replacement.`,
     };
   }
-  return { ok: true, blocked: [], snapshot: discovered.snapshot };
+  return { ok: true, blocked: [], verified };
 }
 
 export async function preflightWith(

@@ -1,13 +1,15 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
+import { AgentCard } from "@/components/agent-card";
 import { ArtifactPanel, ContextManifestPanel } from "@/components/context-manifest-panel";
 import { CouncilFold } from "@/components/council-fold";
 import { CouncilRunPanel, CouncilRunMeter } from "@/components/council-run-panel";
 import { CollapsibleText } from "@/components/collapsible-text";
-import { Crumb, DangerButton, GhostButton, Page, PageHeader, Panel, StatusPill } from "@/components/council-ui";
+import { Crumb, DangerButton, GhostButton, Page, PageHeader, Panel, PrimaryButton, StatusPill } from "@/components/council-ui";
 import { ImplementationPacketPanel } from "@/components/implementation-packet-panel";
 import { OpLogPanel } from "@/components/op-log";
 import { displayVerdict } from "@/lib/council/evaluate";
+import { councilPartial } from "@/lib/council/agents";
 import { runCouncil, isStaleDisconnectError, runCredsFromReady } from "@/lib/council/orchestrate";
 import { providerName } from "@/lib/council/providers";
 import { attemptLimit, expectedSuccessfulCalls, memberLabel } from "@/lib/council/members";
@@ -145,7 +147,7 @@ function TaskPage() {
     setMsg(progress.message);
   }
 
-  async function onRun(prepared?: EvidencePipelineResult, opts?: { force?: boolean }) {
+  async function onRun(prepared?: EvidencePipelineResult, opts?: { force?: boolean; resume?: { responses: typeof allResponses } }) {
     const gate = councilPreflight({ task: currentTask, artifacts: projectArtifacts });
     if (!gate.ok) {
       setMsg(gate.error ?? "");
@@ -224,6 +226,7 @@ function TaskPage() {
         parentPacket,
         pipeline: prepared,
         catalog: config.catalog?.models,
+        resume: opts?.resume,
         runId: handle.runId,
         generation: handle.generation,
         signal: handle.signal,
@@ -250,7 +253,7 @@ function TaskPage() {
       const text =
         err instanceof Error
           ? err.message
-          : "Council stopped during request: provider error.";
+          : "Council stopped during request: unclassified failure.";
       if (handle.signal.aborted) {
         markTaskCancelled(currentTask.id, "Council run stopped.");
         setMsg("Council run stopped.");
@@ -292,9 +295,21 @@ function TaskPage() {
     void onRun(undefined, { force: true });
   }
 
+  function onRetryFailed() {
+    const keep = responses.filter((row) => !row.error);
+    void onRun(undefined, { force: true, resume: { responses: keep } });
+  }
+
   const synth = responses.find((r) => r.round === 3);
   const canRun = STARTABLE.has(task.status);
   const hashMatch = responses.length === 0 || responses.every((row) => row.contextHash === responses[0]?.contextHash);
+  const round1Rows = responses.filter((row) => row.round === 1);
+  const partialInfo = councilPartial(round1Rows.length ? round1Rows : responses.filter((row) => row.round !== 3));
+  const showPartial =
+    !isRunning &&
+    task.status === "FAILED" &&
+    !synth &&
+    (Boolean(task.diagnostics?.run?.partial) || responses.length > 0);
 
   return (
     <Page>
@@ -370,25 +385,9 @@ function TaskPage() {
             {task.diagnostics?.run?.updatedAt ? ` · updated ${task.diagnostics.run.updatedAt}` : ""}
           </p>
           <ul className="m-0 grid list-none gap-2 p-0 sm:grid-cols-3">
-            {agentList.map(([agent, label]) => {
-              const row = persistedAgents[agent] ?? agentState[agent];
-              const state = row?.state ?? "WAITING";
-              return (
-                <li key={agent} className="rounded-md bg-subtle px-3 py-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <strong className="text-fg">{label}</strong>
-                    <StatusPill status={state} />
-                  </div>
-                  <p className="m-0 mt-1 text-xs text-faint">
-                    {state === "RUNNING" && row
-                      ? `attempt ${row.attempt}/${row.maxAttempts}`
-                      : state === "FAILED" && row?.error
-                        ? row.error
-                        : state.toLowerCase()}
-                  </p>
-                </li>
-              );
-            })}
+            {agentList.map(([agent, label]) => (
+              <AgentCard key={agent} label={label} progress={persistedAgents[agent] ?? agentState[agent]} />
+            ))}
           </ul>
           <div className="mt-4 flex flex-wrap gap-2">
             <DangerButton type="button" onClick={onStop}>
@@ -407,6 +406,67 @@ function TaskPage() {
               {" · "}
               <button type="button" className="text-muted underline" onClick={() => setConfirmRestart(false)}>
                 Keep running
+              </button>
+            </p>
+          ) : null}
+        </Panel>
+      ) : null}
+
+      {showPartial ? (
+        <Panel>
+          <p className="mb-1 text-xs font-semibold tracking-widest text-muted uppercase">Failed run</p>
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <h2 className="font-display m-0 text-xl">Partial result</h2>
+            <StatusPill status="PARTIAL" />
+          </div>
+          <p className="m-0 max-w-measure text-sm text-muted">
+            {task.diagnostics?.run?.synthesisSkipped ||
+              partialInfo.reason ||
+              "Synthesis was not created because fewer than 2 models survived."}
+          </p>
+          <ul className="mt-4 mb-0 grid list-none gap-2 p-0 sm:grid-cols-3">
+            {agentList.map(([agent, label]) => (
+              <AgentCard key={agent} label={label} progress={persistedAgents[agent] ?? agentState[agent]} />
+            ))}
+          </ul>
+          <div className="mt-4 grid gap-3">
+            {partialInfo.survivors
+              .filter((row) => row.round === 1)
+              .map((row) => {
+                const member = members.find((item) => item.role === row.agent);
+                return (
+                  <div key={row.id} className="rounded-md border border-line bg-subtle px-3 py-3">
+                    <p className="m-0 mb-2 text-xs font-semibold tracking-widest text-muted uppercase">
+                      {member ? memberLabel(member) : row.agent} · recorded
+                    </p>
+                    <CollapsibleText text={row.responseText} defaultCollapsed />
+                  </div>
+                );
+              })}
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <PrimaryButton type="button" disabled={busy} onClick={onRetryFailed}>
+              Retry failed models
+            </PrimaryButton>
+            <Link
+              to="/settings"
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-sm border border-line bg-transparent px-3.5 py-2.5 font-semibold text-fg no-underline"
+            >
+              Replace failed models
+            </Link>
+            <GhostButton type="button" onClick={onRestart}>
+              Restart Council
+            </GhostButton>
+          </div>
+          {confirmRestart ? (
+            <p className="mt-3 mb-0 rounded-md bg-subtle px-3 py-3 text-sm text-muted">
+              Restart starts a new Council run and may incur new API cost.{" "}
+              <button type="button" className="font-semibold text-fg underline" onClick={onRestart}>
+                Confirm restart
+              </button>
+              {" · "}
+              <button type="button" className="text-muted underline" onClick={() => setConfirmRestart(false)}>
+                Keep this result
               </button>
             </p>
           ) : null}

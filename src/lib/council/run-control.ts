@@ -22,6 +22,8 @@ export type CouncilRunSnapshot = {
   synthesizerModel?: string;
   requestBudget?: RequestBudget;
   costUsd?: number | null;
+  partial?: boolean;
+  synthesisSkipped?: string | null;
 };
 
 export class CouncilCancelled extends Error {

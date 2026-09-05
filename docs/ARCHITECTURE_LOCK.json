@@ -1,13 +1,13 @@
 {
   "project_id": "01a048b8-c1f7-7382-9dfd-fb30bff7137d",
   "production_host": "https://cb-gptgrokclaud.grok.me",
-  "architecture_revision": "CB-ARCH-20260905-003",
-  "architecture_hash": "d0ecba7370c47d5067a840c71e91f796243e26427409037de372c9877dd0ce5b",
-  "module_registry_hash": "d4371c0e598dfd5a56e6abb727a18badab8c834d7b15a32774db23e96ea0a3f6",
+  "architecture_revision": "CB-ARCH-20260905-004",
+  "architecture_hash": "d124c493f2c4bdfebd760bd3b9fb24f64759016aeefc85ab89d91ef9d45c0bb2",
+  "module_registry_hash": "535b2f9356527c3625348c37dac7a48537fe906dd3c29c5ef84dbb8d82fe361c",
   "schema_hash": "f4034a6cdf55b981c03b019cd0733283fdf0b46359c5584b5537127dee4c05ac",
-  "critical_contract_hash": "bd8b2551f5a571d76c47303d1981b2ae0c6e8c2e79d1e67a03cc5ae560a68227",
+  "critical_contract_hash": "004997d6d56a71686d881a6f77130841d4d8eccf456ad9da332e568e47960922",
   "created_at": "2026-08-29T18:45:00.000Z",
-  "build_id": "CB-BUILD-20260905-003",
+  "build_id": "CB-BUILD-20260905-004",
   "schema_version": "0009_provider_scan",
   "source_root": "src",
   "protected_invariants": [
@@ -24,7 +24,8 @@
     "IMPLEMENTATION_PACKET_HANDOFF",
     "SINGLE_PROVIDER_PER_RUN",
     "REQUEST_BUDGET_NOT_USD_GATE",
-    "COUNCIL_AVAILABLE_SCAN_ONLY"
+    "COUNCIL_AVAILABLE_SCAN_ONLY",
+    "COUNCIL_VERIFIED_SELECTED_PREFLIGHT"
   ],
   "runtime_shell_hash": "798ee8f88852ed3006b6624985eaeb669f26a525f917a0c4cbee1090331e19f5",
   "runtime_shell_id": "CB-SHELL-20260903-001"

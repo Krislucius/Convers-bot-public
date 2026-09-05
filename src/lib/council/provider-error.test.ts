@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { councilAgentFailure, survivingResponses } from "./agents.ts";
+import { councilAgentFailure, councilPartial, formatAgentCard, survivingResponses } from "./agents.ts";
 import {
   classifyHttp,
   containsSecret,
@@ -175,5 +175,71 @@ describe("provider failure formatting", () => {
       response("CLAUDE"),
     ];
     assert.equal(councilAgentFailure(rows)?.includes("HTTP 402"), true);
+  });
+
+  it("never collapses a runtime failure to generic provider error", () => {
+    const unknown = formatProviderFailure(
+      providerFailure({
+        provider: "nanogpt",
+        model: "google/gemma-2-9b",
+        stage: "ADVERSARIAL round 1",
+        httpClass: "unknown",
+        attempt: 3,
+        maxAttempts: 3,
+        retryExhausted: true,
+      }),
+    );
+    assert.match(unknown, /NanoGPT/);
+    assert.match(unknown, /google\/gemma-2-9b/);
+    assert.match(unknown, /ADVERSARIAL round 1/);
+    assert.match(unknown, /class unknown/);
+    assert.match(unknown, /attempt 3\/3/);
+    assert.match(unknown, /retries exhausted/);
+    assert.match(unknown, /unclassified failure/);
+    assert.equal(unknown.includes("provider error"), false);
+    const five = formatProviderFailure(
+      providerFailure({
+        provider: "openrouter",
+        model: "anthropic/claude-sonnet-4",
+        stage: "FORMAL_REVIEW round 1",
+        httpStatus: 502,
+        attempt: 2,
+        maxAttempts: 3,
+      }),
+    );
+    assert.match(five, /HTTP 502/);
+    assert.match(five, /class 5xx/);
+    assert.equal(five.includes("provider error"), false);
+  });
+
+  it("formats one agent card with aggregated attempts and last error", () => {
+    const err = formatProviderFailure(
+      providerFailure({
+        provider: "openrouter",
+        model: "google/gemma-2-9b",
+        stage: "ADVERSARIAL round 1",
+        httpStatus: 429,
+        attempt: 3,
+        maxAttempts: 3,
+        retryExhausted: true,
+      }),
+    );
+    const card = formatAgentCard("Gemma", { state: "FAILED", attempt: 3, maxAttempts: 3, error: err });
+    assert.equal(card.title, "Gemma");
+    assert.equal(card.status, "FAILED");
+    assert.equal(card.attempts, "attempts 3/3");
+    assert.equal(card.lastError, err);
+    assert.match(card.lastError ?? "", /HTTP 429/);
+    assert.match(card.lastError ?? "", /class 429/);
+    assert.match(card.lastError ?? "", /attempt 3\/3/);
+    assert.match(card.lastError ?? "", /retries exhausted/);
+    const partial = councilPartial([
+      response("CLAUDE"),
+      response("GPT", err),
+      response("GROK", err),
+    ]);
+    assert.equal(partial.ok, false);
+    assert.equal(partial.survivors.length, 1);
+    assert.match(partial.reason, /Synthesis was not created/);
   });
 });

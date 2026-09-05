@@ -20,7 +20,7 @@ import { sanitizeApiKey } from "./api-key.ts";
 import { councilPreflight } from "./task-mode.ts";
 import { CONTEXT_BUDGET_EXCEEDED, coverageBlocksCouncil } from "../evidence/pipeline.ts";
 import { cachedEvidencePipeline, type EvidencePipelineResult } from "../evidence/pipeline-cache.ts";
-import { councilAgentFailure, failedResponses, survivingResponses, synthesizerAgent } from "./agents.ts";
+import { councilPartial, failedResponses, survivingResponses, synthesizerAgent } from "./agents.ts";
 import { sanitizeEvidenceLabels } from "./citations.ts";
 import { buildImplementationPacket } from "./packet.ts";
 import { artifactStatusForReview, reviewVerdictFromStatus } from "./review.ts";
@@ -44,7 +44,7 @@ import {
 import { providerName } from "./providers.ts";
 import { createRequestCounter, isEmptyCompletion, isRequestLimitError, type RequestBudget } from "./request-budget.ts";
 import { MODEL_UNAVAILABLE, type CatalogCheckResult } from "./catalog.ts";
-import { accessBlocksRun, type DiscoveredModel } from "./discover.ts";
+import { accessBlocksRun, isVerifiedAvailable, type DiscoveredModel } from "./discover.ts";
 import { assertCouncilSelection, type CouncilMember } from "./members.ts";
 import type {
   AgentKey,
@@ -221,6 +221,7 @@ export async function runCouncil(input: {
   parentPacket?: ImplementationPacket | null;
   pipeline?: EvidencePipelineResult;
   catalog?: DiscoveredModel[];
+  resume?: { responses: AgentResponse[] };
   runId?: string;
   generation?: number;
   signal?: AbortSignal;
@@ -255,6 +256,12 @@ export async function runCouncil(input: {
     ? artifacts.find((row) => row.id === input.task.candidateArtifactId) ?? null
     : null;
   const agents = waitingAgents(members);
+  const resumeKept = (input.resume?.responses ?? [])
+    .filter((row) => row.round === 1 && !row.error)
+    .map((row) => tagRun({ ...row, runId }, runId));
+  for (const row of resumeKept) {
+    agents[row.agent] = { state: "DONE", attempt: 1, maxAttempts: PROVIDER_ATTEMPTS, error: null };
+  }
   const startedAt = now();
   let stageStartedAt = startedAt;
 
@@ -279,6 +286,8 @@ export async function runCouncil(input: {
     synthesizerModel: input.creds.synthesizerModel,
     requestBudget: requests.snapshot(),
     costUsd: spent,
+    partial: false,
+    synthesisSkipped: null,
   });
 
   const emit = (status: TaskStatus, stage: CouncilStageName, message: string, extra?: Partial<CouncilProgress>) => {
@@ -299,9 +308,14 @@ export async function runCouncil(input: {
     });
   };
 
-  const fail = (message: string, stage: CouncilStageName = "PREPARING") => {
+  const fail = (message: string, stage: CouncilStageName = "PREPARING", extras?: { partial?: boolean }) => {
+    const snap = snapshot(stage, "FAILED", message);
+    if (extras?.partial) {
+      snap.partial = true;
+      snap.synthesisSkipped = message;
+    }
     const out = failedOutput(boundTask, responses, message, { manifest });
-    return stamp(out, snapshot(stage, "FAILED", message), input.task.diagnostics);
+    return stamp(out, snap, input.task.diagnostics);
   };
 
   const finishCancelled = (message = "Council run stopped.") => {
@@ -388,19 +402,37 @@ export async function runCouncil(input: {
       return precheckOutput(boundTask, error);
     }
 
-    if (runtime.accessCheck) {
-      const access = await runtime.accessCheck({
-        provider: runProvider,
-        apiKey: key,
-        models: selectedIds,
-      });
-      if (!access.ok) {
-        return precheckOutput(
-          boundTask,
-          access.error ??
-            `${MODEL_UNAVAILABLE}: ${access.blocked.map((row) => row.id).join(", ") || "selected model"} is not accessible.`,
-        );
+    const accessFn =
+      runtime.accessCheck ??
+      (input.runtime
+        ? async (): Promise<{ ok: boolean; blocked: Array<{ id: string; access: string }>; error?: string }> => ({
+            ok: true,
+            blocked: [],
+          })
+        : defaultAccessCheck);
+    const verifyIds = (() => {
+      const kept = new Set(resumeKept.map((row) => row.agent));
+      const retry = members.filter((row) => !kept.has(row.role)).map((row) => row.modelId);
+      return retry.length ? retry : selectedIds;
+    })();
+    const access = await accessFn({
+      provider: runProvider,
+      apiKey: key,
+      models: verifyIds,
+    });
+    const accessError =
+      access.error ??
+      `${MODEL_UNAVAILABLE}: ${access.blocked
+        .filter((row) => !isVerifiedAvailable(row.access))
+        .map((row) => `${row.id} (${row.access})`)
+        .join(", ") || "selected model"} is not VERIFIED_AVAILABLE.`;
+    if (!access.ok || access.blocked.some((row) => !isVerifiedAvailable(row.access))) {
+      if (resumeKept.length) {
+        responses.push(...resumeKept);
+        emit("FAILED", "PREPARING", accessError, { responses: [...responses] });
+        return fail(accessError, "PREPARING", { partial: true });
       }
+      return precheckOutput(boundTask, accessError);
     }
 
     throwIfCancelled(runId, signal);
@@ -492,6 +524,8 @@ export async function runCouncil(input: {
               model: modelId,
               stage,
               httpClass: "empty",
+              attempt,
+              maxAttempts: PROVIDER_ATTEMPTS,
               raw: "empty response",
             });
           } else if (out.ok) {
@@ -516,6 +550,12 @@ export async function runCouncil(input: {
                 model: modelId,
                 stage,
               });
+            lastFailure = {
+              ...lastFailure,
+              attempt,
+              maxAttempts: PROVIDER_ATTEMPTS,
+              message: formatProviderFailure({ ...lastFailure, attempt, maxAttempts: PROVIDER_ATTEMPTS }),
+            };
           }
         } catch (err) {
           if (err instanceof CouncilCancelled || isCancelledSignal(signal)) {
@@ -530,6 +570,12 @@ export async function runCouncil(input: {
             model: modelId,
             stage,
           });
+          lastFailure = {
+            ...lastFailure,
+            attempt,
+            maxAttempts: PROVIDER_ATTEMPTS,
+            message: formatProviderFailure({ ...lastFailure, attempt, maxAttempts: PROVIDER_ATTEMPTS }),
+          };
         }
         const retryable = isRetryableFailure(lastFailure);
         if (retryable && attempt < PROVIDER_ATTEMPTS) {
@@ -549,6 +595,8 @@ export async function runCouncil(input: {
               provider: runProvider,
               model: modelId,
               stage,
+              attempt,
+              maxAttempts: PROVIDER_ATTEMPTS,
               retryExhausted: retryable,
               message: "",
             }
@@ -556,6 +604,8 @@ export async function runCouncil(input: {
               provider: runProvider,
               model: modelId,
               stage,
+              attempt,
+              maxAttempts: PROVIDER_ATTEMPTS,
               retryExhausted: retryable,
             });
         failure.message = formatProviderFailure(failure);
@@ -576,6 +626,8 @@ export async function runCouncil(input: {
         provider: runProvider,
         model: modelId,
         stage,
+        attempt: PROVIDER_ATTEMPTS,
+        maxAttempts: PROVIDER_ATTEMPTS,
         retryExhausted: true,
       });
       agents[agent] = {
@@ -599,21 +651,33 @@ export async function runCouncil(input: {
 
     stageStartedAt = now();
     for (const member of members) {
-      agents[member.role] = { state: "RUNNING", attempt: 1, maxAttempts: PROVIDER_ATTEMPTS, error: null };
+      const kept = (input.resume?.responses ?? []).some((row) => row.agent === member.role && row.round === 1 && !row.error);
+      agents[member.role] = kept
+        ? { state: "DONE", attempt: 1, maxAttempts: PROVIDER_ATTEMPTS, error: null }
+        : { state: "RUNNING", attempt: 1, maxAttempts: PROVIDER_ATTEMPTS, error: null };
     }
+    const priorByAgent = new Map(resumeKept.map((row) => [row.agent, row]));
     emit("COUNCIL_ROUND_1", "ROUND_1", `Round 1 — ${members.length} Council models.`, { manifest });
     await yieldFn();
     throwIfCancelled(runId, signal);
 
     const round1 = await Promise.all(
-      members.map((member) => ask(member.role, 1, roles[member.role], ctx, AGENT_MAX, 0.2)),
+      members.map(async (member) => {
+        const kept = priorByAgent.get(member.role);
+        if (kept) {
+          agents[member.role] = { state: "DONE", attempt: 1, maxAttempts: PROVIDER_ATTEMPTS, error: null };
+          return kept;
+        }
+        return ask(member.role, 1, roles[member.role], ctx, AGENT_MAX, 0.2);
+      }),
     );
     responses.push(...round1);
     if (isCancelledSignal(signal)) return finishCancelled();
     emit("COUNCIL_ROUND_1", "ROUND_1", "Round 1 complete.", { responses: [...responses] });
-    const fail1 = councilAgentFailure(round1);
-    if (fail1) {
-      return fail(fail1, "ROUND_1");
+    const fail1 = councilPartial(round1);
+    if (!fail1.ok) {
+      emit("FAILED", "ROUND_1", fail1.reason, { responses: [...responses] });
+      return fail(fail1.reason, "ROUND_1", { partial: true });
     }
     const alive = survivingResponses(round1).map((row) => row.agent);
 
@@ -646,9 +710,10 @@ export async function runCouncil(input: {
     responses.push(...round2);
     if (isCancelledSignal(signal)) return finishCancelled();
     emit("COUNCIL_ROUND_2", "ROUND_2", "Round 2 complete.", { responses: [...responses] });
-    const fail2 = councilAgentFailure([...survivingResponses(round1), ...round2]);
-    if (fail2) {
-      return fail(fail2, "ROUND_2");
+    const fail2 = councilPartial([...survivingResponses(round1), ...round2]);
+    if (!fail2.ok) {
+      emit("FAILED", "ROUND_2", fail2.reason, { responses: [...responses] });
+      return fail(fail2.reason, "ROUND_2", { partial: true });
     }
 
     throwIfCancelled(runId, signal);

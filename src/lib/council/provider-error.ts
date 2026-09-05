@@ -14,8 +14,11 @@ export type ProviderFailure = {
   stage: string;
   httpStatus: number | null;
   httpClass: HttpClass;
+  attempt: number | null;
+  maxAttempts: number | null;
   retryExhausted: boolean;
   message: string;
+  detail?: string;
 };
 
 export class ProviderError extends Error {
@@ -83,7 +86,7 @@ function classLabel(httpClass: HttpClass, httpStatus: number | null): string {
   if (httpClass === "network") return "network error";
   if (httpClass === "empty") return "empty response";
   if (httpClass === "5xx") return `HTTP ${httpStatus ?? 500}`;
-  if (httpClass === "unknown") return httpStatus ? `HTTP ${httpStatus}` : "provider error";
+  if (httpClass === "unknown") return httpStatus ? `HTTP ${httpStatus}` : "unclassified failure";
   return `HTTP ${httpClass}`;
 }
 
@@ -98,7 +101,7 @@ function classAdvice(httpClass: HttpClass): string {
     case "429":
       return "Rate limited.";
     case "5xx":
-      return "Provider error.";
+      return "The provider returned a server error.";
     case "timeout":
       return `No response within ${COMPLETE_TIMEOUT_MS / 1000}s.`;
     case "network":
@@ -106,7 +109,7 @@ function classAdvice(httpClass: HttpClass): string {
     case "empty":
       return "The provider returned no text.";
     default:
-      return "The Council run was stopped.";
+      return "The request did not complete.";
   }
 }
 
@@ -116,8 +119,18 @@ export function formatProviderFailure(failure: ProviderFailure): string {
   const where = failure.stage.trim() || "request";
   const subject = model ? `${who} ${model}` : who;
   const code = classLabel(failure.httpClass, failure.httpStatus);
+  const klass = ` class ${failure.httpClass}`;
+  const attempt =
+    failure.attempt != null && failure.maxAttempts != null
+      ? ` attempt ${failure.attempt}/${failure.maxAttempts}`
+      : "";
   const retry = failure.retryExhausted ? " (retries exhausted)" : "";
-  return `${subject} failed in ${where}: ${code}${retry}. ${classAdvice(failure.httpClass)}`;
+  const detail = failure.detail?.trim();
+  const extra = detail && !code.includes(detail) ? ` ${detail}` : "";
+  return `${subject} failed in ${where}: ${code}${klass}${attempt}${retry}.${extra ? extra : ""} ${classAdvice(failure.httpClass)}`.replace(
+    /\s+/g,
+    " ",
+  ).trim();
 }
 
 export function providerFailure(input: {
@@ -126,8 +139,11 @@ export function providerFailure(input: {
   stage: string;
   httpStatus?: number | null;
   httpClass?: HttpClass;
+  attempt?: number | null;
+  maxAttempts?: number | null;
   retryExhausted?: boolean;
   raw?: string;
+  detail?: string;
 }): ProviderFailure {
   const httpStatus = input.httpStatus ?? null;
   const httpClass = input.httpClass ?? classifyHttp(httpStatus, input.raw ?? "");
@@ -137,8 +153,11 @@ export function providerFailure(input: {
     stage: input.stage,
     httpStatus,
     httpClass,
+    attempt: input.attempt ?? null,
+    maxAttempts: input.maxAttempts ?? null,
     retryExhausted: Boolean(input.retryExhausted),
     message: "",
+    detail: input.detail,
   };
   failure.message = formatProviderFailure(failure);
   return failure;

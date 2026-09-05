@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { survivingResponses, synthesizerAgent } from "./agents.ts";
+import { councilPartial, formatAgentCard, survivingResponses, synthesizerAgent } from "./agents.ts";
 import type { CouncilMember } from "./members.ts";
 import { runCouncil, assertRunCredentials, isStaleDisconnectError, runCredsFromReady, type CouncilProgress } from "./orchestrate.ts";
 import { providerFailure } from "./provider-error.ts";
@@ -1034,5 +1034,436 @@ describe("dynamic council membership", () => {
     assert.match(blocked.task.error ?? "", /MODEL_UNAVAILABLE/);
     assert.match(blocked.task.error ?? "", /x-ai\/grok-test/);
     assert.equal(calls, 0);
+  });
+});
+
+function deniedAccess(blocked: Array<{ id: string; access: string }>, error?: string) {
+  return async () => ({
+    ok: false,
+    blocked,
+    error:
+      error ??
+      `MODEL_UNAVAILABLE: ${blocked.map((row) => `${row.id} (${row.access})`).join(", ")} is not VERIFIED_AVAILABLE.`,
+  });
+}
+
+function agentRow(agent: AgentResponse["agent"], model: string, extras: Partial<AgentResponse> = {}): AgentResponse {
+  return {
+    id: `${agent}-r1`,
+    taskId: task.id,
+    agent,
+    round: 1,
+    model,
+    provider: "openrouter",
+    promptSnapshot: "",
+    responseText: extras.error ? "" : `POSITION\n${agent} ok`,
+    structured: null,
+    inputTokens: 8,
+    cachedInputTokens: 0,
+    outputTokens: 8,
+    reasoningTokens: 0,
+    cost: 0.001,
+    requestId: `${agent}-req`,
+    latencyMs: 5,
+    error: null,
+    contextManifestId: null,
+    contextHash: "c",
+    runId: "prior",
+    ...extras,
+  };
+}
+
+describe("verified selected-model preflight", () => {
+  it("blocks a catalog-visible subscription-denied model before completeChat", async () => {
+    let calls = 0;
+    let verified: string[] = [];
+    const out = await runCouncil({
+      ...baseInput({
+        completeChat: async (opts) => {
+          calls += 1;
+          return { ok: true, completion: completion(opts.model) };
+        },
+      }),
+      catalog: [
+        {
+          id: "openai/gpt-test",
+          name: "GPT test",
+          family: "openai",
+          access: "AVAILABLE",
+          recommendedRole: "LEAD_REASONER",
+          contextTokens: 128000,
+          reasoning: true,
+          score: 90,
+          probed: true,
+        },
+        {
+          id: "x-ai/grok-test",
+          name: "Grok test",
+          family: "xai",
+          access: "AVAILABLE",
+          recommendedRole: "ADVERSARIAL",
+          contextTokens: 128000,
+          reasoning: true,
+          score: 70,
+          probed: true,
+        },
+        {
+          id: "anthropic/claude-test",
+          name: "Claude test",
+          family: "anthropic",
+          access: "AVAILABLE",
+          recommendedRole: "FORMAL_REVIEW",
+          contextTokens: 200000,
+          reasoning: true,
+          score: 88,
+          probed: true,
+        },
+      ],
+      runtime: {
+        completeChat: async (opts) => {
+          calls += 1;
+          return { ok: true, completion: completion(opts.model) };
+        },
+        accessCheck: async ({ models }) => {
+          verified = models;
+          return {
+            ok: false,
+            blocked: [{ id: "x-ai/grok-test", access: "NOT_INCLUDED" }],
+            error: "MODEL_UNAVAILABLE: x-ai/grok-test (NOT_INCLUDED) is not VERIFIED_AVAILABLE on OpenRouter.",
+          };
+        },
+        yieldFn: async () => undefined,
+      },
+    });
+    assert.equal(out.task.status, "CREATED");
+    assert.match(out.task.error ?? "", /NOT_INCLUDED/);
+    assert.match(out.task.error ?? "", /VERIFIED_AVAILABLE/);
+    assert.equal(out.responses.length, 0);
+    assert.equal(calls, 0);
+    assert.ok(verified.includes("x-ai/grok-test"));
+  });
+
+  it("does not start a paid full Council after a selected-model preflight failure", async () => {
+    let calls = 0;
+    const out = await runCouncil({
+      ...baseInput({
+        completeChat: async (opts) => {
+          calls += 1;
+          return { ok: true, completion: completion(opts.model) };
+        },
+      }),
+      runtime: {
+        completeChat: async (opts) => {
+          calls += 1;
+          return { ok: true, completion: completion(opts.model) };
+        },
+        accessCheck: deniedAccess([{ id: "openai/gpt-test", access: "UNAVAILABLE" }]),
+        yieldFn: async () => undefined,
+      },
+    });
+    assert.equal(out.task.status, "CREATED");
+    assert.match(out.task.error ?? "", /UNAVAILABLE/);
+    assert.equal(out.responses.length, 0);
+    assert.equal(out.result, null);
+    assert.equal(calls, 0);
+  });
+
+  it("shows PARTIAL RESULT when Claude succeeds and two models fail", async () => {
+    const progress: CouncilProgress[] = [];
+    const out = await runCouncil(
+      baseInput({
+        completeChat: async (opts) => {
+          if (opts.model.includes("claude")) return { ok: true, completion: completion(opts.model) };
+          return {
+            ok: false,
+            error: "denied",
+            failure: providerFailure({
+              provider: "openrouter",
+              model: opts.model,
+              stage: opts.model.includes("gpt") ? "LEAD_REASONER round 1" : "ADVERSARIAL round 1",
+              httpStatus: 403,
+              httpClass: "401",
+              attempt: 1,
+              maxAttempts: 3,
+            }),
+          };
+        },
+        onProgress: (row) => progress.push(row),
+      }),
+    );
+    assert.equal(out.task.status, "FAILED");
+    assert.equal(out.result, null);
+    assert.equal(out.task.diagnostics?.run?.partial, true);
+    assert.match(out.task.diagnostics?.run?.synthesisSkipped ?? "", /Synthesis was not created/);
+    assert.match(out.task.error ?? "", /Synthesis was not created/);
+    const round1 = out.responses.filter((row) => row.round === 1);
+    assert.equal(round1.length, 3);
+    const claude = round1.find((row) => row.agent === "FORMAL_REVIEW");
+    assert.equal(claude?.error, null);
+    assert.match(claude?.responseText ?? "", /FORMAL_REVIEW ok|claude/i);
+    assert.equal(out.responses.some((row) => row.round === 2 || row.round === 3), false);
+    const partial = councilPartial(round1);
+    assert.equal(partial.ok, false);
+    assert.equal(partial.survivors.length, 1);
+    assert.equal(progress.some((row) => row.stage === "ROUND_2" || row.stage === "SYNTHESIS"), false);
+  });
+
+  it("2-of-3 success still reaches synthesis", async () => {
+    let synth = 0;
+    const out = await runCouncil(
+      baseInput({
+        completeChat: async (opts) => {
+          if (opts.model.includes("grok")) {
+            return {
+              ok: false,
+              error: "timeout",
+              failure: providerFailure({
+                provider: "openrouter",
+                model: opts.model,
+                stage: "ADVERSARIAL round 1",
+                httpClass: "timeout",
+                retryExhausted: true,
+                attempt: 3,
+                maxAttempts: 3,
+              }),
+            };
+          }
+          if (opts.responseFormat) {
+            synth += 1;
+            return {
+              ok: true,
+              completion: {
+                ...completion(opts.model),
+                text: JSON.stringify({
+                  status: "APPROVED",
+                  consensus: ["ok"],
+                  disagreements: [],
+                  blockers: [],
+                  recommendation: "go",
+                  agent_positions: { gpt: "g", grok: "", claude: "c" },
+                  decision: "keep",
+                  rationale: "two reviewers",
+                  dissent: [],
+                }),
+              },
+            };
+          }
+          return { ok: true, completion: completion(opts.model) };
+        },
+      }),
+    );
+    assert.equal(synth, 1);
+    assert.equal(out.task.status, "COMPLETE");
+    assert.equal(out.task.diagnostics?.run?.partial ?? false, false);
+    assert.ok(out.responses.some((row) => row.round === 3 && !row.error));
+  });
+
+  it("aggregates retries under one agent card with the exact last error", async () => {
+    const progress: CouncilProgress[] = [];
+    const gemmaMembers: CouncilMember[] = [
+      { role: "LEAD_REASONER", modelId: "openai/gpt-test", label: "GPT test", family: "openai" },
+      { role: "ADVERSARIAL", modelId: "google/gemma-2-9b", label: "Gemma", family: "google" },
+      { role: "FORMAL_REVIEW", modelId: "anthropic/claude-test", label: "Claude test", family: "anthropic" },
+    ];
+    let gemmaCalls = 0;
+    const out = await runCouncil(
+      baseInput({
+        creds: { ...creds, members: gemmaMembers },
+        completeChat: async (opts) => {
+          if (opts.model.includes("gemma")) {
+            gemmaCalls += 1;
+            return {
+              ok: false,
+              error: "429",
+              failure: providerFailure({
+                provider: "openrouter",
+                model: opts.model,
+                stage: "ADVERSARIAL round 1",
+                httpStatus: 429,
+                httpClass: "429",
+              }),
+            };
+          }
+          if (opts.responseFormat) {
+            return {
+              ok: true,
+              completion: {
+                ...completion(opts.model),
+                text: JSON.stringify({
+                  status: "APPROVED",
+                  consensus: ["ok"],
+                  disagreements: [],
+                  blockers: [],
+                  recommendation: "go",
+                  agent_positions: { LEAD_REASONER: "g", ADVERSARIAL: "", FORMAL_REVIEW: "c" },
+                  decision: "keep",
+                  rationale: "two reviewers",
+                  dissent: [],
+                }),
+              },
+            };
+          }
+          return { ok: true, completion: completion(opts.model) };
+        },
+        onProgress: (row) => progress.push(row),
+      }),
+    );
+    assert.equal(gemmaCalls, 3);
+    const gemma = out.responses.find((row) => row.agent === "ADVERSARIAL" && row.round === 1);
+    assert.ok(gemma?.error);
+    assert.match(gemma?.error ?? "", /OpenRouter/);
+    assert.match(gemma?.error ?? "", /google\/gemma-2-9b/);
+    assert.match(gemma?.error ?? "", /ADVERSARIAL round 1/);
+    assert.match(gemma?.error ?? "", /HTTP 429/);
+    assert.match(gemma?.error ?? "", /class 429/);
+    assert.match(gemma?.error ?? "", /attempt 3\/3/);
+    assert.match(gemma?.error ?? "", /retries exhausted/);
+    assert.equal((gemma?.error ?? "").includes("provider error"), false);
+    const last = progress.filter((row) => row.agents?.ADVERSARIAL?.state === "FAILED").at(-1);
+    const card = formatAgentCard("Gemma", last?.agents?.ADVERSARIAL ?? { state: "FAILED", attempt: 3, maxAttempts: 3, error: gemma?.error ?? null });
+    assert.equal(card.title, "Gemma");
+    assert.equal(card.status, "FAILED");
+    assert.equal(card.attempts, "attempts 3/3");
+    assert.equal(card.lastError, gemma?.error);
+    const failedCards = progress.filter((row) => row.agents?.ADVERSARIAL?.state === "FAILED");
+    assert.ok(failedCards.length >= 1);
+    assert.equal(out.task.status, "COMPLETE");
+  });
+
+  it("keeps the successful response visible on a partial result", async () => {
+    const out = await runCouncil(
+      baseInput({
+        completeChat: async (opts) => {
+          if (opts.model.includes("claude")) {
+            return { ok: true, completion: { ...completion(opts.model), text: "POSITION\nClaude survived\nRECOMMENDATION\ngo" } };
+          }
+          return {
+            ok: false,
+            error: "500",
+            failure: providerFailure({
+              provider: "openrouter",
+              model: opts.model,
+              stage: opts.model.includes("gpt") ? "LEAD_REASONER round 1" : "ADVERSARIAL round 1",
+              httpStatus: 500,
+              httpClass: "5xx",
+              attempt: 3,
+              maxAttempts: 3,
+              retryExhausted: true,
+            }),
+          };
+        },
+      }),
+    );
+    assert.equal(out.task.status, "FAILED");
+    assert.equal(out.result, null);
+    const claude = out.responses.find((row) => row.agent === "FORMAL_REVIEW" && row.round === 1);
+    assert.equal(claude?.error, null);
+    assert.match(claude?.responseText ?? "", /Claude survived/);
+    assert.equal(out.task.diagnostics?.run?.partial, true);
+    assert.match(out.task.error ?? "", /Only 1 of 2 required models survived/);
+    const failed = out.responses.filter((row) => row.error);
+    assert.ok(failed.every((row) => row.error && !row.error.includes("provider error")));
+    assert.ok(failed.some((row) => /HTTP 500/.test(row.error ?? "") && /class 5xx/.test(row.error ?? "")));
+  });
+
+  it("retry reuses successful round-1 rows and re-verifies only failed models", async () => {
+    const verified: string[][] = [];
+    const asked: string[] = [];
+    const prior = [
+      agentRow("FORMAL_REVIEW", "anthropic/claude-test", { responseText: "POSITION\nClaude kept" }),
+    ];
+    const retry = await runCouncil({
+      ...baseInput({
+        resume: { responses: prior },
+        completeChat: async (opts) => {
+          asked.push(opts.model);
+          if (opts.responseFormat) {
+            return {
+              ok: true,
+              completion: {
+                ...completion(opts.model),
+                text: JSON.stringify({
+                  status: "APPROVED",
+                  consensus: ["ok"],
+                  disagreements: [],
+                  blockers: [],
+                  recommendation: "go",
+                  agent_positions: { gpt: "g", grok: "k", claude: "c" },
+                  decision: "keep",
+                  rationale: "retry",
+                  dissent: [],
+                }),
+              },
+            };
+          }
+          return { ok: true, completion: completion(opts.model) };
+        },
+      }),
+      runtime: {
+        completeChat: async (opts) => {
+          const round2 = opts.messages.some((row) => row.content.includes("YOUR ROUND 1 POSITION"));
+          asked.push(`${opts.responseFormat ? "s" : round2 ? "r2" : "r1"}:${opts.model}`);
+          if (opts.responseFormat) {
+            return {
+              ok: true,
+              completion: {
+                ...completion(opts.model),
+                text: JSON.stringify({
+                  status: "APPROVED",
+                  consensus: ["ok"],
+                  disagreements: [],
+                  blockers: [],
+                  recommendation: "go",
+                  agent_positions: { gpt: "g", grok: "k", claude: "c" },
+                  decision: "keep",
+                  rationale: "retry",
+                  dissent: [],
+                }),
+              },
+            };
+          }
+          return { ok: true, completion: completion(opts.model) };
+        },
+        accessCheck: async ({ models }) => {
+          verified.push(models);
+          return { ok: true, blocked: [] };
+        },
+        yieldFn: async () => undefined,
+      },
+    });
+    assert.deepEqual(verified[0]?.sort(), ["openai/gpt-test", "x-ai/grok-test"].sort());
+    assert.equal(asked.includes("r1:anthropic/claude-test"), false);
+    assert.ok(asked.includes("r1:openai/gpt-test"));
+    assert.ok(asked.includes("r1:x-ai/grok-test"));
+    const kept = retry.responses.find((row) => row.agent === "FORMAL_REVIEW" && row.round === 1);
+    assert.match(kept?.responseText ?? "", /Claude kept/);
+    assert.equal(retry.task.status, "COMPLETE");
+  });
+
+  it("does not hide saved successful responses when retry preflight fails", async () => {
+    let calls = 0;
+    const prior = [agentRow("FORMAL_REVIEW", "anthropic/claude-test", { responseText: "POSITION\nClaude kept" })];
+    const out = await runCouncil({
+      ...baseInput({
+        resume: { responses: prior },
+        completeChat: async (opts) => {
+          calls += 1;
+          return { ok: true, completion: completion(opts.model) };
+        },
+      }),
+      runtime: {
+        completeChat: async (opts) => {
+          calls += 1;
+          return { ok: true, completion: completion(opts.model) };
+        },
+        accessCheck: deniedAccess([{ id: "openai/gpt-test", access: "NOT_INCLUDED" }]),
+        yieldFn: async () => undefined,
+      },
+    });
+    assert.equal(calls, 0);
+    assert.equal(out.task.status, "FAILED");
+    assert.equal(out.task.diagnostics?.run?.partial, true);
+    const kept = out.responses.find((row) => row.agent === "FORMAL_REVIEW");
+    assert.match(kept?.responseText ?? "", /Claude kept/);
   });
 });

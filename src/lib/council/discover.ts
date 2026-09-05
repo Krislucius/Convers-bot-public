@@ -226,6 +226,18 @@ export function parseCatalogBody(payload: unknown): CatalogEntry[] {
   return normalizeCatalogPayload(payload).entries;
 }
 
+export type VerifiedAccess = "VERIFIED_AVAILABLE" | "NOT_INCLUDED" | "UNAVAILABLE" | "UNKNOWN";
+
+export function classifyVerified(probe: ModelProbe): VerifiedAccess {
+  const access = classifyProbe(probe, true);
+  if (access === "AVAILABLE") return "VERIFIED_AVAILABLE";
+  return access;
+}
+
+export function isVerifiedAvailable(access: string | null | undefined): boolean {
+  return access === "VERIFIED_AVAILABLE" || access === "AVAILABLE";
+}
+
 export function classifyProbe(probe: ModelProbe, catalogHas: boolean): ModelAccess {
   if (!catalogHas && (probe.status === 404 || probe.status === 400 || probe.status === 0)) {
     return "UNAVAILABLE";

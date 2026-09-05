@@ -110,3 +110,12 @@ Only ACTIVE rows define current architecture.
 - RATIONALE: Unnormalized catalog objects were treated as empty success, and a failed Test Connection reused previous discovered/available counts as current status.
 - SUPERSEDES: none (tightens ADR-011)
 - AFFECTED_MODULES: council.discovery, ui.settings
+
+## ADR-013
+
+- DECISION: Before a paid Council run, every selected model is probed with a minimal authenticated completion request. Catalog presence and a Settings AVAILABLE scan are not sufficient. Live probe outcomes are VERIFIED_AVAILABLE / NOT_INCLUDED / UNAVAILABLE / UNKNOWN. Council starts only when every selected model is VERIFIED_AVAILABLE. A failed selected-model preflight returns CREATED with `MODEL_UNAVAILABLE` and must not dispatch `completeChat`. Runtime failures keep the exact sanitized reason: provider, model, stage, HTTP status/code, provider error class, attempt, retry exhaustion. The unknown class is `unclassified failure`, never a collapsed "provider error". If fewer than two models survive Round 1 or Round 2, the run is a PARTIAL RESULT: FAILED, successful responses remain visible, synthesis is skipped with an explicit reason, and the UI offers Retry failed models (resume successful round-1 rows and re-verify only failed models), Replace failed models (Settings), and Restart Council (new `run_id`). Retries for one model aggregate under a single agent card: name, FAILED, attempts n/m, last error = that sanitized reason.
+- STATUS: ACTIVE
+- ARCHITECTURE_REVISION: CB-ARCH-20260905-004
+- RATIONALE: Settings probe caps and catalog listings let inaccessible selected models start paid Council runs. Failed runs hid surviving responses and collapsed provider failures into a generic "provider error".
+- SUPERSEDES: none (tightens ADR-010 / ADR-011)
+- AFFECTED_MODULES: council.discovery, council.orchestrator, ui.settings
