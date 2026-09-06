@@ -1,79 +1,91 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useState, type ClipboardEvent } from "react";
+import { createFileRoute } from "@tanstack/react-router";
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
 import { Field, Page, PageHeader, Panel, PrimaryButton, TextInput } from "@/components/council-ui";
 import { ModelCatalogPanel } from "@/components/model-catalog";
 import { OpLogPanel } from "@/components/op-log";
 import { SystemInfoPanel } from "@/components/system-info";
 import { describeKey, keyFingerprint, redact, sanitizeApiKey } from "@/lib/council/api-key";
-import { currentConnectionView, pruneToAvailable } from "@/lib/council/discover";
+import { currentConnectionView } from "@/lib/council/discover";
 import { emptyAccessCounts, formatTestLog } from "@/lib/council/test-log";
 import { assertAvailableSelection, MAX_COUNCIL_MEMBERS, attemptLimit, expectedSuccessfulCalls, membersFromIds } from "@/lib/council/members";
 import { testProvider } from "@/lib/council/openrouter";
 import { PROVIDER_IDS, PROVIDERS, slotFor } from "@/lib/council/providers";
-import { useSession } from "@/lib/council/session";
-import type { DiscoverySnapshot, ProviderId } from "@/lib/council/types";
+import { useSession, type SessionConfig } from "@/lib/council/session";
+import type { ProviderId } from "@/lib/council/types";
 import { billingLabel, type NanoGptBillingMode } from "@/lib/council/nano-billing";
+import {
+  applyDiscovery,
+  attemptIdFromLog,
+  emptyScan,
+  invalidateScan,
+  persistScanFields,
+  runCanonicalScan,
+  shouldApplyAttempt,
+  type ScanAttempt,
+} from "@/lib/council/settings-scan";
 
 export const Route = createFileRoute("/settings")({ component: SettingsPage });
 
+function attemptFromConfig(config: SessionConfig): ScanAttempt {
+  const lastTestOk = config.lastTestOk;
+  return {
+    attemptId: attemptIdFromLog(config.lastTestLog) || "hydrated",
+    status: lastTestOk === true ? "CONNECTED" : lastTestOk === false ? "FAILED" : "IDLE",
+    catalog: config.catalog,
+    selectedIds: config.selectedModelIds,
+    synthesizerModel: config.synthesizerModel,
+    log: config.lastTestLog,
+    error: lastTestOk === false ? "Connection failed." : null,
+    lastTestOk,
+    lastTestAt: config.lastTestAt,
+  };
+}
+
 function SettingsPage() {
   const { config, save, clearKey, setProvider, setNanoGptBilling } = useSession();
-  const navigate = useNavigate();
   const provider = config.provider;
   const meta = PROVIDERS[provider];
   const [apiKey, setApiKey] = useState("");
   const [showKey, setShowKey] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<string[]>(config.selectedModelIds);
-  const [synthesizerModel, setSynthesizerModel] = useState(config.synthesizerModel);
-  const [catalog, setCatalog] = useState<DiscoverySnapshot | null>(config.catalog);
-  const [lastTestOk, setLastTestOk] = useState<boolean | null>(config.lastTestOk);
+  const [scan, setScan] = useState<ScanAttempt>(() => attemptFromConfig(config));
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
-  const [log, setLog] = useState(config.lastTestLog);
+  const scanningRef = useRef(false);
+  const attemptRef = useRef(scan.attemptId);
   const keyHint = useMemo(() => describeKey(apiKey, provider), [apiKey, provider]);
   const savedSlot = slotFor(config, provider);
-  const view = currentConnectionView(lastTestOk, catalog);
+  const view = currentConnectionView(scan.lastTestOk, scan.catalog);
+  const statusLabel = scan.status === "TESTING" ? "TESTING" : view.status;
   const liveCatalog = view.catalog;
-  const members = membersFromIds(selectedIds, liveCatalog?.models ?? []);
+  const members = membersFromIds(scan.selectedIds, liveCatalog?.models ?? scan.catalog?.models ?? []);
   const expected = expectedSuccessfulCalls(members.length || 2);
   const limit = attemptLimit(members.length || 2);
   const selectionError = liveCatalog
-    ? assertAvailableSelection(selectedIds, liveCatalog.models)
-    : "Test Connection before saving Council models. Only AVAILABLE models from the current scan can be saved.";
-  const lastTested = config.lastTestAt
-    ? new Date(config.lastTestAt).toLocaleString()
+    ? assertAvailableSelection(scan.selectedIds, liveCatalog.models)
+    : scan.status === "TESTING"
+      ? null
+      : "Test Connection or Save to discover AVAILABLE models. Only AVAILABLE models from the current scan can join the Council.";
+  const lastTested = scan.lastTestAt
+    ? new Date(scan.lastTestAt).toLocaleString()
     : liveCatalog?.fetchedAt
       ? new Date(liveCatalog.fetchedAt).toLocaleString()
       : "Never";
 
   useEffect(() => {
-    setSelectedIds(config.selectedModelIds);
-    setSynthesizerModel(config.synthesizerModel);
-    setCatalog(config.catalog);
-    setLastTestOk(config.lastTestOk);
-    if (config.lastTestLog) setLog(config.lastTestLog);
+    if (scanningRef.current) return;
+    setScan(attemptFromConfig(config));
+    attemptRef.current = attemptIdFromLog(config.lastTestLog) || "hydrated";
   }, [
     config.provider,
+    config.nanogptBilling,
     config.selectedModelIds,
     config.synthesizerModel,
     config.catalog,
     config.lastTestLog,
     config.lastTestOk,
+    config.lastTestAt,
   ]);
-
-  function creds() {
-    return {
-      provider,
-      apiKey: sanitizeApiKey(apiKey, provider) || (savedSlot.saved ? "" : ""),
-      members,
-      synthesizerModel,
-      maxCostUsd: config.maxCostUsd > 0 ? config.maxCostUsd : 1,
-      selectedModelIds: selectedIds,
-      catalog: liveCatalog,
-      nanogptBilling: config.nanogptBilling,
-    };
-  }
 
   function clientMeta(raw: string, sanitized: string) {
     const hint = describeKey(raw || sanitized, provider);
@@ -127,184 +139,156 @@ function SettingsPage() {
 
   function onSwitch(next: ProviderId) {
     if (next === provider) return;
+    scanningRef.current = false;
     setProvider(next);
     setApiKey("");
     setShowKey(false);
-    setLog("");
     setMsg("");
     setQuery("");
-    setCatalog(null);
-    setLastTestOk(null);
-    setSelectedIds([]);
-    setSynthesizerModel("");
+    setScan(emptyScan());
   }
 
   function onBilling(next: NanoGptBillingMode) {
     if (next === config.nanogptBilling) return;
+    scanningRef.current = false;
     setNanoGptBilling(next);
-    setLog("");
     setMsg("");
     setQuery("");
-    setCatalog(null);
-    setLastTestOk(null);
-    setSelectedIds([]);
-    setSynthesizerModel("");
+    setScan(emptyScan());
   }
 
-  function applyCatalog(next: DiscoverySnapshot, previousIds: string[]) {
-    setCatalog(next);
-    const keep = pruneToAvailable(previousIds, next.models);
-    const pick = keep.length >= 2 ? keep : next.recommendedIds.slice(0, MAX_COUNCIL_MEMBERS);
-    setSelectedIds(pick);
-    setSynthesizerModel((current) => (pick.includes(current) ? current : ""));
-    return pick;
-  }
-
-  async function persistScan(opts: {
-    logText: string;
-    ok: boolean;
-    nextCatalog: DiscoverySnapshot | null;
-    nextIds: string[];
-    synth: string;
-  }) {
-    try {
-      await save({
-        ...creds(),
-        selectedModelIds: opts.nextIds,
-        synthesizerModel: opts.synth,
-        catalog: opts.nextCatalog,
-        lastTestLog: opts.logText,
-        lastTestAt: new Date().toISOString(),
-        lastTestOk: opts.ok,
-      });
-    } catch {
-      /* log is already on screen */
-    }
-  }
-
-  async function failAttempt(reason: string, raw: string, sanitized: string, extra?: Record<string, unknown>) {
-    const logText = extra ? localFailLog(reason, raw, sanitized, extra) : localFailLog(reason, raw, sanitized);
-    setMsg(reason);
-    setLog(logText);
-    setLastTestOk(false);
-    await persistScan({
-      logText,
-      ok: false,
-      nextCatalog: catalog,
-      nextIds: selectedIds,
-      synth: synthesizerModel,
-    });
-    return false;
-  }
-
-  async function runProbe() {
+  async function runCanonicalDiscovery(mode: "save" | "refresh") {
     const raw = apiKey;
-    const body = creds();
-    if (!body.apiKey && !savedSlot.saved) {
-      return failAttempt("Paste your API key first.", raw, "");
+    const sanitized = sanitizeApiKey(apiKey, provider);
+    const previous = scan;
+    if (!sanitized && !savedSlot.saved) {
+      const attemptId = crypto.randomUUID();
+      attemptRef.current = attemptId;
+      const failed = applyDiscovery({
+        attemptId,
+        report: { ok: false, error: "Paste your API key first.", log: localFailLog("Paste your API key first.", raw, "") },
+        previousIds: previous.selectedIds,
+        previousSynth: previous.synthesizerModel,
+        previousCatalog: previous.catalog,
+      });
+      setScan(failed);
+      setMsg("Paste your API key first.");
+      return;
     }
-    if (body.apiKey) {
-      const hint = describeKey(body.apiKey, provider);
-      if (!hint.ok) return failAttempt(hint.text, raw, body.apiKey);
-    }
+    const attemptId = crypto.randomUUID();
+    attemptRef.current = attemptId;
+    scanningRef.current = true;
     setBusy(true);
+    setScan(invalidateScan(previous, attemptId));
     setMsg("Discovering models and checking account access…");
+    const persistBase = {
+      provider,
+      apiKey: sanitized,
+      members: membersFromIds(previous.selectedIds, previous.catalog?.models ?? []),
+      synthesizerModel: previous.synthesizerModel,
+      maxCostUsd: config.maxCostUsd > 0 ? config.maxCostUsd : 1,
+      selectedModelIds: previous.selectedIds,
+      nanogptBilling: config.nanogptBilling,
+    };
     try {
-      const report = await testProvider(body);
-      const logText = mergeLog(report.log, raw, body.apiKey);
-      setLog(logText);
-      if (report.ok && report.catalog) {
-        const nextIds = applyCatalog(report.catalog, selectedIds);
-        setLastTestOk(true);
-        setMsg(
-          `CONNECTED. ${currentConnectionView(true, report.catalog).available} AVAILABLE · ${report.catalog.recommendedIds.length} recommended.`,
-        );
-        await persistScan({
-          logText,
-          ok: true,
-          nextCatalog: report.catalog,
-          nextIds,
-          synth: nextIds.includes(synthesizerModel) ? synthesizerModel : "",
-        });
-        return true;
-      }
-      setLastTestOk(false);
-      setMsg(report.error || "Connection failed.");
-      await persistScan({
-        logText,
-        ok: false,
-        nextCatalog: catalog,
-        nextIds: selectedIds,
-        synth: synthesizerModel,
+      const out = await runCanonicalScan({
+        mode,
+        previous,
+        persistConfig:
+          mode === "save"
+            ? async () => {
+                await save({
+                  ...persistBase,
+                  lastTestOk: null,
+                  lastTestLog: "",
+                });
+              }
+            : undefined,
+        discover: async () => {
+          const report = await testProvider(persistBase);
+          return {
+            ok: report.ok,
+            error: report.error,
+            catalog: report.catalog ?? null,
+            log: mergeLog(report.log, raw, sanitized),
+          };
+        },
+        newId: () => attemptId,
+        onInvalidate: (testing) => {
+          if (shouldApplyAttempt(attemptRef.current, testing.attemptId)) setScan(testing);
+        },
       });
-      return false;
-    } catch (err) {
-      const text = err instanceof Error ? err.message : "Connection failed.";
-      await failAttempt(text, raw, body.apiKey, {
-        client_exception: err instanceof Error ? err.message : String(err),
-      });
-      return false;
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onSave() {
-    if (selectionError) {
-      setMsg(selectionError);
-      if (!log) setLog(localFailLog(selectionError, apiKey, sanitizeApiKey(apiKey, provider)));
-      return;
-    }
-    const raw = apiKey;
-    const body = creds();
-    if (!body.apiKey && !savedSlot.saved) {
-      await failAttempt("Paste your API key first.", raw, "");
-      return;
-    }
-    let tested = lastTestOk === true && Boolean(liveCatalog);
-    if (body.apiKey || !tested) {
-      tested = await runProbe();
-    }
-    if (!tested) return;
-    setBusy(true);
-    try {
+      if (!shouldApplyAttempt(attemptRef.current, out.attemptId)) return;
+      setScan(out.result);
+      const live = currentConnectionView(out.result.lastTestOk, out.result.catalog);
+      setMsg(
+        out.result.status === "CONNECTED"
+          ? `CONNECTED. ${live.available} AVAILABLE · ${out.result.catalog?.recommendedIds.length ?? 0} recommended.`
+          : out.result.error || "Connection failed.",
+      );
       await save({
-        ...creds(),
-        lastTestLog: log,
-        lastTestAt: config.lastTestAt ?? new Date().toISOString(),
-        lastTestOk: true,
+        ...persistBase,
+        members: membersFromIds(out.result.selectedIds, out.result.catalog?.models ?? []),
+        ...persistScanFields(out.result),
       });
-      setApiKey("");
+      if (mode === "save" && sanitized) setApiKey("");
     } catch (err) {
-      setMsg(err instanceof Error ? err.message : "Could not save to this account.");
-      setBusy(false);
-      return;
+      if (!shouldApplyAttempt(attemptRef.current, attemptId)) return;
+      const text = err instanceof Error ? err.message : "Connection failed.";
+      const failed = applyDiscovery({
+        attemptId,
+        report: {
+          ok: false,
+          error: text,
+          log: localFailLog(text, raw, sanitized, { client_exception: text }),
+        },
+        previousIds: previous.selectedIds,
+        previousSynth: previous.synthesizerModel,
+        previousCatalog: previous.catalog,
+      });
+      setScan(failed);
+      setMsg(text);
+      try {
+        await save({ ...persistBase, ...persistScanFields(failed) });
+      } catch {
+        /* on-screen state is already FAILED for this attempt */
+      }
+    } finally {
+      if (shouldApplyAttempt(attemptRef.current, attemptId)) {
+        scanningRef.current = false;
+        setBusy(false);
+      }
     }
-    setBusy(false);
-    setMsg(`${meta.name} is saved on this account.`);
-    void navigate({ to: "/" });
   }
 
   async function onClear() {
     try {
+      scanningRef.current = false;
       await clearKey();
       setApiKey("");
+      setScan(emptyScan());
       setMsg(`${meta.name} key removed from this account.`);
     } catch (err) {
       setMsg(err instanceof Error ? err.message : "Could not clear the key.");
     }
   }
 
-  const logResult = /\n {2}"result": "PASS"/.test(log) || log.includes('"result": "PASS"') ? "PASS" : log ? "FAIL" : "";
-  const statusOk = view.status === "CONNECTED" ? true : view.status === "FAILED" ? false : undefined;
+  const logResult =
+    /\n {2}"result": "PASS"/.test(scan.log) || scan.log.includes('"result": "PASS"')
+      ? "PASS"
+      : scan.log
+        ? "FAIL"
+        : "";
+  const statusOk = statusLabel === "CONNECTED" ? true : statusLabel === "FAILED" ? false : undefined;
 
   return (
     <Page>
       <PageHeader title="API Settings">
         <p className="max-w-measure text-muted">
           NanoGPT and OpenRouter are API providers, not Council members. Test Connection discovers models this key can
-          actually call. NanoGPT Subscription and Pay-as-you-go are separate APIs — Council never mixes them. Only
-          AVAILABLE models from the current billing catalog can join the Council.
+          actually call. Save persists the key, then runs that same discovery. NanoGPT Subscription and Pay-as-you-go
+          are separate APIs — Council never mixes them. Only AVAILABLE models from the current billing catalog can join
+          the Council.
         </p>
       </PageHeader>
 
@@ -313,7 +297,7 @@ function SettingsPage() {
           className="grid gap-4"
           onSubmit={(e) => {
             e.preventDefault();
-            void onSave();
+            void runCanonicalDiscovery("save");
           }}
         >
           <fieldset className="grid gap-2">
@@ -413,16 +397,16 @@ function SettingsPage() {
             . {meta.help} Switching provider clears the previous scan and never mixes providers inside one Council run.
           </p>
           <div className="flex flex-wrap gap-3">
-            <PrimaryButton type="button" disabled={busy} onClick={() => void runProbe()}>
-              {catalog ? "Refresh models" : "Test Connection"}
+            <PrimaryButton type="button" disabled={busy} onClick={() => void runCanonicalDiscovery("refresh")}>
+              {scan.catalog ? "Refresh models" : "Test Connection"}
             </PrimaryButton>
-            <PrimaryButton type="submit" disabled={busy || Boolean(selectionError)}>
+            <PrimaryButton type="submit" disabled={busy}>
               Save
             </PrimaryButton>
             <button
               type="button"
               className="min-h-11 rounded-sm border border-danger bg-transparent px-3.5 py-2.5 font-semibold text-danger"
-              onClick={onClear}
+              onClick={() => void onClear()}
             >
               Clear Key
             </button>
@@ -438,17 +422,14 @@ function SettingsPage() {
           {provider === "nanogpt" ? (
             <StatusRow label="Billing" value={billingLabel(config.nanogptBilling)} />
           ) : null}
-          <StatusRow label="Status" value={view.status} ok={statusOk} />
+          <StatusRow label="Status" value={statusLabel} ok={statusOk} />
           <StatusRow label="Last tested" value={lastTested} />
           {provider === "nanogpt" && config.nanogptBilling === "subscription" ? (
             <StatusRow label="Subscription models" value={String(view.discovered)} />
           ) : (
             <StatusRow label="Models discovered" value={String(view.discovered)} />
           )}
-          <StatusRow
-            label="Selected Council"
-            value={String(selectedIds.length)}
-          />
+          <StatusRow label="Selected Council" value={String(scan.selectedIds.length)} />
           <StatusRow label="Models available" value={String(view.available)} />
         </dl>
         {view.stale ? (
@@ -464,25 +445,28 @@ function SettingsPage() {
         <ModelCatalogPanel
           catalog={liveCatalog ?? view.stale}
           stale={Boolean(view.stale)}
-          selectedIds={selectedIds}
-          synthesizerModel={synthesizerModel}
+          selectedIds={scan.selectedIds}
+          synthesizerModel={scan.synthesizerModel}
           query={query}
           onQuery={setQuery}
           onToggle={(id) => {
             if (view.stale) return;
             const row = liveCatalog?.models.find((item) => item.id === id);
             if (row && row.access !== "AVAILABLE") return;
-            setSelectedIds((prev) => {
-              if (prev.includes(id)) {
-                const next = prev.filter((item) => item !== id);
-                if (synthesizerModel === id) setSynthesizerModel("");
-                return next;
-              }
-              if (prev.length >= MAX_COUNCIL_MEMBERS) return prev;
-              return [...prev, id];
+            setScan((prev) => {
+              const selectedIds = prev.selectedIds.includes(id)
+                ? prev.selectedIds.filter((item) => item !== id)
+                : prev.selectedIds.length >= MAX_COUNCIL_MEMBERS
+                  ? prev.selectedIds
+                  : [...prev.selectedIds, id];
+              return {
+                ...prev,
+                selectedIds,
+                synthesizerModel: selectedIds.includes(prev.synthesizerModel) ? prev.synthesizerModel : "",
+              };
             });
           }}
-          onSynthesizer={setSynthesizerModel}
+          onSynthesizer={(id) => setScan((prev) => ({ ...prev, synthesizerModel: id }))}
         />
       </Panel>
 
@@ -498,8 +482,8 @@ function SettingsPage() {
             disabled={!liveCatalog?.recommendedIds.length}
             onClick={() => {
               if (!liveCatalog) return;
-              setSelectedIds(liveCatalog.recommendedIds.slice(0, MAX_COUNCIL_MEMBERS));
-              setSynthesizerModel("");
+              const selectedIds = liveCatalog.recommendedIds.slice(0, MAX_COUNCIL_MEMBERS);
+              setScan((prev) => ({ ...prev, selectedIds, synthesizerModel: "" }));
             }}
           >
             Accept recommended
@@ -528,7 +512,7 @@ function SettingsPage() {
       <OpLogPanel
         title={logResult ? `Test log · ${logResult}` : "Test log"}
         hint="Copy log works for PASS and FAIL. The API secret is never included. The latest log is kept after reload."
-        value={log}
+        value={scan.log}
         empty="Run Test Connection to capture a detailed log."
       />
       <SystemInfoPanel />

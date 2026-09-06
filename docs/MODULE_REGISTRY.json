@@ -1,5 +1,5 @@
 {
-  "architecture_revision": "CB-ARCH-20260906-001",
+  "architecture_revision": "CB-ARCH-20260906-002",
   "modules": [
     {
       "module_id": "app.shell",
@@ -156,7 +156,7 @@
       "module_id": "council.discovery",
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/discover.ts",
-      "architecture_revision": "CB-ARCH-20260906-001",
+      "architecture_revision": "CB-ARCH-20260906-002",
       "responsibilities": [
         "provider catalog normalize (direct array or OpenAI data[])",
         "CATALOG_PARSE_ERROR for unsupported shapes",
@@ -167,6 +167,7 @@
         "NanoGPT subscription catalog vs PAYG catalog isolation",
         "provider names are not models",
         "atomic Test Connection current vs STALE",
+        "canonical Save/Refresh scan apply with attempt_id",
         "sanitized persisted test log"
       ],
       "dependencies": ["council.providers"],
@@ -221,8 +222,8 @@
       "module_id": "ui.settings",
       "status": "ACTIVE",
       "implementation_path": "src/routes/settings.tsx",
-      "architecture_revision": "CB-ARCH-20260905-003",
-      "responsibilities": ["provider keys", "AVAILABLE model checkboxes", "Council recommendation", "current vs STALE catalog", "persisted test log", "system identity"],
+      "architecture_revision": "CB-ARCH-20260906-002",
+      "responsibilities": ["provider keys", "Save and Refresh share one discovery", "AVAILABLE model checkboxes", "Council recommendation", "current vs STALE catalog", "persisted test log", "system identity"],
       "dependencies": ["council.providers", "architecture.lock"],
       "supersedes": []
     },

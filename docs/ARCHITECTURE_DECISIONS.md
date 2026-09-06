@@ -128,3 +128,12 @@ Only ACTIVE rows define current architecture.
 - RATIONALE: NanoGPT subscription and PAYG are separate APIs. Routing Council through generic `/api/v1` billed PAYG when the user selected Subscription.
 - SUPERSEDES: none (tightens ADR-009 / ADR-013)
 - AFFECTED_MODULES: council.providers, council.discovery, council.orchestrator, account.persistence, ui.settings
+
+## ADR-015
+
+- DECISION: API Settings Save and Refresh models use one canonical discovery function. Save persists provider, billing mode, and API key, invalidates the current attempt (TESTING), then runs that discovery. Refresh runs the same discovery. The attempt’s Status, model counts, selected Council, error, and Test Log share one `attempt_id` and are written atomically. Council selection is kept only when every selected model remains AVAILABLE in the new scan; otherwise invalid ids are dropped. Save must not keep a second discovery path and must not restore a previous FAILED scan after a PASS.
+- STATUS: ACTIVE
+- ARCHITECTURE_REVISION: CB-ARCH-20260906-002
+- RATIONALE: Save after a successful Refresh restored a stale FAILED discovery state because Save had separate persist/discovery logic and a stale closure overwrite.
+- SUPERSEDES: none (tightens ADR-012)
+- AFFECTED_MODULES: ui.settings, council.discovery, account.persistence
