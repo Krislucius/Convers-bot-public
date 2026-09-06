@@ -2,9 +2,9 @@ import { getSql } from "@/lib/db";
 import { runSerialQueries } from "./hydrate";
 import { maskKey, mergeStoredApiKeys, sanitizeApiKey } from "./api-key";
 import { DEFAULT_MAX_COST_USD, DEFAULT_PROVIDER, isProviderId, normalizeProviderId } from "./providers";
-import { membersFromIds } from "./members";
+import { membersFromIds, ensureMembers } from "./members";
 import { pruneToAvailable } from "./discover";
-import { normalizeAgentKey } from "./roles";
+import { isCouncilRole, normalizeAgentKey } from "./roles";
 import type { DiscoverySnapshot } from "./discover";
 import type { CouncilMember } from "./members";
 import type { AgentResponse, AccountSettingsPublic, Artifact, ContextItem, ContextManifest, CouncilResult, ImplementationPacket, Project, ProjectFile, StoreShape, Task } from "./types";
@@ -84,15 +84,17 @@ function asMembers(value: unknown): CouncilMember[] | null {
       const rec = row as Record<string, unknown>;
       const modelId = String(rec.modelId ?? rec.model_id ?? "").trim();
       if (!modelId) return null;
+      const roleRaw = String(rec.role ?? "");
       return {
-        role: normalizeAgentKey(String(rec.role ?? "")),
+        memberId: String(rec.memberId ?? rec.member_id ?? "").trim(),
+        role: isCouncilRole(roleRaw) ? roleRaw : normalizeAgentKey(roleRaw),
         modelId,
         label: String(rec.label ?? modelId),
         family: String(rec.family ?? ""),
-      } satisfies CouncilMember;
+      };
     })
-    .filter((row): row is CouncilMember => Boolean(row));
-  return rows.length ? rows : null;
+    .filter((row): row is NonNullable<typeof row> => Boolean(row));
+  return rows.length ? ensureMembers(rows) : null;
 }
 
 function selectedIdsFromRow(row: SettingsRow | null): string[] {
@@ -320,12 +322,28 @@ function mapResponse(row: Record<string, unknown>): AgentResponse {
     structured == null
       ? null
       : Object.fromEntries(Object.entries(structured).filter(([key]) => key !== "__runId"));
+  const round = (asNum(row.round) ?? 1) as 1 | 2 | 3;
+  const stageRaw = asString(row.stage);
+  const stage =
+    stageRaw === "SYNTHESIS" || stageRaw === "ROUND_2" || stageRaw === "ROUND_1"
+      ? stageRaw
+      : round === 3
+        ? "SYNTHESIS"
+        : round === 2
+          ? "ROUND_2"
+          : "ROUND_1";
+  const agent = asString(row.member_id) || asString(row.agent);
+  const roleRaw = asString(row.role) || asString(row.agent);
   return {
     id: asString(row.id),
     taskId: asString(row.task_id),
-    agent: normalizeAgentKey(asString(row.agent)),
-    round: (asNum(row.round) ?? 1) as 1 | 2 | 3,
+    memberId: agent,
+    agent,
+    role: isCouncilRole(roleRaw) ? roleRaw : normalizeAgentKey(roleRaw),
+    round,
+    stage,
     model: asString(row.model),
+    dispatchedModelId: asString(row.dispatched_model_id) || asString(row.model),
     provider: row.provider == null ? null : asString(row.provider),
     promptSnapshot: asString(row.prompt_snapshot),
     responseText: asString(row.response_text),
@@ -337,6 +355,7 @@ function mapResponse(row: Record<string, unknown>): AgentResponse {
     cost: asNum(row.cost),
     requestId: row.request_id == null ? null : asString(row.request_id),
     latencyMs: asNum(row.latency_ms),
+    attempt: asNum(row.attempt),
     error: row.error == null ? null : asString(row.error),
     contextManifestId: row.context_manifest_id == null ? null : asString(row.context_manifest_id),
     contextHash: row.context_hash == null ? null : asString(row.context_hash),
@@ -634,17 +653,23 @@ async function insertResponseRow(userId: string, row: AgentResponse) {
     insert into agent_responses (
       id, user_id, task_id, agent, round, model, provider, prompt_snapshot, response_text, structured,
       input_tokens, cached_input_tokens, output_tokens, reasoning_tokens, cost, request_id, latency_ms, error,
-      context_manifest_id, context_hash
+      context_manifest_id, context_hash, member_id, role, stage, attempt, dispatched_model_id
     ) values (
       ${row.id}, ${userId}, ${row.taskId}, ${row.agent}, ${row.round}, ${row.model}, ${row.provider},
       ${row.promptSnapshot}, ${row.responseText}, ${jsonParam(row.structured)}::jsonb,
       ${row.inputTokens}, ${row.cachedInputTokens}, ${row.outputTokens}, ${row.reasoningTokens},
       ${row.cost}, ${row.requestId}, ${row.latencyMs}, ${row.error},
-      ${row.contextManifestId}, ${row.contextHash}
+      ${row.contextManifestId}, ${row.contextHash}, ${row.memberId || row.agent}, ${row.role}, ${row.stage},
+      ${row.attempt}, ${row.dispatchedModelId || row.model}
     )
     on conflict (id) do update set
       response_text = excluded.response_text,
-      error = excluded.error
+      error = excluded.error,
+      member_id = excluded.member_id,
+      role = excluded.role,
+      stage = excluded.stage,
+      attempt = excluded.attempt,
+      dispatched_model_id = excluded.dispatched_model_id
     where agent_responses.user_id = ${userId}
   `;
 }

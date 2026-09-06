@@ -9,11 +9,11 @@ import { Crumb, DangerButton, GhostButton, Page, PageHeader, Panel, PrimaryButto
 import { ImplementationPacketPanel } from "@/components/implementation-packet-panel";
 import { OpLogPanel } from "@/components/op-log";
 import { displayVerdict } from "@/lib/council/evaluate";
-import { councilPartial } from "@/lib/council/agents";
+import { councilPartial, isSynthesisResponse, responseMemberId } from "@/lib/council/agents";
 import { runCouncil, isStaleDisconnectError, runCredsFromReady } from "@/lib/council/orchestrate";
 import { providerName } from "@/lib/council/providers";
 import { billingLabel } from "@/lib/council/nano-billing";
-import { attemptLimit, expectedSuccessfulCalls, memberLabel } from "@/lib/council/members";
+import { attemptLimit, expectedSuccessfulCalls, findMember, memberLabel } from "@/lib/council/members";
 import {
   applyCouncilOutput,
   getStoreSnapshot,
@@ -56,6 +56,22 @@ function ListBlock({ title, rows }: { title: string; rows: string[] }) {
       )}
     </>
   );
+}
+
+function positionForMember(
+  positions: Record<string, string>,
+  memberId: string,
+  members: Array<{ memberId: string; role: string }>,
+): string {
+  const direct = positions[memberId] || positions[memberId.toLowerCase()];
+  if (direct) return direct;
+  const member = members.find((row) => row.memberId === memberId);
+  if (!member) return "—";
+  const sameRole = members.filter((row) => row.role === member.role);
+  if (sameRole.length === 1) {
+    return positions[member.role] || positions[member.role.toLowerCase()] || "—";
+  }
+  return "—";
 }
 
 function TaskPage() {
@@ -118,9 +134,9 @@ function TaskPage() {
   const persistedStage = task.diagnostics?.run?.stage ?? stage;
   const persistedAgents = task.diagnostics?.run?.agents ?? agentState;
   const members = task.selectedModels?.length ? task.selectedModels : config.members;
-  const agentList: Array<[AgentKey, string]> = members.map((row) => [row.role, memberLabel(row)]);
+  const agentList: Array<[AgentKey, string]> = members.map((row) => [row.memberId, memberLabel(row)]);
   const waitingAgents = Object.fromEntries(
-    members.map((row) => [row.role, { state: "WAITING" as const, attempt: 0, maxAttempts: 3, error: null }]),
+    members.map((row) => [row.memberId, { state: "WAITING" as const, attempt: 0, maxAttempts: 3, error: null }]),
   ) as Partial<Record<AgentKey, AgentProgress>>;
   const callLimit = attemptLimit(members.length || 3);
   const callExpected = expectedSuccessfulCalls(members.length || 3);
@@ -260,7 +276,7 @@ function TaskPage() {
       const text =
         err instanceof Error
           ? err.message
-          : "Council stopped during request: unclassified failure.";
+          : "Council stopped during request: PROVIDER_ERROR.";
       if (handle.signal.aborted) {
         markTaskCancelled(currentTask.id, "Council run stopped.");
         setMsg("Council run stopped.");
@@ -307,11 +323,12 @@ function TaskPage() {
     void onRun(undefined, { force: true, resume: { responses: keep } });
   }
 
-  const synth = responses.find((r) => r.round === 3);
+  const synth = responses.find((r) => isSynthesisResponse(r) && !r.error);
   const canRun = STARTABLE.has(task.status);
   const hashMatch = responses.length === 0 || responses.every((row) => row.contextHash === responses[0]?.contextHash);
-  const round1Rows = responses.filter((row) => row.round === 1);
-  const partialInfo = councilPartial(round1Rows.length ? round1Rows : responses.filter((row) => row.round !== 3));
+  const round1Rows = responses.filter((row) => row.stage === "ROUND_1" || row.round === 1);
+  const workRows = responses.filter((row) => !isSynthesisResponse(row));
+  const partialInfo = councilPartial(round1Rows.length ? round1Rows : workRows);
   const showPartial =
     !isRunning &&
     task.status === "FAILED" &&
@@ -443,19 +460,30 @@ function TaskPage() {
             ))}
           </ul>
           <div className="mt-4 grid gap-3">
-            {partialInfo.survivors
-              .filter((row) => row.round === 1)
+            {workRows
+              .filter((row) => !row.error)
               .map((row) => {
-                const member = members.find((item) => item.role === row.agent);
+                const member = findMember(members, row);
                 return (
                   <div key={row.id} className="rounded-md border border-line bg-subtle px-3 py-3">
                     <p className="m-0 mb-2 text-xs font-semibold tracking-widest text-muted uppercase">
-                      {member ? memberLabel(member) : row.agent} · recorded
+                      {member ? memberLabel(member) : row.role || responseMemberId(row)} ·{" "}
+                      {row.stage === "ROUND_2" ? "cross-review" : "position"}
                     </p>
                     <CollapsibleText text={row.responseText} defaultCollapsed />
                   </div>
                 );
               })}
+            {responses
+              .filter((row) => isSynthesisResponse(row) && row.error)
+              .map((row) => (
+                <div key={row.id} className="rounded-md border border-line bg-subtle px-3 py-3">
+                  <p className="m-0 mb-2 text-xs font-semibold tracking-widest text-muted uppercase">
+                    Synthesis failure · {row.role || responseMemberId(row)}
+                  </p>
+                  <p className="m-0 text-sm break-words text-danger">{row.error}</p>
+                </div>
+              ))}
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
             <PrimaryButton type="button" disabled={busy} onClick={onRetryFailed}>
@@ -556,7 +584,7 @@ function TaskPage() {
                     <dt className="text-xs tracking-wider text-faint uppercase">{label}</dt>
                     <dd className="m-0">
                       <CollapsibleText
-                        text={result.agentPositions[key] || result.agentPositions[key.toLowerCase()] || "—"}
+                        text={positionForMember(result.agentPositions, key, members)}
                         defaultCollapsed
                       />
                     </dd>
@@ -577,8 +605,12 @@ function TaskPage() {
       {responses.length || result ? (
       <div className="grid gap-2">
         {agentList.map(([key, heading]) => {
-          const r1 = responses.find((r) => r.agent === key && r.round === 1);
-          const r2 = responses.find((r) => r.agent === key && r.round === 2);
+          const r1 = responses.find(
+            (r) => responseMemberId(r) === key && (r.stage === "ROUND_1" || r.round === 1) && !isSynthesisResponse(r),
+          );
+          const r2 = responses.find(
+            (r) => responseMemberId(r) === key && (r.stage === "ROUND_2" || r.round === 2) && !isSynthesisResponse(r),
+          );
           const recorded = Boolean(r1 || r2);
           return (
             <CouncilFold key={key} title={heading} summary={recorded ? "recorded" : "not run yet"}>
@@ -646,7 +678,7 @@ function TaskPage() {
             {responses
               .map(
                 (row) =>
-                  `${row.agent} r${row.round} · ${row.model} · in=${row.inputTokens} out=${row.outputTokens} cost=${row.cost} latency=${row.latencyMs} hash=${row.contextHash ?? "—"}`,
+                  `${responseMemberId(row)} ${row.role} ${row.stage} attempt ${row.attempt ?? "—"} · dispatched=${row.dispatchedModelId || row.model} · in=${row.inputTokens} out=${row.outputTokens} cost=${row.cost} latency=${row.latencyMs} hash=${row.contextHash ?? "—"}`,
               )
               .join("\n") || "Not available."}
           </pre>
@@ -660,7 +692,7 @@ function TaskPage() {
             {priorResponses
               .map(
                 (row) =>
-                  `${row.runId?.slice(0, 8) ?? "legacy"} · ${row.agent} r${row.round} · ${row.error ? "failed" : "kept"}`,
+                  `${row.runId?.slice(0, 8) ?? "legacy"} · ${responseMemberId(row)} ${row.stage} · ${row.error ? "failed" : "kept"}`,
               )
               .join("\n")}
           </pre>

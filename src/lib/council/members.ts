@@ -3,6 +3,7 @@ import {
   COUNCIL_ROLES,
   DEFAULT_ROLES,
   ROLE_LABEL,
+  isCouncilRole,
   type CouncilRole,
 } from "./roles.ts";
 
@@ -10,11 +11,32 @@ export const MIN_COUNCIL_MEMBERS = 2;
 export const MAX_COUNCIL_MEMBERS = 5;
 
 export type CouncilMember = {
+  memberId: string;
   role: CouncilRole;
   modelId: string;
   label: string;
   family: string;
 };
+
+export type MemberDraft = {
+  memberId?: string;
+  role?: CouncilRole | string;
+  modelId: string;
+  label?: string;
+  family?: string;
+};
+
+export function newMemberId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `m_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  }
+  return `m_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export function stableMemberId(modelId: string, index: number): string {
+  const slug = modelId.replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40);
+  return `legacy_${index}_${slug || "member"}`;
+}
 
 export function clampMemberCount(n: number): number {
   if (!Number.isFinite(n) || n < MIN_COUNCIL_MEMBERS) return MIN_COUNCIL_MEMBERS;
@@ -52,6 +74,37 @@ export function assertAvailableSelection(ids: string[], models: DiscoveredModel[
   return null;
 }
 
+function roleForIndex(index: number, preferred?: string): CouncilRole {
+  if (isCouncilRole(preferred)) return preferred;
+  return COUNCIL_ROLES[index % COUNCIL_ROLES.length] ?? "ALTERNATIVE_REASONER";
+}
+
+/** Identity is memberId. Roles may repeat. Duplicate model ids are still dropped. */
+export function ensureMembers(rows: MemberDraft[]): CouncilMember[] {
+  const unique: MemberDraft[] = [];
+  const seenModels = new Set<string>();
+  for (const row of rows) {
+    const modelId = String(row.modelId ?? "").trim();
+    if (!modelId || seenModels.has(modelId)) continue;
+    seenModels.add(modelId);
+    unique.push({ ...row, modelId });
+    if (unique.length === MAX_COUNCIL_MEMBERS) break;
+  }
+  const used = new Set<string>();
+  return unique.map((row, index) => {
+    let memberId = String(row.memberId ?? "").trim() || stableMemberId(row.modelId, index);
+    while (used.has(memberId)) memberId = newMemberId();
+    used.add(memberId);
+    return {
+      memberId,
+      role: roleForIndex(index, row.role),
+      modelId: row.modelId,
+      label: String(row.label ?? "").trim() || row.modelId,
+      family: String(row.family ?? "").trim() || familyOf(row.modelId),
+    };
+  });
+}
+
 export function assignRoles(
   models: Array<{ id: string; name?: string; family?: string; score?: number; reasoning?: boolean }>,
 ): CouncilMember[] {
@@ -83,7 +136,7 @@ export function assignRoles(
   }
   const restRoles = COUNCIL_ROLES.filter((role) => !picked.some((row) => row.role === role));
   while (remaining.length && picked.length < unique.length) {
-    const role = restRoles[picked.length] ?? restRoles[restRoles.length - 1];
+    const role = restRoles[picked.length] ?? restRoles[restRoles.length - 1] ?? "ALTERNATIVE_REASONER";
     const next =
       role === "RESEARCH"
         ? take((row) => familyOf(row.id, row.family) === "perplexity" || familyOf(row.id, row.family) === "kimi")
@@ -93,12 +146,14 @@ export function assignRoles(
     if (!next) break;
     picked.push({ role, model: next });
   }
-  return picked.slice(0, unique.length).map((row) => ({
-    role: row.role,
-    modelId: row.model.id,
-    label: row.model.name?.trim() || row.model.id,
-    family: row.model.family || familyOf(row.model.id),
-  }));
+  return ensureMembers(
+    picked.slice(0, unique.length).map((row) => ({
+      role: row.role,
+      modelId: row.model.id,
+      label: row.model.name?.trim() || row.model.id,
+      family: row.model.family || familyOf(row.model.id),
+    })),
+  );
 }
 
 export function membersFromIds(
@@ -128,7 +183,7 @@ export function membersFromLegacy(gpt: string, grok: string, claude: string): Co
 }
 
 export function coerceMembers(input: {
-  members?: CouncilMember[] | null;
+  members?: MemberDraft[] | null;
   selectedIds?: string[] | null;
   selectedModelIds?: string[] | null;
   gptModel?: string;
@@ -138,10 +193,13 @@ export function coerceMembers(input: {
 }): CouncilMember[] {
   const catalog = input.catalog ?? [];
   if (input.members && input.members.length) {
-    const ids = catalog.length
-      ? pruneToAvailable(input.members.map((row) => row.modelId), catalog)
-      : input.members.map((row) => row.modelId);
-    if (ids.length) return membersFromIds(ids, catalog);
+    const allowed = new Set(
+      catalog.length
+        ? pruneToAvailable(input.members.map((row) => row.modelId), catalog)
+        : input.members.map((row) => row.modelId),
+    );
+    const kept = input.members.filter((row) => allowed.has(row.modelId.trim()));
+    if (kept.length) return ensureMembers(kept);
   }
   const ids = (input.selectedIds ?? input.selectedModelIds ?? []).map((id) => id.trim()).filter(Boolean);
   if (ids.length) return membersFromIds(ids, catalog);
@@ -154,6 +212,30 @@ export function memberLabel(member: CouncilMember): string {
 
 export function defaultRoleSet(count: number): CouncilRole[] {
   return COUNCIL_ROLES.slice(0, clampMemberCount(count));
+}
+
+export function findMember(
+  members: CouncilMember[],
+  row: { memberId?: string | null; agent?: string | null; model?: string | null },
+): CouncilMember | undefined {
+  const memberId = String(row.memberId ?? "").trim();
+  if (memberId) {
+    const hit = members.find((item) => item.memberId === memberId);
+    if (hit) return hit;
+  }
+  const agent = String(row.agent ?? "").trim();
+  if (agent) {
+    const byId = members.find((item) => item.memberId === agent);
+    if (byId) return byId;
+    const byRole = members.filter((item) => item.role === agent);
+    if (byRole.length === 1) return byRole[0];
+  }
+  const model = String(row.model ?? "").trim();
+  if (model) {
+    const byModel = members.filter((item) => item.modelId === model);
+    if (byModel.length === 1) return byModel[0];
+  }
+  return undefined;
 }
 
 export { DEFAULT_ROLES };

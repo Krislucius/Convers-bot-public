@@ -1,6 +1,6 @@
 # Conversation Bot architecture
 
-Current revision: **CB-ARCH-20260906-003**
+Current revision: **CB-ARCH-20260906-004**
 
 This document describes the system that is running now. Obsolete trees are listed only under History.
 
@@ -43,7 +43,7 @@ Selected chats and files
 → task-independent evidence extraction (cached by source hash + chunker + extractor)
 → evidence ledger (non-canonical)
 → task-aware ranked packer (6 000 token Council budget)
-→ Council Round 1 / Round 2 / synthesis
+→ Council Round 1 / Round 2 / synthesis (separate stage, not a third council round)
 ```
 
 Closed loop:
@@ -71,6 +71,7 @@ Applied migrations (basename order):
 8. `0008_dynamic_council.sql` — `account_settings.selected_model_ids`, `synthesizer_model`, `model_catalog`; `tasks.selected_models`
 9. `0009_provider_scan.sql` — `account_settings.last_test_log`, `last_test_at`, `last_test_ok`
 10. `0010_nanogpt_billing.sql` — `account_settings.nanogpt_billing_mode`, `tasks.nanogpt_billing_mode`
+11. `0011_council_member_identity.sql` — `agent_responses.member_id`, `role`, `stage`, `attempt`, `dispatched_model_id`
 
 `migrations/auth/` is a template copy. Appliers do not descend into subdirectories.
 
@@ -92,7 +93,7 @@ Settings UI writes `account_settings`. Council server functions resolve the stor
 
 ## Council workflow
 
-Modes: CREATE, REVIEW, DECIDE. Preflight lives in `council.task-mode`. Execution lives only in `src/lib/council/orchestrate.ts` (`runCouncil`). Membership is 2–5 user-selected models discovered from the connected provider. Roles (LEAD_REASONER, ADVERSARIAL, FORMAL_REVIEW, RESEARCH, ALTERNATIVE_REASONER) are guidance, not vendor identities. Round 1 is independent. Round 2 is cross-examination. Synthesis is structured JSON from a selected surviving model (user override allowed, still must be selected). CREATE writes an artifact. REVIEW returns PASS / PATCH / BLOCKED and must not silently replace a candidate. DECIDE returns decision, alternatives, rationale, evidence, and risks. Unresolved DECIDE disagreement or CONFLICTED evidence becomes `USER_DECISION_REQUIRED`. Two of N models may complete a run; fewer than two survivors is a PARTIAL RESULT: the task is FAILED, successful responses stay visible, synthesis is skipped with an explicit reason, and the UI offers Retry failed models, Replace failed models, and Restart Council. Each agent is one card (name, status, attempts n/m, last error). Catalog/access preflight blocks unverified models before paid dispatch. Selected members are marked RUNNING as Round 1 starts. Stop aborts in-flight provider waits and marks `CANCELLED` with partial responses. Restart creates a new `run_id`, preserves the previous run for audit, and ignores late writes from the cancelled generation. A new run may switch provider or NanoGPT billing mode; calls inside one run never mix providers or NanoGPT billing APIs.
+Modes: CREATE, REVIEW, DECIDE. Preflight lives in `council.task-mode`. Execution lives only in `src/lib/council/orchestrate.ts` (`runCouncil`). Membership is 2–5 user-selected models discovered from the connected provider. Each selected model is a unique immutable `member_id`; identity is `member_id` + `model_id` + role. Role is guidance and may repeat — never identity. Round 1 is independent (one dispatch per selected model). Round 2 is cross-examination of each surviving member. Synthesis is a separate stage, not Round 3: the preferred selected survivor synthesizes first, then the next strongest selected survivor, with bounded recorded attempts. CREATE fails for synthesis only when every eligible selected survivor fails. CREATE writes an artifact. REVIEW returns PASS / PATCH / BLOCKED and must not silently replace a candidate. DECIDE returns decision, alternatives, rationale, evidence, and risks. Unresolved DECIDE disagreement or CONFLICTED evidence becomes `USER_DECISION_REQUIRED`. Two of N models may complete a run; fewer than two survivors, or every synthesizer failing, is a PARTIAL RESULT: the task is FAILED, successful Round 1/2 responses stay visible, synthesis is skipped or recorded as failed with an explicit reason, and the UI offers Retry failed models, Replace failed models, and Restart Council. Each member is one card keyed by `member_id` (name, status, attempts n/m, last error). Catalog/access preflight blocks unverified models before paid dispatch. Selected members are marked RUNNING as Round 1 starts. Stop aborts in-flight provider waits and marks `CANCELLED` with partial responses. Restart creates a new `run_id`, preserves the previous run for audit, and ignores late writes from the cancelled generation. A new run may switch provider or NanoGPT billing mode; calls inside one run never mix providers or NanoGPT billing APIs.
 
 Positions, disagreements, blockers, resolved/unresolved issues, and citations are preserved on the Council result.
 

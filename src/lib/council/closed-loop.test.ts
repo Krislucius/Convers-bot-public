@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { historyDidNotMintFrozen } from "./artifact.ts";
-import { councilAgentFailure, failedResponses, MIN_SURVIVING_AGENTS, survivingResponses } from "./agents.ts";
+import { councilAgentFailure, failedResponses, fillResponse, MIN_SURVIVING_AGENTS, survivingResponses } from "./agents.ts";
 import { sanitizeEvidenceLabels } from "./citations.ts";
 import { evaluateProject, evaluateTask } from "./evaluate.ts";
 import {
@@ -134,7 +134,7 @@ function file(id: string, text: string, notes = ""): ProjectFile {
 
 function response(agent: string, extra: Partial<AgentResponse> = {}): AgentResponse {
   const key = normalizeAgentKey(agent);
-  return {
+  return fillResponse({
     id: `${key}-1`,
     taskId: "t1",
     agent: key,
@@ -161,7 +161,7 @@ function response(agent: string, extra: Partial<AgentResponse> = {}): AgentRespo
     contextHash: "h",
     runId: null,
     ...extra,
-  };
+  });
 }
 
 function frozen(): ContextItem[] {

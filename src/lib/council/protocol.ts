@@ -6,6 +6,7 @@ import type {
   Completion,
   ContextItem,
   ContextManifest,
+  CouncilCallStage,
   CouncilResult,
   CouncilStatus,
   EvidenceLabel,
@@ -23,11 +24,12 @@ import { asReviewVerdict, reviewVerdictFromStatus } from "./review.ts";
 import { buildMandatoryContext } from "../evidence/pack.ts";
 import { CURRENT_CONTEXT_TOKEN_LIMIT } from "../architecture/contracts.ts";
 import { countTokens } from "../evidence/tokens.ts";
-import { DEFAULT_ROLES, normalizeAgentKey, rolePrompt, type CouncilRole } from "./roles.ts";
+import { DEFAULT_ROLES, isCouncilRole, normalizeAgentKey, rolePrompt, type CouncilRole } from "./roles.ts";
 import type { CouncilMember } from "./members.ts";
 import { expectedSuccessfulCalls } from "./members.ts";
+import { isSynthesisResponse, roundOfStage } from "./agents.ts";
 
-export const AGENTS: AgentKey[] = [...DEFAULT_ROLES];
+export const AGENTS: CouncilRole[] = [...DEFAULT_ROLES];
 
 export const HEADINGS = [
   "POSITION",
@@ -46,10 +48,21 @@ export const HEADINGS = [
 
 export function rolesForMode(
   mode: TaskMode | string | null | undefined,
-  agents: AgentKey[] = AGENTS,
+  members?: CouncilMember[] | AgentKey[],
 ): Record<string, string> {
   const resolved = normalizeTaskMode(mode);
-  return Object.fromEntries(agents.map((role) => [role, rolePrompt(role, resolved)]));
+  if (members?.length && typeof members[0] === "object") {
+    return Object.fromEntries(
+      (members as CouncilMember[]).map((row) => [row.memberId, rolePrompt(row.role, resolved)]),
+    );
+  }
+  const roles = (Array.isArray(members) && members.length ? members : AGENTS) as AgentKey[];
+  return Object.fromEntries(
+    roles.map((key) => {
+      const role = isCouncilRole(key) ? key : normalizeAgentKey(key);
+      return [key, rolePrompt(role, resolved)];
+    }),
+  );
 }
 
 export const ROUND2 = `ROUND 2 — Cross review.
@@ -72,28 +85,32 @@ RECOMMENDATION
 
 If a section has no items write "none".`;
 
-function agentPositionSchema(roles: AgentKey[]) {
-  const properties = Object.fromEntries(roles.map((role) => [role, { type: "string" }]));
+function agentPositionSchema(keys: string[]) {
+  const properties = Object.fromEntries(keys.map((key) => [key, { type: "string" }]));
   return {
     type: "object",
     additionalProperties: false,
     properties,
-    required: roles,
+    required: keys,
   };
 }
 
-function positionsPrompt(roles: AgentKey[]): string {
-  const body = roles.map((role) => `"${role}":""`).join(",");
+function positionsPrompt(keys: string[]): string {
+  const body = keys.map((key) => `"${key}":""`).join(",");
   return `"agent_positions":{${body}}`;
 }
 
-export function reviewSynthesisPrompt(roles: AgentKey[] = AGENTS): string {
-  return `You are the council synthesizer. Output a single JSON object matching:
-{"status":"APPROVED|PATCH|BLOCKED|USER_DECISION_REQUIRED","review_verdict":"PASS|PATCH|BLOCKED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"",${positionsPrompt(roles)},"issues":[],"proposed_corrections":[],"resolved_issues":[],"unresolved_issues":[],"citations":[]}
-REVIEW: PASS = candidate is acceptable, PATCH = issues with proposed corrections, BLOCKED = P0/P1. Preserve each model position, disagreements, and citations. Any substantiated P0 or unresolved P1 => BLOCKED. P4 never blocks. Use only the selected Council roles as keys in agent_positions.`;
+function rosterNote(keys: string[]): string {
+  return `Use only these member_id keys in agent_positions: ${keys.join(", ")}. Role is not identity and may repeat.`;
 }
 
-export function createSynthesisPrompt(roles: AgentKey[] = AGENTS): string {
+export function reviewSynthesisPrompt(keys: AgentKey[] = AGENTS): string {
+  return `You are the council synthesizer. Output a single JSON object matching:
+{"status":"APPROVED|PATCH|BLOCKED|USER_DECISION_REQUIRED","review_verdict":"PASS|PATCH|BLOCKED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"",${positionsPrompt(keys)},"issues":[],"proposed_corrections":[],"resolved_issues":[],"unresolved_issues":[],"citations":[]}
+REVIEW: PASS = candidate is acceptable, PATCH = issues with proposed corrections, BLOCKED = P0/P1. Preserve each model position, disagreements, and citations. Any substantiated P0 or unresolved P1 => BLOCKED. P4 never blocks. ${rosterNote(keys)}`;
+}
+
+export function createSynthesisPrompt(keys: AgentKey[] = AGENTS): string {
   return `You are the CREATE-mode artifact synthesizer.
 The Council's job is to PRODUCE the requested canonical artifact from TASK + CONTEXT MANIFEST + ROUND 1 + ROUND 2.
 Absence of a pre-existing candidate is not a blocker.
@@ -102,14 +119,14 @@ Critical claims should cite evidence.
 Distinguish provenance: EVIDENCED, INFERRED, UNKNOWN, CONFLICTED, HISTORICALLY_ASSERTED, HISTORICALLY_FROZEN.
 
 Output a single JSON object:
-{"status":"APPROVED|BLOCKED|USER_DECISION_REQUIRED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"",${positionsPrompt(roles)},"citations":[],"resolved_issues":[],"unresolved_issues":[],"artifact":{"type":"SPECIFICATION|ARCHITECTURE|PLAN|ADR|PROJECT_STATE|OTHER","title":"","version":"1.0","content":"markdown artifact","evidenceLabels":[{"claim":"","status":"EVIDENCED","citation":"[CHAT:source_id:1]"}]}}
-P4 never blocks. Do not BLOCK only because a candidate or repository was missing. Use only the selected Council roles as keys in agent_positions.`;
+{"status":"APPROVED|BLOCKED|USER_DECISION_REQUIRED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"",${positionsPrompt(keys)},"citations":[],"resolved_issues":[],"unresolved_issues":[],"artifact":{"type":"SPECIFICATION|ARCHITECTURE|PLAN|ADR|PROJECT_STATE|OTHER","title":"","version":"1.0","content":"markdown artifact","evidenceLabels":[{"claim":"","status":"EVIDENCED","citation":"[CHAT:source_id:1]"}]}}
+P4 never blocks. Do not BLOCK only because a candidate or repository was missing. ${rosterNote(keys)}`;
 }
 
-export function decideSynthesisPrompt(roles: AgentKey[] = AGENTS): string {
+export function decideSynthesisPrompt(keys: AgentKey[] = AGENTS): string {
   return `You are the DECIDE-mode synthesizer. Output a single JSON object:
-{"status":"APPROVED|BLOCKED|USER_DECISION_REQUIRED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"",${positionsPrompt(roles)},"decision":"","alternatives":[],"rationale":"","dissent":[],"evidence":[{"claim":"","status":"EVIDENCED","citation":"[CHAT:source_id:1]"}],"risks":[],"citations":[]}
-Unresolved material disagreement or CONFLICTED evidence => USER_DECISION_REQUIRED. Substantiated P0/P1 => BLOCKED. Use only the selected Council roles as keys in agent_positions.`;
+{"status":"APPROVED|BLOCKED|USER_DECISION_REQUIRED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"",${positionsPrompt(keys)},"decision":"","alternatives":[],"rationale":"","dissent":[],"evidence":[{"claim":"","status":"EVIDENCED","citation":"[CHAT:source_id:1]"}],"risks":[],"citations":[]}
+Unresolved material disagreement or CONFLICTED evidence => USER_DECISION_REQUIRED. Substantiated P0/P1 => BLOCKED. ${rosterNote(keys)}`;
 }
 
 export const SYNTHESIS = reviewSynthesisPrompt();
@@ -284,7 +301,7 @@ export function estimateCost(inputTokens: number, maxOut: number): number {
 }
 
 export function modelFor(creds: ProviderCreds): Record<string, string> {
-  return Object.fromEntries(creds.members.map((row) => [row.role, row.modelId.trim()]));
+  return Object.fromEntries(creds.members.map((row) => [row.memberId, row.modelId.trim()]));
 }
 
 export function buildContext(
@@ -430,11 +447,24 @@ function asCouncilStatus(value: unknown): CouncilStatus | null {
   return null;
 }
 
-export function normalizePositions(pos: Record<string, unknown> | null | undefined): Record<string, string> {
+export function normalizePositions(
+  pos: Record<string, unknown> | null | undefined,
+  members: CouncilMember[] = [],
+): Record<string, string> {
   const out: Record<string, string> = {};
   if (!pos || typeof pos !== "object") return out;
   for (const [key, value] of Object.entries(pos)) {
-    out[normalizeAgentKey(key)] = String(value ?? "");
+    const raw = String(key ?? "").trim();
+    if (!raw) continue;
+    out[raw] = String(value ?? "");
+  }
+  if (members.length) {
+    for (const member of members) {
+      if (out[member.memberId]) continue;
+      const byRole = out[member.role] ?? out[member.role.toLowerCase()];
+      const sameRole = members.filter((row) => row.role === member.role);
+      if (byRole && sameRole.length === 1) out[member.memberId] = byRole;
+    }
   }
   return out;
 }
@@ -557,25 +587,31 @@ export function attachManifest(
 
 export function responseFromCompletion(
   taskId: string,
-  agent: AgentKey,
-  round: 1 | 2 | 3,
+  member: CouncilMember,
+  stage: CouncilCallStage,
   system: string,
   user: string,
   out: Completion,
   manifest: ContextManifest | null = null,
   provider: ProviderId = "nanogpt",
+  attempt: number | null = null,
 ): AgentResponse {
+  const round = roundOfStage(stage);
   return attachManifest(
     {
       id: nid(),
       taskId,
-      agent,
+      memberId: member.memberId,
+      agent: member.memberId,
+      role: member.role,
       round,
-      model: out.model,
+      stage,
+      model: out.model || member.modelId,
+      dispatchedModelId: member.modelId,
       provider,
       promptSnapshot: `[SYSTEM]\n${system}\n[USER]\n${user}`,
       responseText: out.text,
-      structured: round === 3 ? null : parseHeadings(out.text),
+      structured: stage === "SYNTHESIS" ? null : parseHeadings(out.text),
       inputTokens: out.inputTokens,
       cachedInputTokens: out.cachedInputTokens,
       outputTokens: out.outputTokens,
@@ -583,6 +619,7 @@ export function responseFromCompletion(
       cost: out.cost,
       requestId: out.requestId,
       latencyMs: out.latencyMs,
+      attempt,
       error: null,
       contextManifestId: null,
       contextHash: null,
@@ -594,22 +631,28 @@ export function responseFromCompletion(
 
 export function responseFromError(
   taskId: string,
-  agent: AgentKey,
-  round: 1 | 2 | 3,
+  member: CouncilMember,
+  stage: CouncilCallStage,
   model: string,
   system: string,
   user: string,
   error: string,
   manifest: ContextManifest | null = null,
   provider: ProviderId = "nanogpt",
+  attempt: number | null = null,
 ): AgentResponse {
+  const round = roundOfStage(stage);
   return attachManifest(
     {
       id: nid(),
       taskId,
-      agent,
+      memberId: member.memberId,
+      agent: member.memberId,
+      role: member.role,
       round,
-      model,
+      stage,
+      model: model || member.modelId,
+      dispatchedModelId: member.modelId,
       provider,
       promptSnapshot: `[SYSTEM]\n${system}\n[USER]\n${user}`,
       responseText: "",
@@ -621,6 +664,7 @@ export function responseFromError(
       cost: null,
       requestId: null,
       latencyMs: null,
+      attempt,
       error,
       contextManifestId: null,
       contextHash: null,
@@ -630,20 +674,41 @@ export function responseFromError(
   );
 }
 
+export function aggregateTelemetry(responses: AgentResponse[]): {
+  totalInputTokens: number | null;
+  totalOutputTokens: number | null;
+  totalCostUsd: number | null;
+  totalLatencyMs: number | null;
+} {
+  const ins = responses.map((r) => r.inputTokens).filter((n): n is number => n !== null);
+  const outs = responses.map((r) => r.outputTokens).filter((n): n is number => n !== null);
+  const costs = responses.map((r) => r.cost).filter((n): n is number => n !== null);
+  const lats = responses.map((r) => r.latencyMs).filter((n): n is number => n !== null);
+  return {
+    totalInputTokens: ins.length ? ins.reduce((a, b) => a + b, 0) : null,
+    totalOutputTokens: outs.length ? outs.reduce((a, b) => a + b, 0) : null,
+    totalCostUsd: costs.length ? costs.reduce((a, b) => a + b, 0) : null,
+    totalLatencyMs: lats.length ? lats.reduce((a, b) => a + b, 0) : null,
+  };
+}
+
 export function failedOutput(
   task: Task,
   responses: AgentResponse[],
   error: string,
   extras?: { manifest?: ContextManifest | null; artifact?: Artifact | null; packet?: import("./types.ts").ImplementationPacket | null },
 ): RunCouncilOutput {
-  const costs = responses.map((row) => row.cost).filter((value): value is number => value != null);
+  const totals = aggregateTelemetry(responses);
   return {
     task: {
       ...task,
       status: "FAILED",
       error,
       completedAt: new Date().toISOString(),
-      totalCostUsd: costs.length ? costs.reduce((a, b) => a + b, 0) : task.totalCostUsd,
+      totalInputTokens: totals.totalInputTokens ?? task.totalInputTokens,
+      totalOutputTokens: totals.totalOutputTokens ?? task.totalOutputTokens,
+      totalCostUsd: totals.totalCostUsd ?? task.totalCostUsd,
+      totalLatencyMs: totals.totalLatencyMs ?? task.totalLatencyMs,
       contextManifestId: extras?.manifest?.id ?? task.contextManifestId,
       contextHash: extras?.manifest?.hash ?? task.contextHash,
     },
@@ -707,11 +772,8 @@ export function completeOutput(
     failedAgents?: AgentKey[];
   },
 ): RunCouncilOutput {
-  const ins = responses.map((r) => r.inputTokens).filter((n): n is number => n !== null);
-  const outs = responses.map((r) => r.outputTokens).filter((n): n is number => n !== null);
-  const costs = responses.map((r) => r.cost).filter((n): n is number => n !== null);
-  const lats = responses.map((r) => r.latencyMs).filter((n): n is number => n !== null);
-  const synth = responses.find((r) => r.round === 3);
+  const totals = aggregateTelemetry(responses);
+  const synth = responses.find((r) => isSynthesisResponse(r) && !r.error) ?? responses.find((r) => isSynthesisResponse(r));
   const reviewVerdict =
     task.mode === "REVIEW"
       ? parsed.reviewVerdict ?? reviewVerdictFromStatus(gated.status)
@@ -750,10 +812,10 @@ export function completeOutput(
       status: "COMPLETE",
       error: null,
       completedAt: new Date().toISOString(),
-      totalInputTokens: ins.length ? ins.reduce((a, b) => a + b, 0) : null,
-      totalOutputTokens: outs.length ? outs.reduce((a, b) => a + b, 0) : null,
-      totalCostUsd: costs.length ? costs.reduce((a, b) => a + b, 0) : null,
-      totalLatencyMs: lats.length ? lats.reduce((a, b) => a + b, 0) : null,
+      totalInputTokens: totals.totalInputTokens,
+      totalOutputTokens: totals.totalOutputTokens,
+      totalCostUsd: totals.totalCostUsd,
+      totalLatencyMs: totals.totalLatencyMs,
       diagnostics: {
         ...(task.diagnostics ?? {}),
         structured_output: "json_schema",
@@ -779,16 +841,26 @@ export function chat(system: string, user: string): ChatMessage[] {
 
 export function synthesisForMode(
   mode: TaskMode | string | null | undefined,
-  roles: AgentKey[] = AGENTS,
+  members: CouncilMember[] | AgentKey[] = AGENTS,
 ) {
+  const keys =
+    members.length && typeof members[0] === "object"
+      ? (members as CouncilMember[]).map((row) => row.memberId)
+      : (members as AgentKey[]);
+  const roster =
+    members.length && typeof members[0] === "object"
+      ? `\nCouncil members:\n${(members as CouncilMember[])
+          .map((row) => `- ${row.memberId}: ${row.role} · ${row.label} (${row.modelId})`)
+          .join("\n")}`
+      : "";
   const resolved = normalizeTaskMode(mode);
   if (resolved === "CREATE") {
-    return { prompt: createSynthesisPrompt(roles), schema: makeCreateSchema(roles), max: CREATE_SYNTH_MAX };
+    return { prompt: createSynthesisPrompt(keys) + roster, schema: makeCreateSchema(keys), max: CREATE_SYNTH_MAX };
   }
   if (resolved === "DECIDE") {
-    return { prompt: decideSynthesisPrompt(roles), schema: makeDecideSchema(roles), max: SYNTH_MAX };
+    return { prompt: decideSynthesisPrompt(keys) + roster, schema: makeDecideSchema(keys), max: SYNTH_MAX };
   }
-  return { prompt: reviewSynthesisPrompt(roles), schema: makeReviewSchema(roles), max: SYNTH_MAX };
+  return { prompt: reviewSynthesisPrompt(keys) + roster, schema: makeReviewSchema(keys), max: SYNTH_MAX };
 }
 
 export type { CouncilMember, CouncilRole };

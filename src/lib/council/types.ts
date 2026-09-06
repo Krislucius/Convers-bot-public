@@ -6,7 +6,7 @@ import type { CouncilMember } from "./members";
 import type { DiscoverySnapshot } from "./discover";
 import type { NanoGptBillingMode } from "./nano-billing";
 
-export type AgentKey = CouncilRole;
+export type AgentKey = string;
 
 export type TaskMode = "CREATE" | "REVIEW" | "DECIDE";
 
@@ -28,6 +28,8 @@ export type TaskStatus =
   | "COMPLETE"
   | "FAILED"
   | "CANCELLED";
+
+export type CouncilCallStage = "ROUND_1" | "ROUND_2" | "SYNTHESIS";
 
 export type AgentRunState = "WAITING" | "RUNNING" | "DONE" | "FAILED";
 
@@ -191,9 +193,13 @@ export type ContextItem = {
 export type AgentResponse = {
   id: string;
   taskId: string;
+  memberId: string;
   agent: AgentKey;
+  role: CouncilRole;
   round: 1 | 2 | 3;
+  stage: CouncilCallStage;
   model: string;
+  dispatchedModelId: string;
   provider: string | null;
   promptSnapshot: string;
   responseText: string;
@@ -205,6 +211,7 @@ export type AgentResponse = {
   cost: number | null;
   requestId: string | null;
   latencyMs: number | null;
+  attempt: number | null;
   error: string | null;
   contextManifestId: string | null;
   contextHash: string | null;
@@ -306,6 +313,9 @@ export type RunDiagnostics = {
   synthesizerModel?: string;
   requestBudget?: { used: number; limit: number; expected: number };
   costUsd?: number | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  latencyMs?: number | null;
   partial?: boolean;
   synthesisSkipped?: string | null;
   nanogptBilling?: NanoGptBillingMode;

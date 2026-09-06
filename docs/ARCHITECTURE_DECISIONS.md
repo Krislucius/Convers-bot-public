@@ -146,3 +146,12 @@ Only ACTIVE rows define current architecture.
 - RATIONALE: Catalog AVAILABLE from a capped scan is not enough to claim the saved connection works. Save must prove persist, auth, every selected model, billing-mode completion, and reload isolation.
 - SUPERSEDES: none (tightens ADR-015)
 - AFFECTED_MODULES: ui.settings, council.discovery, council.providers
+
+## ADR-017
+
+- DECISION: Council identity is an immutable `member_id` plus `model_id` plus role. Role is guidance and may repeat. Five selected models are five members and five Round-1 dispatches even when roles collide. Progress, retries, persistence, and UI are keyed by `member_id`, never by role alone. Every provider call records `member_id`, provider, `model_id`, role, stage, and attempt. `DISPATCHED_MODEL_ID` must equal that member's selected model. Synthesis is a separate stage, not Round 3. The preferred selected survivor synthesizes first; on failure the next strongest selected survivor is tried, with bounded recorded attempts. CREATE fails for synthesis only when every eligible selected survivor fails. Named error classes replace unknown/unclassified: HTTP_ERROR, TIMEOUT, NETWORK_ERROR, ABORTED, STREAM_INTERRUPTED, EMPTY_RESPONSE, MODEL_UNAVAILABLE, RATE_LIMITED, PROVIDER_ERROR. Successful Round 1/2 work stays visible when synthesis fails. Token and latency totals aggregate even when provider cost is null.
+- STATUS: ACTIVE
+- ARCHITECTURE_REVISION: CB-ARCH-20260906-004
+- RATIONALE: Role-keyed state collapsed duplicate-role members, dispatched fewer models than selected, treated synthesis as round 3 with no survivor fallback, and left unclassified provider failures.
+- SUPERSEDES: none (tightens ADR-011 / COUNCIL_DYNAMIC_MEMBERS_TWO_ROUNDS)
+- AFFECTED_MODULES: council.orchestrator, council.protocol, council.providers, persist.postgres, ui.task

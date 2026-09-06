@@ -1,5 +1,5 @@
 {
-  "architecture_revision": "CB-ARCH-20260906-003",
+  "architecture_revision": "CB-ARCH-20260906-004",
   "modules": [
     {
       "module_id": "app.shell",
@@ -113,8 +113,8 @@
       "module_id": "council.orchestrator",
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/orchestrate.ts",
-      "architecture_revision": "CB-ARCH-20260906-001",
-      "responsibilities": ["single Council execution path: verified selected-model preflight, catalog, request budget, dynamic members, NanoGPT billing freeze, round1, round2, synthesis or PARTIAL RESULT, packet"],
+      "architecture_revision": "CB-ARCH-20260906-004",
+      "responsibilities": ["single Council execution path: verified selected-model preflight, catalog, request budget, member_id identity (role may repeat), DISPATCHED_MODEL_ID integrity, NanoGPT billing freeze, round1, round2, synthesis fallback or PARTIAL RESULT, packet"],
       "dependencies": ["council.protocol", "council.providers", "council.manifest", "council.artifact", "council.packet", "context.evidence-ledger"],
       "supersedes": []
     },

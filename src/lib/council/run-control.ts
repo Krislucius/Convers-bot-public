@@ -23,6 +23,9 @@ export type CouncilRunSnapshot = {
   synthesizerModel?: string;
   requestBudget?: RequestBudget;
   costUsd?: number | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  latencyMs?: number | null;
   partial?: boolean;
   synthesisSkipped?: string | null;
   nanogptBilling?: NanoGptBillingMode;

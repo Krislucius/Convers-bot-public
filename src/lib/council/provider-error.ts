@@ -6,7 +6,34 @@ export const COMPLETE_TIMEOUT_MS = 120_000;
 export const PROVIDER_RETRY_LIMIT = 2;
 export const PROVIDER_ATTEMPTS = PROVIDER_RETRY_LIMIT + 1;
 
-export type HttpClass = "400" | "401" | "402" | "429" | "5xx" | "timeout" | "network" | "empty" | "unknown";
+export const ERROR_CLASSES = [
+  "HTTP_ERROR",
+  "TIMEOUT",
+  "NETWORK_ERROR",
+  "ABORTED",
+  "STREAM_INTERRUPTED",
+  "EMPTY_RESPONSE",
+  "MODEL_UNAVAILABLE",
+  "RATE_LIMITED",
+  "PROVIDER_ERROR",
+] as const;
+
+export type ErrorClass = (typeof ERROR_CLASSES)[number];
+
+/** Legacy HTTP family used for retry decisions. Never "unknown". */
+export type HttpClass =
+  | "400"
+  | "401"
+  | "402"
+  | "429"
+  | "5xx"
+  | "timeout"
+  | "network"
+  | "empty"
+  | "aborted"
+  | "stream"
+  | "http"
+  | "provider";
 
 export type ProviderFailure = {
   provider: ProviderId;
@@ -14,12 +41,14 @@ export type ProviderFailure = {
   stage: string;
   httpStatus: number | null;
   httpClass: HttpClass;
+  errorClass: ErrorClass;
   attempt: number | null;
   maxAttempts: number | null;
   retryExhausted: boolean;
   message: string;
   detail?: string;
   code?: string;
+  requestId?: string | null;
 };
 
 export class ProviderError extends Error {
@@ -31,10 +60,35 @@ export class ProviderError extends Error {
   }
 }
 
-export function classifyHttp(status: number | null, raw = ""): HttpClass {
+export function classifyErrorClass(
+  status: number | null,
+  raw = "",
+  code?: string,
+): { httpClass: HttpClass; errorClass: ErrorClass } {
   const low = raw.toLowerCase();
-  if (low.includes("timeout") || low.includes("timed out") || low.includes("abort") || low.includes("aborted")) {
-    return "timeout";
+  const named = String(code ?? "").trim().toUpperCase();
+  if (named === "MODEL_UNAVAILABLE" || named === "MODEL_NOT_INCLUDED") {
+    return { httpClass: status != null && status >= 500 ? "5xx" : "http", errorClass: "MODEL_UNAVAILABLE" };
+  }
+  if (named === "RATE_LIMITED" || status === 429 || /\b429\b/.test(low) || low.includes("rate limit")) {
+    return { httpClass: "429", errorClass: "RATE_LIMITED" };
+  }
+  if (low.includes("empty response") || low.includes("empty completion") || named === "EMPTY_RESPONSE") {
+    return { httpClass: "empty", errorClass: "EMPTY_RESPONSE" };
+  }
+  if (
+    low.includes("stream interrupted") ||
+    low.includes("interrupted stream") ||
+    low.includes("incomplete stream") ||
+    named === "STREAM_INTERRUPTED"
+  ) {
+    return { httpClass: "stream", errorClass: "STREAM_INTERRUPTED" };
+  }
+  if (low.includes("timeout") || low.includes("timed out") || status === 408) {
+    return { httpClass: "timeout", errorClass: "TIMEOUT" };
+  }
+  if (named === "ABORTED" || ((low.includes("abort") || low.includes("aborted")) && !low.includes("timeout"))) {
+    return { httpClass: "aborted", errorClass: "ABORTED" };
   }
   if (
     status === 0 ||
@@ -43,38 +97,50 @@ export function classifyHttp(status: number | null, raw = ""): HttpClass {
     low.includes("load failed") ||
     low.includes("econn")
   ) {
-    return "network";
+    return { httpClass: "network", errorClass: "NETWORK_ERROR" };
   }
-  if (status === 400) return "400";
-  if (status === 401 || status === 403) return "401";
-  if (status === 402) return "402";
-  if (status === 429) return "429";
-  if (status != null && status >= 500) return "5xx";
-  if (status === 400 || /\b400\b/.test(low)) return "400";
-  if (/\b401\b/.test(low) || /\b403\b/.test(low)) return "401";
-  if (/\b402\b/.test(low) || low.includes("credit") || low.includes("payment required")) return "402";
-  if (/\b429\b/.test(low) || low.includes("rate limit")) return "429";
-  if (/\b5\d\d\b/.test(low)) return "5xx";
-  return "unknown";
+  if (status === 400 || /\b400\b/.test(low)) return { httpClass: "400", errorClass: "HTTP_ERROR" };
+  if (status === 401 || status === 403 || /\b401\b/.test(low) || /\b403\b/.test(low)) {
+    return { httpClass: "401", errorClass: "HTTP_ERROR" };
+  }
+  if (status === 402 || /\b402\b/.test(low) || low.includes("credit") || low.includes("payment required")) {
+    return { httpClass: "402", errorClass: "HTTP_ERROR" };
+  }
+  if ((status != null && status >= 500) || /\b5\d\d\b/.test(low)) {
+    return { httpClass: "5xx", errorClass: "HTTP_ERROR" };
+  }
+  if (status != null && status > 0) return { httpClass: "http", errorClass: "HTTP_ERROR" };
+  return { httpClass: "provider", errorClass: "PROVIDER_ERROR" };
+}
+
+export function classifyHttp(status: number | null, raw = ""): HttpClass {
+  return classifyErrorClass(status, raw).httpClass;
 }
 
 export function httpClassOfStatus(status: number): HttpClass {
-  if (status === 400) return "400";
-  if (status === 401 || status === 403) return "401";
-  if (status === 402) return "402";
-  if (status === 429) return "429";
-  if (status >= 500) return "5xx";
-  if (status === 408) return "timeout";
-  return "unknown";
+  return classifyErrorClass(status, "").httpClass;
 }
 
-export function isRetryableFailure(failure: Pick<ProviderFailure, "httpClass"> | null | undefined): boolean {
+export function isRetryableFailure(
+  failure: Pick<ProviderFailure, "httpClass" | "errorClass"> | null | undefined,
+): boolean {
+  const errorClass = failure?.errorClass;
+  if (
+    errorClass === "RATE_LIMITED" ||
+    errorClass === "TIMEOUT" ||
+    errorClass === "NETWORK_ERROR" ||
+    errorClass === "EMPTY_RESPONSE" ||
+    errorClass === "STREAM_INTERRUPTED"
+  ) {
+    return true;
+  }
   return (
     failure?.httpClass === "429" ||
     failure?.httpClass === "5xx" ||
     failure?.httpClass === "timeout" ||
     failure?.httpClass === "network" ||
-    failure?.httpClass === "empty"
+    failure?.httpClass === "empty" ||
+    failure?.httpClass === "stream"
   );
 }
 
@@ -82,39 +148,45 @@ export function retryDelayMs(attempt: number): number {
   return 500 * 2 ** Math.max(0, attempt - 1);
 }
 
-function classLabel(httpClass: HttpClass, httpStatus: number | null): string {
-  if (httpClass === "timeout") return "timeout";
-  if (httpClass === "network") return "network error";
-  if (httpClass === "empty") return "empty response";
-  if (httpClass === "5xx") return `HTTP ${httpStatus ?? 500}`;
-  if (httpClass === "unknown") return httpStatus ? `HTTP ${httpStatus}` : "unclassified failure";
-  return `HTTP ${httpClass}`;
+function classLabel(failure: ProviderFailure): string {
+  if (failure.errorClass === "TIMEOUT") return "timeout";
+  if (failure.errorClass === "NETWORK_ERROR") return "network error";
+  if (failure.errorClass === "EMPTY_RESPONSE") return "empty response";
+  if (failure.errorClass === "ABORTED") return "aborted";
+  if (failure.errorClass === "STREAM_INTERRUPTED") return "stream interrupted";
+  if (failure.errorClass === "MODEL_UNAVAILABLE") return "model unavailable";
+  if (failure.errorClass === "RATE_LIMITED") return failure.httpStatus ? `HTTP ${failure.httpStatus}` : "rate limited";
+  if (failure.httpStatus) return `HTTP ${failure.httpStatus}`;
+  return failure.errorClass.replaceAll("_", " ").toLowerCase();
 }
 
-function classAdvice(httpClass: HttpClass, code?: string): string {
-  if (code === "PAYG_BALANCE_REQUIRED") return "Pay-as-you-go balance is required.";
-  if (code === "SUBSCRIPTION_LIMIT_REACHED") return "Subscription limit reached.";
-  if (code === "MODEL_NOT_INCLUDED") return "This model is not included in the selected billing mode.";
-  if (code === "MODEL_UNAVAILABLE") return "This model is unavailable.";
-  if (code === "RATE_LIMITED") return "Rate limited.";
-  if (code === "PROVIDER_ERROR") return "The request did not complete.";
-  switch (httpClass) {
-    case "400":
-      return "The request was rejected.";
-    case "401":
-      return "Check API Settings and save a valid key.";
-    case "402":
-      return "Payment was required.";
-    case "429":
+function classAdvice(failure: ProviderFailure): string {
+  if (failure.code === "PAYG_BALANCE_REQUIRED") return "Pay-as-you-go balance is required.";
+  if (failure.code === "SUBSCRIPTION_LIMIT_REACHED") return "Subscription limit reached.";
+  if (failure.code === "MODEL_NOT_INCLUDED") return "This model is not included in the selected billing mode.";
+  if (failure.code === "MODEL_UNAVAILABLE") return "This model is unavailable.";
+  if (failure.code === "RATE_LIMITED") return "Rate limited.";
+  if (failure.code === "PROVIDER_ERROR") return "The request did not complete.";
+  switch (failure.errorClass) {
+    case "RATE_LIMITED":
       return "Rate limited.";
-    case "5xx":
-      return "The provider returned a server error.";
-    case "timeout":
+    case "TIMEOUT":
       return `No response within ${COMPLETE_TIMEOUT_MS / 1000}s.`;
-    case "network":
+    case "NETWORK_ERROR":
       return "The provider could not be reached.";
-    case "empty":
+    case "EMPTY_RESPONSE":
       return "The provider returned no text.";
+    case "ABORTED":
+      return "The request was aborted.";
+    case "STREAM_INTERRUPTED":
+      return "The response stream was interrupted.";
+    case "MODEL_UNAVAILABLE":
+      return "This model is unavailable.";
+    case "HTTP_ERROR":
+      if (failure.httpClass === "401") return "Check API Settings and save a valid key.";
+      if (failure.httpClass === "402") return "Payment was required.";
+      if (failure.httpClass === "5xx") return "The provider returned a server error.";
+      return "The request was rejected.";
     default:
       return "The request did not complete.";
   }
@@ -126,19 +198,20 @@ export function formatProviderFailure(failure: ProviderFailure): string {
   const where = failure.stage.trim() || "request";
   const subject = model ? `${who} ${model}` : who;
   const named = failure.code?.trim() ? `${failure.code.trim()} ` : "";
-  const code = classLabel(failure.httpClass, failure.httpStatus);
-  const klass = ` class ${failure.httpClass}`;
+  const errorClass = failure.errorClass ?? "PROVIDER_ERROR";
+  const code = classLabel({ ...failure, errorClass });
+  const klass = ` class ${errorClass}`;
   const attempt =
     failure.attempt != null && failure.maxAttempts != null
       ? ` attempt ${failure.attempt}/${failure.maxAttempts}`
       : "";
   const retry = failure.retryExhausted ? " (retries exhausted)" : "";
+  const requestId = failure.requestId?.trim() ? ` request_id ${failure.requestId.trim()}` : "";
   const detail = failure.detail?.trim();
   const extra = detail && !code.includes(detail) && !named.includes(detail) ? ` ${detail}` : "";
-  return `${subject} failed in ${where}: ${named}${code}${klass}${attempt}${retry}.${extra ? extra : ""} ${classAdvice(failure.httpClass, failure.code)}`.replace(
-    /\s+/g,
-    " ",
-  ).trim();
+  return `${subject} failed in ${where}: ${named}${code}${klass}${attempt}${retry}.${requestId}${extra ? extra : ""} ${classAdvice(failure)}`
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export function providerFailure(input: {
@@ -147,27 +220,49 @@ export function providerFailure(input: {
   stage: string;
   httpStatus?: number | null;
   httpClass?: HttpClass;
+  errorClass?: ErrorClass;
   attempt?: number | null;
   maxAttempts?: number | null;
   retryExhausted?: boolean;
   raw?: string;
   detail?: string;
   code?: string;
+  requestId?: string | null;
 }): ProviderFailure {
   const httpStatus = input.httpStatus ?? null;
-  const httpClass = input.httpClass ?? classifyHttp(httpStatus, input.raw ?? "");
+  const classified = classifyErrorClass(httpStatus, input.raw ?? "", input.code);
+  const httpClass = input.httpClass ?? classified.httpClass;
+  const errorClass =
+    input.errorClass ??
+    (httpClass === "empty"
+      ? "EMPTY_RESPONSE"
+      : httpClass === "timeout"
+        ? "TIMEOUT"
+        : httpClass === "network"
+          ? "NETWORK_ERROR"
+          : httpClass === "aborted"
+            ? "ABORTED"
+            : httpClass === "stream"
+              ? "STREAM_INTERRUPTED"
+              : httpClass === "429"
+                ? "RATE_LIMITED"
+                : httpClass === "provider"
+                  ? "PROVIDER_ERROR"
+                  : classified.errorClass);
   const failure: ProviderFailure = {
     provider: input.provider,
     model: input.model,
     stage: input.stage,
     httpStatus,
     httpClass,
+    errorClass,
     attempt: input.attempt ?? null,
     maxAttempts: input.maxAttempts ?? null,
     retryExhausted: Boolean(input.retryExhausted),
     message: "",
     detail: input.detail,
     code: input.code,
+    requestId: input.requestId ?? null,
   };
   failure.message = formatProviderFailure(failure);
   return failure;
@@ -179,17 +274,16 @@ export function toProviderFailure(
   apiKey = "",
 ): ProviderFailure {
   if (err instanceof ProviderError) {
-    return {
+    const next = {
       ...err.failure,
       provider: err.failure.provider || ctx.provider,
       model: err.failure.model || ctx.model,
       stage: err.failure.stage || ctx.stage,
-      message: formatProviderFailure({
-        ...err.failure,
-        provider: err.failure.provider || ctx.provider,
-        model: err.failure.model || ctx.model,
-        stage: err.failure.stage || ctx.stage,
-      }),
+      errorClass: err.failure.errorClass ?? classifyErrorClass(err.failure.httpStatus, err.failure.detail ?? "").errorClass,
+    };
+    return {
+      ...next,
+      message: formatProviderFailure(next),
     };
   }
   const raw = redact(err instanceof Error ? err.message : String(err), apiKey);

@@ -20,7 +20,13 @@ import { sanitizeApiKey } from "./api-key.ts";
 import { councilPreflight } from "./task-mode.ts";
 import { CONTEXT_BUDGET_EXCEEDED, coverageBlocksCouncil } from "../evidence/pipeline.ts";
 import { cachedEvidencePipeline, type EvidencePipelineResult } from "../evidence/pipeline-cache.ts";
-import { councilPartial, failedResponses, survivingResponses, synthesizerAgent } from "./agents.ts";
+import {
+  councilPartial,
+  failedResponses,
+  responseMemberId,
+  survivingResponses,
+  synthesizerQueue,
+} from "./agents.ts";
 import { sanitizeEvidenceLabels } from "./citations.ts";
 import { buildImplementationPacket } from "./packet.ts";
 import { artifactStatusForReview, reviewVerdictFromStatus } from "./review.ts";
@@ -45,7 +51,7 @@ import { providerName } from "./providers.ts";
 import { createRequestCounter, isEmptyCompletion, isRequestLimitError, type RequestBudget } from "./request-budget.ts";
 import { MODEL_UNAVAILABLE, type CatalogCheckResult } from "./catalog.ts";
 import { accessBlocksRun, isVerifiedAvailable, type DiscoveredModel } from "./discover.ts";
-import { assertCouncilSelection, type CouncilMember } from "./members.ts";
+import { assertCouncilSelection, ensureMembers, findMember, type CouncilMember } from "./members.ts";
 import { normalizeNanoGptBilling, type NanoGptBillingMode } from "./nano-billing.ts";
 import type {
   AgentKey,
@@ -56,6 +62,7 @@ import type {
   Completion,
   ContextItem,
   ContextManifest,
+  CouncilCallStage,
   ImplementationPacket,
   ProviderCreds,
   ProviderId,
@@ -153,10 +160,22 @@ async function defaultAccessCheck(opts: {
 function waitingAgents(members: CouncilMember[]): Partial<Record<AgentKey, AgentProgress>> {
   return Object.fromEntries(
     members.map((row) => [
-      row.role,
+      row.memberId,
       { state: "WAITING" as const, attempt: 0, maxAttempts: PROVIDER_ATTEMPTS, error: null },
     ]),
   );
+}
+
+function statusForStage(stage: CouncilCallStage): TaskStatus {
+  if (stage === "SYNTHESIS") return "SYNTHESIS";
+  if (stage === "ROUND_2") return "COUNCIL_ROUND_2";
+  return "COUNCIL_ROUND_1";
+}
+
+function snapshotStage(stage: CouncilCallStage): CouncilStageName {
+  if (stage === "SYNTHESIS") return "SYNTHESIS";
+  if (stage === "ROUND_2") return "ROUND_2";
+  return "ROUND_1";
 }
 
 export function runCredsFromReady(config: {
@@ -169,10 +188,11 @@ export function runCredsFromReady(config: {
 }): ProviderCreds | null {
   if (!config.ready) return null;
   if (assertCouncilSelection(config.members.map((row) => row.modelId))) return null;
+  const members = ensureMembers(config.members);
   return {
     provider: config.provider,
     apiKey: "",
-    members: config.members,
+    members,
     synthesizerModel: config.synthesizerModel,
     maxCostUsd: config.maxCostUsd,
     nanogptBilling: config.provider === "nanogpt" ? normalizeNanoGptBilling(config.nanogptBilling) : undefined,
@@ -254,8 +274,7 @@ export async function runCouncil(input: {
   const runProvider: ProviderId = input.creds.provider;
   const runBilling: NanoGptBillingMode | undefined =
     runProvider === "nanogpt" ? normalizeNanoGptBilling(input.creds.nanogptBilling ?? input.task.nanogptBilling) : undefined;
-  const members = input.creds.members;
-  const agentKeys = members.map((row) => row.role);
+  const members = ensureMembers(input.creds.members);
   const selectedIds = members.map((row) => row.modelId);
   const boundTask: Task = {
     ...input.task,
@@ -270,25 +289,43 @@ export async function runCouncil(input: {
 
   const key = sanitizeApiKey(input.creds.apiKey, runProvider);
   const mode = input.task.mode;
-  const roles = rolesForMode(mode, agentKeys);
+  const roles = rolesForMode(mode, members);
   const candidate = input.task.candidateArtifactId
     ? artifacts.find((row) => row.id === input.task.candidateArtifactId) ?? null
     : null;
   const agents = waitingAgents(members);
   const resumeKept = (input.resume?.responses ?? [])
     .filter((row) => row.round === 1 && !row.error)
-    .map((row) => tagRun({ ...row, runId }, runId));
+    .map((row) => {
+      const member = findMember(members, row);
+      const memberId = member?.memberId ?? responseMemberId(row);
+      return tagRun(
+        {
+          ...row,
+          runId,
+          memberId,
+          agent: memberId,
+          role: member?.role ?? row.role,
+          dispatchedModelId: row.dispatchedModelId || member?.modelId || row.model,
+          stage: row.stage || "ROUND_1",
+        },
+        runId,
+      );
+    });
   for (const row of resumeKept) {
-    agents[row.agent] = { state: "DONE", attempt: 1, maxAttempts: PROVIDER_ATTEMPTS, error: null };
+    agents[responseMemberId(row)] = { state: "DONE", attempt: 1, maxAttempts: PROVIDER_ATTEMPTS, error: null };
   }
   const startedAt = now();
   let stageStartedAt = startedAt;
 
-  const models = modelFor(input.creds);
+  const models = modelFor({ ...input.creds, members });
   let manifest: ContextManifest | null = null;
   const responses: AgentResponse[] = [];
   const requests = createRequestCounter(members.length);
-  let spent = 0;
+  let spent: number | null = null;
+  let tokenIn = 0;
+  let tokenOut = 0;
+  let latencyMs = 0;
 
   const snapshot = (stage: CouncilStageName, status: TaskStatus, message: string): CouncilRunSnapshot => ({
     runId,
@@ -305,6 +342,9 @@ export async function runCouncil(input: {
     synthesizerModel: input.creds.synthesizerModel,
     requestBudget: requests.snapshot(),
     costUsd: spent,
+    inputTokens: tokenIn || null,
+    outputTokens: tokenOut || null,
+    latencyMs: latencyMs || null,
     partial: false,
     synthesisSkipped: null,
     nanogptBilling: runBilling,
@@ -340,9 +380,9 @@ export async function runCouncil(input: {
 
   const finishCancelled = (message = "Council run stopped.") => {
     for (const member of members) {
-      const current = agents[member.role];
+      const current = agents[member.memberId];
       if (current?.state === "WAITING" || current?.state === "RUNNING") {
-        agents[member.role] = { ...current, state: "FAILED", error: message };
+        agents[member.memberId] = { ...current, state: "FAILED", error: message };
       }
     }
     emit("CANCELLED", "CANCELLED", message, { responses: [...responses] });
@@ -356,7 +396,7 @@ export async function runCouncil(input: {
     await yieldFn();
     throwIfCancelled(runId, signal);
 
-    const credsError = assertRunCredentials(input.creds);
+    const credsError = assertRunCredentials({ ...input.creds, members });
     if (credsError) {
       return precheckOutput(boundTask, credsError);
     }
@@ -432,8 +472,8 @@ export async function runCouncil(input: {
           })
         : defaultAccessCheck);
     const verifyIds = (() => {
-      const kept = new Set(resumeKept.map((row) => row.agent));
-      const retry = members.filter((row) => !kept.has(row.role)).map((row) => row.modelId);
+      const kept = new Set(resumeKept.map((row) => responseMemberId(row)));
+      const retry = members.filter((row) => !kept.has(row.memberId)).map((row) => row.modelId);
       return retry.length ? retry : selectedIds;
     })();
     const access = await accessFn({
@@ -460,36 +500,71 @@ export async function runCouncil(input: {
     throwIfCancelled(runId, signal);
 
     const ask = async (
-      agent: AgentKey,
-      round: 1 | 2 | 3,
+      member: CouncilMember,
+      callStage: CouncilCallStage,
       system: string,
       user: string,
       maxTokens: number,
       temperature: number,
       responseFormat?: Record<string, unknown>,
+      maxAttempts = PROVIDER_ATTEMPTS,
     ): Promise<AgentResponse> => {
-      const stage = `${agent} round ${round}`;
-      const modelId = models[agent];
+      const agent = member.memberId;
+      const dispatchedModelId = member.modelId.trim();
+      const mapped = models[member.memberId];
+      if (mapped && mapped !== dispatchedModelId) {
+        const mismatch = `DISPATCHED_MODEL_ID ${mapped} does not equal selected model ${dispatchedModelId} for ${member.memberId}.`;
+        agents[agent] = { state: "FAILED", attempt: 0, maxAttempts, error: mismatch };
+        return tagRun(
+          responseFromError(
+            input.task.id,
+            member,
+            callStage,
+            dispatchedModelId,
+            system,
+            user,
+            mismatch,
+            manifest,
+            runProvider,
+            0,
+          ),
+          runId,
+        );
+      }
+      const stage = `${member.memberId} ${member.role} ${callStage} ${dispatchedModelId}`;
+      const taskStatus = statusForStage(callStage);
+      const emitStage = snapshotStage(callStage);
+      const errRow = (message: string, attempt: number | null) =>
+        tagRun(
+          responseFromError(
+            input.task.id,
+            member,
+            callStage,
+            dispatchedModelId,
+            system,
+            user,
+            message,
+            manifest,
+            runProvider,
+            attempt,
+          ),
+          runId,
+        );
       if (isCancelledSignal(signal)) {
         agents[agent] = {
           state: "FAILED",
           attempt: agents[agent]?.attempt ?? 0,
-          maxAttempts: PROVIDER_ATTEMPTS,
+          maxAttempts,
           error: "Council run stopped.",
         };
-        return tagRun(
-          responseFromError(input.task.id, agent, round, modelId, system, user, "Council run stopped.", manifest, runProvider),
-          runId,
-        );
+        return errRow("Council run stopped.", agents[agent]?.attempt ?? 0);
       }
       let lastFailure: ProviderFailure | null = null;
-      for (let attempt = 1; attempt <= PROVIDER_ATTEMPTS; attempt += 1) {
+      const attempts = Math.max(1, maxAttempts);
+      for (let attempt = 1; attempt <= attempts; attempt += 1) {
         if (isCancelledSignal(signal)) {
-          agents[agent] = { state: "FAILED", attempt, maxAttempts: PROVIDER_ATTEMPTS, error: "Council run stopped." };
-          return tagRun(
-            responseFromError(input.task.id, agent, round, modelId, system, user, "Council run stopped.", manifest, runProvider),
-            runId,
-          );
+          agents[agent] = { state: "FAILED", attempt, maxAttempts: attempts, error: "Council run stopped." };
+          return errRow("Council run stopped.", attempt);
         }
         try {
           requests.consume(stage);
@@ -499,34 +574,26 @@ export async function runCouncil(input: {
           agents[agent] = {
             state: "FAILED",
             attempt: Math.max(0, attempt - 1),
-            maxAttempts: PROVIDER_ATTEMPTS,
+            maxAttempts: attempts,
             error: message,
           };
-          const errRow = tagRun(
-            responseFromError(input.task.id, agent, round, modelId, system, user, message, manifest, runProvider),
-            runId,
-          );
-          emit(
-            round === 3 ? "SYNTHESIS" : round === 2 ? "COUNCIL_ROUND_2" : "COUNCIL_ROUND_1",
-            round === 3 ? "SYNTHESIS" : round === 2 ? "ROUND_2" : "ROUND_1",
-            message,
-            { responses: [errRow] },
-          );
-          return errRow;
+          const row = errRow(message, Math.max(0, attempt - 1));
+          emit(taskStatus, emitStage, message, { responses: [row] });
+          return row;
         }
-        agents[agent] = { state: "RUNNING", attempt, maxAttempts: PROVIDER_ATTEMPTS, error: null };
+        agents[agent] = { state: "RUNNING", attempt, maxAttempts: attempts, error: null };
         emit(
-          round === 3 ? "SYNTHESIS" : round === 2 ? "COUNCIL_ROUND_2" : "COUNCIL_ROUND_1",
-          round === 3 ? "SYNTHESIS" : round === 2 ? "ROUND_2" : "ROUND_1",
+          taskStatus,
+          emitStage,
           attempt > 1
-            ? `${agent} retry ${attempt}/${PROVIDER_ATTEMPTS} after ${lastFailure?.httpClass ?? "error"}.`
-            : `${agent} is running (${attempt}/${PROVIDER_ATTEMPTS}).`,
+            ? `${member.label} retry ${attempt}/${attempts} after ${lastFailure?.errorClass ?? lastFailure?.httpClass ?? "error"}.`
+            : `${member.label} is running (${attempt}/${attempts}).`,
         );
         try {
           const out = await runtime.completeChat({
             provider: runProvider,
             apiKey: key,
-            model: modelId,
+            model: dispatchedModelId,
             messages: chat(system, user),
             maxTokens,
             temperature,
@@ -535,79 +602,80 @@ export async function runCouncil(input: {
             nanogptBilling: runBilling,
           });
           if (isCancelledSignal(signal) || (!out.ok && out.error === "Council run stopped.")) {
-            agents[agent] = { state: "FAILED", attempt, maxAttempts: PROVIDER_ATTEMPTS, error: "Council run stopped." };
-            return tagRun(
-              responseFromError(input.task.id, agent, round, modelId, system, user, "Council run stopped.", manifest, runProvider),
-              runId,
-            );
+            agents[agent] = { state: "FAILED", attempt, maxAttempts: attempts, error: "Council run stopped." };
+            return errRow("Council run stopped.", attempt);
           }
           if (out.ok && isEmptyCompletion(out.completion.text)) {
             lastFailure = providerFailure({
               provider: runProvider,
-              model: modelId,
+              model: dispatchedModelId,
               stage,
               httpClass: "empty",
+              errorClass: "EMPTY_RESPONSE",
               attempt,
-              maxAttempts: PROVIDER_ATTEMPTS,
+              maxAttempts: attempts,
               raw: "empty response",
+              requestId: out.completion.requestId,
             });
           } else if (out.ok) {
-            spent += out.completion.cost ?? 0;
-            agents[agent] = { state: "DONE", attempt, maxAttempts: PROVIDER_ATTEMPTS, error: null };
+            if (out.completion.inputTokens != null) tokenIn += out.completion.inputTokens;
+            if (out.completion.outputTokens != null) tokenOut += out.completion.outputTokens;
+            if (out.completion.latencyMs != null) latencyMs += out.completion.latencyMs;
+            if (out.completion.cost != null) spent = (spent ?? 0) + out.completion.cost;
+            agents[agent] = { state: "DONE", attempt, maxAttempts: attempts, error: null };
             const row = tagRun(
-              responseFromCompletion(input.task.id, agent, round, system, user, out.completion, manifest, runProvider),
+              responseFromCompletion(
+                input.task.id,
+                member,
+                callStage,
+                system,
+                user,
+                out.completion,
+                manifest,
+                runProvider,
+                attempt,
+              ),
               runId,
             );
-            emit(
-              round === 3 ? "SYNTHESIS" : round === 2 ? "COUNCIL_ROUND_2" : "COUNCIL_ROUND_1",
-              round === 3 ? "SYNTHESIS" : round === 2 ? "ROUND_2" : "ROUND_1",
-              `${agent} finished.`,
-              { responses: [row] },
-            );
+            emit(taskStatus, emitStage, `${member.label} finished.`, { responses: [row] });
             return row;
           } else {
             lastFailure =
               out.failure ??
               toProviderFailure(out.error, {
                 provider: runProvider,
-                model: modelId,
+                model: dispatchedModelId,
                 stage,
               });
             lastFailure = {
               ...lastFailure,
               attempt,
-              maxAttempts: PROVIDER_ATTEMPTS,
-              message: formatProviderFailure({ ...lastFailure, attempt, maxAttempts: PROVIDER_ATTEMPTS }),
+              maxAttempts: attempts,
+              message: formatProviderFailure({ ...lastFailure, attempt, maxAttempts: attempts }),
             };
           }
         } catch (err) {
           if (err instanceof CouncilCancelled || isCancelledSignal(signal)) {
-            agents[agent] = { state: "FAILED", attempt, maxAttempts: PROVIDER_ATTEMPTS, error: "Council run stopped." };
-            return tagRun(
-              responseFromError(input.task.id, agent, round, modelId, system, user, "Council run stopped.", manifest, runProvider),
-              runId,
-            );
+            agents[agent] = { state: "FAILED", attempt, maxAttempts: attempts, error: "Council run stopped." };
+            return errRow("Council run stopped.", attempt);
           }
           lastFailure = toProviderFailure(err, {
             provider: runProvider,
-            model: modelId,
+            model: dispatchedModelId,
             stage,
           });
           lastFailure = {
             ...lastFailure,
             attempt,
-            maxAttempts: PROVIDER_ATTEMPTS,
-            message: formatProviderFailure({ ...lastFailure, attempt, maxAttempts: PROVIDER_ATTEMPTS }),
+            maxAttempts: attempts,
+            message: formatProviderFailure({ ...lastFailure, attempt, maxAttempts: attempts }),
           };
         }
         const retryable = isRetryableFailure(lastFailure);
-        if (retryable && attempt < PROVIDER_ATTEMPTS) {
+        if (retryable && attempt < attempts) {
           if (isCancelledSignal(signal)) {
-            agents[agent] = { state: "FAILED", attempt, maxAttempts: PROVIDER_ATTEMPTS, error: "Council run stopped." };
-            return tagRun(
-              responseFromError(input.task.id, agent, round, modelId, system, user, "Council run stopped.", manifest, runProvider),
-              runId,
-            );
+            agents[agent] = { state: "FAILED", attempt, maxAttempts: attempts, error: "Council run stopped." };
+            return errRow("Council run stopped.", attempt);
           }
           await new Promise((r) => setTimeout(r, retryDelayMs(attempt)));
           continue;
@@ -616,82 +684,68 @@ export async function runCouncil(input: {
           ? {
               ...lastFailure,
               provider: runProvider,
-              model: modelId,
+              model: dispatchedModelId,
               stage,
               attempt,
-              maxAttempts: PROVIDER_ATTEMPTS,
+              maxAttempts: attempts,
               retryExhausted: retryable,
               message: "",
             }
           : providerFailure({
               provider: runProvider,
-              model: modelId,
+              model: dispatchedModelId,
               stage,
               attempt,
-              maxAttempts: PROVIDER_ATTEMPTS,
+              maxAttempts: attempts,
               retryExhausted: retryable,
+              errorClass: "PROVIDER_ERROR",
             });
         failure.message = formatProviderFailure(failure);
-        agents[agent] = { state: "FAILED", attempt, maxAttempts: PROVIDER_ATTEMPTS, error: failure.message };
-        const errRow = tagRun(
-          responseFromError(input.task.id, agent, round, modelId, system, user, failure.message, manifest, runProvider),
-          runId,
-        );
-        emit(
-          round === 3 ? "SYNTHESIS" : round === 2 ? "COUNCIL_ROUND_2" : "COUNCIL_ROUND_1",
-          round === 3 ? "SYNTHESIS" : round === 2 ? "ROUND_2" : "ROUND_1",
-          failure.message,
-          { responses: [errRow] },
-        );
-        return errRow;
+        agents[agent] = { state: "FAILED", attempt, maxAttempts: attempts, error: failure.message };
+        const row = errRow(failure.message, attempt);
+        emit(taskStatus, emitStage, failure.message, { responses: [row] });
+        return row;
       }
       const fallback = providerFailure({
         provider: runProvider,
-        model: modelId,
+        model: dispatchedModelId,
         stage,
-        attempt: PROVIDER_ATTEMPTS,
-        maxAttempts: PROVIDER_ATTEMPTS,
+        attempt: attempts,
+        maxAttempts: attempts,
         retryExhausted: true,
+        errorClass: "PROVIDER_ERROR",
       });
       agents[agent] = {
         state: "FAILED",
-        attempt: PROVIDER_ATTEMPTS,
-        maxAttempts: PROVIDER_ATTEMPTS,
+        attempt: attempts,
+        maxAttempts: attempts,
         error: fallback.message,
       };
-      const errRow = tagRun(
-        responseFromError(input.task.id, agent, round, modelId, system, user, fallback.message, manifest, runProvider),
-        runId,
-      );
-      emit(
-        round === 3 ? "SYNTHESIS" : round === 2 ? "COUNCIL_ROUND_2" : "COUNCIL_ROUND_1",
-        round === 3 ? "SYNTHESIS" : round === 2 ? "ROUND_2" : "ROUND_1",
-        fallback.message,
-        { responses: [errRow] },
-      );
-      return errRow;
+      const row = errRow(fallback.message, attempts);
+      emit(taskStatus, emitStage, fallback.message, { responses: [row] });
+      return row;
     };
 
     stageStartedAt = now();
     for (const member of members) {
-      const kept = (input.resume?.responses ?? []).some((row) => row.agent === member.role && row.round === 1 && !row.error);
-      agents[member.role] = kept
+      const kept = resumeKept.some((row) => responseMemberId(row) === member.memberId);
+      agents[member.memberId] = kept
         ? { state: "DONE", attempt: 1, maxAttempts: PROVIDER_ATTEMPTS, error: null }
         : { state: "RUNNING", attempt: 1, maxAttempts: PROVIDER_ATTEMPTS, error: null };
     }
-    const priorByAgent = new Map(resumeKept.map((row) => [row.agent, row]));
+    const priorByAgent = new Map(resumeKept.map((row) => [responseMemberId(row), row]));
     emit("COUNCIL_ROUND_1", "ROUND_1", `Round 1 — ${members.length} Council models.`, { manifest });
     await yieldFn();
     throwIfCancelled(runId, signal);
 
     const round1 = await Promise.all(
       members.map(async (member) => {
-        const kept = priorByAgent.get(member.role);
+        const kept = priorByAgent.get(member.memberId);
         if (kept) {
-          agents[member.role] = { state: "DONE", attempt: 1, maxAttempts: PROVIDER_ATTEMPTS, error: null };
+          agents[member.memberId] = { state: "DONE", attempt: 1, maxAttempts: PROVIDER_ATTEMPTS, error: null };
           return kept;
         }
-        return ask(member.role, 1, roles[member.role], ctx, AGENT_MAX, 0.2);
+        return ask(member, "ROUND_1", roles[member.memberId], ctx, AGENT_MAX, 0.2);
       }),
     );
     responses.push(...round1);
@@ -702,7 +756,9 @@ export async function runCouncil(input: {
       emit("FAILED", "ROUND_1", fail1.reason, { responses: [...responses] });
       return fail(fail1.reason, "ROUND_1", { partial: true });
     }
-    const alive = survivingResponses(round1).map((row) => row.agent);
+    const aliveMembers = members.filter((member) =>
+      survivingResponses(round1).some((row) => responseMemberId(row) === member.memberId),
+    );
 
     throwIfCancelled(runId, signal);
     stageStartedAt = now();
@@ -714,20 +770,20 @@ export async function runCouncil(input: {
         : "Round 2 — the surviving reviewers are reading each other.",
     );
     const round2 = await Promise.all(
-      alive.map((agent) => {
-        const system = `${roles[agent]}\n${ROUND2}`;
+      aliveMembers.map((member) => {
+        const system = `${roles[member.memberId]}\n${ROUND2}`;
         const others = members
-          .map((member) => {
-            const row = round1.find((item) => item.agent === member.role);
-            return `${member.role} (${member.label}) ROUND 1\n${row?.responseText ?? "(failed)"}`;
+          .map((row) => {
+            const prior = round1.find((item) => responseMemberId(item) === row.memberId);
+            return `${row.memberId} ${row.role} (${row.label}) ROUND 1\n${prior?.responseText ?? "(failed)"}`;
           })
           .join("\n\n");
         const user = [
           ctx,
-          `YOUR ROUND 1 POSITION\n${round1.find((row) => row.agent === agent)?.responseText ?? ""}`,
+          `YOUR ROUND 1 POSITION\n${round1.find((row) => responseMemberId(row) === member.memberId)?.responseText ?? ""}`,
           others,
         ].join("\n\n");
-        return ask(agent, 2, system, user, AGENT_MAX, 0.2);
+        return ask(member, "ROUND_2", system, user, AGENT_MAX, 0.2);
       }),
     );
     responses.push(...round2);
@@ -740,54 +796,93 @@ export async function runCouncil(input: {
     }
 
     throwIfCancelled(runId, signal);
-    const synthSpec = synthesisForMode(mode, agentKeys);
-    const synthAgent = synthesizerAgent(round2, members, input.creds.synthesizerModel);
-    const synthMember = members.find((row) => row.role === synthAgent);
-    if (!synthMember || !selectedIds.includes(synthMember.modelId)) {
-      return fail("Synthesis refused to use an unselected model.", "SYNTHESIS");
+    const synthSpec = synthesisForMode(mode, members);
+    const queue = synthesizerQueue(round2, members, input.creds.synthesizerModel).filter((row) =>
+      selectedIds.includes(row.modelId),
+    );
+    if (!queue.length) {
+      return fail("Synthesis refused: no selected surviving member.", "SYNTHESIS", { partial: true });
     }
     stageStartedAt = now();
     emit(
       "SYNTHESIS",
       "SYNTHESIS",
       mode === "CREATE"
-        ? `Artifact synthesis — ${synthMember.label}.`
-        : `Synthesis — ${synthMember.label} combining the positions.`,
+        ? `Artifact synthesis — ${queue[0].label}.`
+        : `Synthesis — ${queue[0].label} combining the positions.`,
     );
     const synthUser = [
       `CONTEXT MANIFEST HASH ${manifest.hash}`,
       ctx,
-      ...alive.map((agent) => {
-        const member = members.find((row) => row.role === agent);
-        return `ROUND 2 ${agent} (${member?.label ?? agent})\n${round2.find((row) => row.agent === agent)?.responseText ?? ""}`;
+      ...aliveMembers.map((member) => {
+        return `ROUND 2 ${member.memberId} ${member.role} (${member.label})\n${round2.find((row) => responseMemberId(row) === member.memberId)?.responseText ?? ""}`;
       }),
     ].join("\n\n");
-    const synth = await ask(synthAgent, 3, synthSpec.prompt, synthUser, synthSpec.max, 0, synthSpec.schema);
-    responses.push(synth);
-    if (isCancelledSignal(signal)) return finishCancelled();
-    emit("SYNTHESIS", "SYNTHESIS", "Synthesis complete.", { responses: [...responses] });
-    if (synth.error) {
-      return fail(synth.error, "SYNTHESIS");
-    }
-    if (!selectedIds.includes(synth.model) && synth.model && !selectedIds.includes(models[synthAgent])) {
-      return fail("Synthesis used a model that was not selected.", "SYNTHESIS");
-    }
-    const parsed = parseJson(synth.responseText);
-    if (!parsed) {
-      return fail(
-        "The final Council response could not be validated. The raw response was preserved for review.",
+
+    const remainingBudget = () => {
+      const snap = requests.snapshot();
+      return Math.max(0, snap.limit - snap.used);
+    };
+    const synthAttempts: AgentResponse[] = [];
+    let synth: AgentResponse | null = null;
+    let parsed: ReturnType<typeof parseJson> = null;
+    for (let i = 0; i < queue.length; i += 1) {
+      const synthMember = queue[i];
+      if (!selectedIds.includes(synthMember.modelId)) continue;
+      const leftover = queue.length - i;
+      const per = Math.max(1, Math.min(PROVIDER_ATTEMPTS, Math.floor(Math.max(1, remainingBudget()) / leftover)));
+      emit(
         "SYNTHESIS",
+        "SYNTHESIS",
+        i === 0
+          ? `Synthesis — ${synthMember.label}.`
+          : `Preferred synthesizer failed. Trying next selected survivor ${synthMember.label}.`,
+      );
+      const row = await ask(
+        synthMember,
+        "SYNTHESIS",
+        synthSpec.prompt,
+        synthUser,
+        synthSpec.max,
+        0,
+        synthSpec.schema,
+        per,
+      );
+      synthAttempts.push(row);
+      responses.push(row);
+      if (isCancelledSignal(signal)) return finishCancelled();
+      if (row.error) continue;
+      if (row.dispatchedModelId && row.dispatchedModelId !== synthMember.modelId) {
+        continue;
+      }
+      if (!selectedIds.includes(row.dispatchedModelId || synthMember.modelId)) continue;
+      const json = parseJson(row.responseText);
+      if (!json) continue;
+      if (mode === "CREATE" && !json.artifact) continue;
+      synth = row;
+      parsed = json;
+      break;
+    }
+    emit("SYNTHESIS", "SYNTHESIS", synth ? "Synthesis complete." : "Synthesis failed.", { responses: [...responses] });
+    if (!synth || !parsed) {
+      const details = synthAttempts
+        .map((row) => row.error || "invalid synthesis response")
+        .join(" ");
+      return fail(
+        `Synthesis failed after ${synthAttempts.length} selected survivor attempt(s). ${details}`.trim(),
+        "SYNTHESIS",
+        { partial: true },
       );
     }
     const gated = applyGate(parsed, survivingResponses(round2), mode);
     const failedAgents = failedResponses(responses)
-      .map((row) => row.agent)
-      .filter((agent, index, all) => all.indexOf(agent) === index);
+      .map((row) => responseMemberId(row))
+      .filter((agent, index, all) => agent && all.indexOf(agent) === index);
     let artifact: Artifact | null = null;
     if (mode === "CREATE") {
       const drafted = parsed.artifact;
       if (!drafted) {
-        return fail("CREATE synthesis did not produce an artifact.", "SYNTHESIS");
+        return fail("CREATE synthesis did not produce an artifact.", "SYNTHESIS", { partial: true });
       }
       const sanitized = sanitizeEvidenceLabels(
         normalizeEvidenceLabels(drafted.evidenceLabels),

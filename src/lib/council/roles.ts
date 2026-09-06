@@ -1,4 +1,4 @@
-/** Dynamic Council roles. These are guidance, not vendor identities. */
+/** Dynamic Council roles. These are guidance, not member identity. */
 
 export const COUNCIL_ROLES = [
   "LEAD_REASONER",
@@ -9,7 +9,8 @@ export const COUNCIL_ROLES = [
 ] as const;
 
 export type CouncilRole = (typeof COUNCIL_ROLES)[number];
-export type AgentKey = CouncilRole;
+/** AgentKey is the immutable member_id. Never treat a role as identity. */
+export type AgentKey = string;
 
 export const DEFAULT_ROLES: CouncilRole[] = ["LEAD_REASONER", "ADVERSARIAL", "FORMAL_REVIEW"];
 

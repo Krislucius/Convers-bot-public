@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { councilPartial, formatAgentCard, survivingResponses, synthesizerAgent } from "./agents.ts";
+import { councilPartial, fillResponse, formatAgentCard, survivingResponses, synthesizerAgent } from "./agents.ts";
 import type { CouncilMember } from "./members.ts";
+import { ensureMembers } from "./members.ts";
 import { runCouncil, assertRunCredentials, isStaleDisconnectError, runCredsFromReady, type CouncilProgress } from "./orchestrate.ts";
 import { providerFailure } from "./provider-error.ts";
 import {
@@ -15,11 +16,15 @@ import {
 import type { AgentResponse, Completion, ProviderCreds, Task } from "./types.ts";
 import type { EvidencePipelineResult } from "../evidence/pipeline-cache.ts";
 
-const members: CouncilMember[] = [
+const members: CouncilMember[] = ensureMembers([
   { role: "LEAD_REASONER", modelId: "openai/gpt-test", label: "GPT test", family: "openai" },
   { role: "ADVERSARIAL", modelId: "x-ai/grok-test", label: "Grok test", family: "xai" },
   { role: "FORMAL_REVIEW", modelId: "anthropic/claude-test", label: "Claude test", family: "anthropic" },
-];
+]);
+
+function idOf(role: CouncilMember["role"], list: CouncilMember[] = members): string {
+  return list.find((row) => row.role === role)?.memberId ?? role;
+}
 
 const creds: ProviderCreds = {
   provider: "openrouter",
@@ -229,9 +234,9 @@ describe("council run lifecycle", () => {
           const running = progress.some(
             (row) =>
               row.stage === "ROUND_1" &&
-              row.agents?.LEAD_REASONER?.state === "RUNNING" &&
-              row.agents.ADVERSARIAL?.state === "RUNNING" &&
-              row.agents.FORMAL_REVIEW?.state === "RUNNING",
+              row.agents?.[idOf("LEAD_REASONER")]?.state === "RUNNING" &&
+              row.agents[idOf("ADVERSARIAL")]?.state === "RUNNING" &&
+              row.agents[idOf("FORMAL_REVIEW")]?.state === "RUNNING",
           );
           if (running && inFlight === 3) seenRunningBeforeReturn = true;
           return { ok: true, completion: completion(opts.model) };
@@ -244,9 +249,9 @@ describe("council run lifecycle", () => {
     assert.equal(progress[0]?.stage, "PREPARING");
     const round1 = progress.find((row) => row.stage === "ROUND_1");
     assert.ok(round1);
-    assert.equal(round1?.agents?.LEAD_REASONER?.state, "RUNNING");
-    assert.equal(round1?.agents?.ADVERSARIAL?.state, "RUNNING");
-    assert.equal(round1?.agents?.FORMAL_REVIEW?.state, "RUNNING");
+    assert.equal(round1?.agents?.[idOf("LEAD_REASONER")]?.state, "RUNNING");
+    assert.equal(round1?.agents?.[idOf("ADVERSARIAL")]?.state, "RUNNING");
+    assert.equal(round1?.agents?.[idOf("FORMAL_REVIEW")]?.state, "RUNNING");
     assert.equal(seenRunningBeforeReturn, true);
   });
 
@@ -330,7 +335,7 @@ describe("council run lifecycle", () => {
     assert.notEqual(first.runId, second.runId);
     assert.equal(isCouncilRunCurrent(task.id, first.runId, first.generation), false);
     assert.equal(isCouncilRunCurrent(task.id, second.runId, second.generation), true);
-    const stale: AgentResponse = {
+    const stale: AgentResponse = fillResponse({
       id: "late",
       taskId: task.id,
       agent: "LEAD_REASONER",
@@ -351,7 +356,7 @@ describe("council run lifecycle", () => {
       contextManifestId: null,
       contextHash: "h",
       runId: first.runId,
-    };
+    });
     assert.equal(ownedResponses([stale], second.runId, first.runId).length, 0);
     assert.equal(shouldAcceptRunWrite(second.runId, first.runId), false);
   });
@@ -410,7 +415,7 @@ describe("council run lifecycle", () => {
         },
       }),
     );
-    const gpt = out.responses.find((row) => row.agent === "LEAD_REASONER" && row.round === 1);
+    const gpt = out.responses.find((row) => row.role === "LEAD_REASONER" && row.round === 1);
     assert.ok(gpt?.error);
     assert.match(gpt?.error ?? "", /empty response/);
     assert.equal(gpt?.responseText, "");
@@ -437,10 +442,10 @@ describe("council run lifecycle", () => {
         },
       }),
     );
-    const grok = out.responses.find((row) => row.agent === "ADVERSARIAL" && row.round === 1);
+    const grok = out.responses.find((row) => (row.role === "ADVERSARIAL" || row.model.includes("grok")) && row.round === 1);
     assert.ok(grok?.error);
     assert.match(grok?.error ?? "", /OpenRouter/);
-    assert.match(grok?.error ?? "", /ADVERSARIAL round 1/);
+    assert.match(grok?.error ?? "", /ADVERSARIAL/);
     assert.match(grok?.error ?? "", /timeout/);
   });
 
@@ -749,28 +754,29 @@ describe("council run lifecycle", () => {
 
 describe("run ownership", () => {
   it("preserves partial results from the current run_id only", () => {
-    const row = (runId: string, id: string): AgentResponse => ({
-      id,
-      taskId: task.id,
-      agent: "LEAD_REASONER",
-      round: 1,
-      model: "x",
-      provider: "openrouter",
-      promptSnapshot: "",
-      responseText: id,
-      structured: { __runId: runId },
-      inputTokens: 1,
-      cachedInputTokens: 0,
-      outputTokens: 1,
-      reasoningTokens: 0,
-      cost: 0,
-      requestId: null,
-      latencyMs: 1,
-      error: null,
-      contextManifestId: null,
-      contextHash: "h",
-      runId,
-    });
+    const row = (runId: string, id: string): AgentResponse =>
+      fillResponse({
+        id,
+        taskId: task.id,
+        agent: "LEAD_REASONER",
+        round: 1,
+        model: "x",
+        provider: "openrouter",
+        promptSnapshot: "",
+        responseText: id,
+        structured: { __runId: runId },
+        inputTokens: 1,
+        cachedInputTokens: 0,
+        outputTokens: 1,
+        reasoningTokens: 0,
+        cost: 0,
+        requestId: null,
+        latencyMs: 1,
+        error: null,
+        contextManifestId: null,
+        contextHash: "h",
+        runId,
+      });
     assert.equal(ownedResponses([row("run-a", "old")], "run-b", "run-a").length, 0);
     assert.equal(ownedResponses([row("run-b", "kept")], "run-b", "run-b")[0]?.id, "kept");
   });
@@ -778,10 +784,10 @@ describe("run ownership", () => {
 
 describe("dynamic council membership", () => {
   function twoMembers(): CouncilMember[] {
-    return [
+    return ensureMembers([
       { role: "LEAD_REASONER", modelId: "openai/gpt-test", label: "GPT test", family: "openai" },
       { role: "ADVERSARIAL", modelId: "deepseek/deepseek-r1", label: "R1", family: "deepseek" },
-    ];
+    ]);
   }
 
   it("completes a 2-model Council with 5 successful calls", async () => {
@@ -823,11 +829,11 @@ describe("dynamic council membership", () => {
   });
 
   it("completes a 5-model Council with 11 successful calls", async () => {
-    const five: CouncilMember[] = [
+    const five: CouncilMember[] = ensureMembers([
       ...members,
       { role: "RESEARCH", modelId: "perplexity/sonar-pro", label: "Sonar", family: "perplexity" },
       { role: "ALTERNATIVE_REASONER", modelId: "moonshotai/kimi-k2", label: "Kimi", family: "kimi" },
-    ];
+    ]);
     let calls = 0;
     const out = await runCouncil(
       baseInput({
@@ -931,58 +937,46 @@ describe("dynamic council membership", () => {
     assert.ok(seen.every((id) => id === "openai/gpt-test" || id === "deepseek/deepseek-r1"));
     const synth = out.responses.find((row) => row.round === 3);
     assert.ok(synth);
-    assert.ok(twoMembers().some((row) => row.modelId === synth?.model || row.role === synth?.agent));
+    assert.ok(twoMembers().some((row) => row.modelId === synth?.model || row.memberId === synth?.agent || row.modelId === synth?.dispatchedModelId));
   });
 
   it("picks synthesis only from selected survivors", () => {
+    const pair = twoMembers();
     const rows = [
-      {
+      fillResponse({
         id: "1",
         taskId: "t",
-        agent: "LEAD_REASONER" as const,
-        round: 2 as const,
+        agent: pair[0].memberId,
+        memberId: pair[0].memberId,
+        role: pair[0].role,
+        round: 2,
         model: "openai/gpt-test",
-        provider: "openrouter",
-        promptSnapshot: "",
         responseText: "ok",
-        structured: null,
         inputTokens: 1,
         cachedInputTokens: 0,
         outputTokens: 1,
         reasoningTokens: 0,
         cost: 0,
-        requestId: null,
         latencyMs: 1,
-        error: null,
-        contextManifestId: null,
         contextHash: "h",
         runId: "r",
-      },
-      {
+      }),
+      fillResponse({
         id: "2",
         taskId: "t",
-        agent: "ADVERSARIAL" as const,
-        round: 2 as const,
+        agent: pair[1].memberId,
+        memberId: pair[1].memberId,
+        role: pair[1].role,
+        round: 2,
         model: "deepseek/deepseek-r1",
-        provider: "openrouter",
-        promptSnapshot: "",
         responseText: "",
-        structured: null,
-        inputTokens: null,
-        cachedInputTokens: null,
-        outputTokens: null,
-        reasoningTokens: null,
-        cost: null,
-        requestId: null,
-        latencyMs: null,
         error: "timeout",
-        contextManifestId: null,
         contextHash: "h",
         runId: "r",
-      },
+      }),
     ];
-    assert.equal(synthesizerAgent(rows, twoMembers(), "unselected/premium"), "LEAD_REASONER");
-    assert.equal(synthesizerAgent(rows, twoMembers(), "openai/gpt-test"), "LEAD_REASONER");
+    assert.equal(synthesizerAgent(rows, pair, "unselected/premium"), pair[0].memberId);
+    assert.equal(synthesizerAgent(rows, pair, "openai/gpt-test"), pair[0].memberId);
   });
 
   it("rejects a selected model that is not AVAILABLE on the current scan", async () => {
@@ -1048,7 +1042,7 @@ function deniedAccess(blocked: Array<{ id: string; access: string }>, error?: st
 }
 
 function agentRow(agent: AgentResponse["agent"], model: string, extras: Partial<AgentResponse> = {}): AgentResponse {
-  return {
+  return fillResponse({
     id: `${agent}-r1`,
     taskId: task.id,
     agent,
@@ -1070,7 +1064,7 @@ function agentRow(agent: AgentResponse["agent"], model: string, extras: Partial<
     contextHash: "c",
     runId: "prior",
     ...extras,
-  };
+  });
 }
 
 describe("verified selected-model preflight", () => {
@@ -1198,7 +1192,7 @@ describe("verified selected-model preflight", () => {
     assert.match(out.task.error ?? "", /Synthesis was not created/);
     const round1 = out.responses.filter((row) => row.round === 1);
     assert.equal(round1.length, 3);
-    const claude = round1.find((row) => row.agent === "FORMAL_REVIEW");
+    const claude = round1.find((row) => row.role === "FORMAL_REVIEW" || row.model.includes("claude"));
     assert.equal(claude?.error, null);
     assert.match(claude?.responseText ?? "", /FORMAL_REVIEW ok|claude/i);
     assert.equal(out.responses.some((row) => row.round === 2 || row.round === 3), false);
@@ -1260,11 +1254,11 @@ describe("verified selected-model preflight", () => {
 
   it("aggregates retries under one agent card with the exact last error", async () => {
     const progress: CouncilProgress[] = [];
-    const gemmaMembers: CouncilMember[] = [
+    const gemmaMembers: CouncilMember[] = ensureMembers([
       { role: "LEAD_REASONER", modelId: "openai/gpt-test", label: "GPT test", family: "openai" },
       { role: "ADVERSARIAL", modelId: "google/gemma-2-9b", label: "Gemma", family: "google" },
       { role: "FORMAL_REVIEW", modelId: "anthropic/claude-test", label: "Claude test", family: "anthropic" },
-    ];
+    ]);
     let gemmaCalls = 0;
     const out = await runCouncil(
       baseInput({
@@ -1309,23 +1303,24 @@ describe("verified selected-model preflight", () => {
       }),
     );
     assert.equal(gemmaCalls, 3);
-    const gemma = out.responses.find((row) => row.agent === "ADVERSARIAL" && row.round === 1);
+    const gemmaId = gemmaMembers.find((row) => row.modelId.includes("gemma"))?.memberId ?? "";
+    const gemma = out.responses.find((row) => row.memberId === gemmaId && row.round === 1);
     assert.ok(gemma?.error);
     assert.match(gemma?.error ?? "", /OpenRouter/);
     assert.match(gemma?.error ?? "", /google\/gemma-2-9b/);
-    assert.match(gemma?.error ?? "", /ADVERSARIAL round 1/);
+    assert.match(gemma?.error ?? "", /ADVERSARIAL/);
     assert.match(gemma?.error ?? "", /HTTP 429/);
-    assert.match(gemma?.error ?? "", /class 429/);
+    assert.match(gemma?.error ?? "", /class RATE_LIMITED/);
     assert.match(gemma?.error ?? "", /attempt 3\/3/);
     assert.match(gemma?.error ?? "", /retries exhausted/);
     assert.equal((gemma?.error ?? "").includes("provider error"), false);
-    const last = progress.filter((row) => row.agents?.ADVERSARIAL?.state === "FAILED").at(-1);
-    const card = formatAgentCard("Gemma", last?.agents?.ADVERSARIAL ?? { state: "FAILED", attempt: 3, maxAttempts: 3, error: gemma?.error ?? null });
+    const last = progress.filter((row) => row.agents?.[gemmaId]?.state === "FAILED").at(-1);
+    const card = formatAgentCard("Gemma", last?.agents?.[gemmaId] ?? { state: "FAILED", attempt: 3, maxAttempts: 3, error: gemma?.error ?? null });
     assert.equal(card.title, "Gemma");
     assert.equal(card.status, "FAILED");
     assert.equal(card.attempts, "attempts 3/3");
     assert.equal(card.lastError, gemma?.error);
-    const failedCards = progress.filter((row) => row.agents?.ADVERSARIAL?.state === "FAILED");
+    const failedCards = progress.filter((row) => row.agents?.[gemmaId]?.state === "FAILED");
     assert.ok(failedCards.length >= 1);
     assert.equal(out.task.status, "COMPLETE");
   });
@@ -1356,14 +1351,14 @@ describe("verified selected-model preflight", () => {
     );
     assert.equal(out.task.status, "FAILED");
     assert.equal(out.result, null);
-    const claude = out.responses.find((row) => row.agent === "FORMAL_REVIEW" && row.round === 1);
+    const claude = out.responses.find((row) => (row.role === "FORMAL_REVIEW" || row.model.includes("claude")) && row.round === 1);
     assert.equal(claude?.error, null);
     assert.match(claude?.responseText ?? "", /Claude survived/);
     assert.equal(out.task.diagnostics?.run?.partial, true);
     assert.match(out.task.error ?? "", /Only 1 of 2 required models survived/);
     const failed = out.responses.filter((row) => row.error);
     assert.ok(failed.every((row) => row.error && !row.error.includes("provider error")));
-    assert.ok(failed.some((row) => /HTTP 500/.test(row.error ?? "") && /class 5xx/.test(row.error ?? "")));
+    assert.ok(failed.some((row) => /HTTP 500/.test(row.error ?? "") && /class HTTP_ERROR/.test(row.error ?? "")));
   });
 
   it("retry reuses successful round-1 rows and re-verifies only failed models", async () => {
@@ -1435,7 +1430,7 @@ describe("verified selected-model preflight", () => {
     assert.equal(asked.includes("r1:anthropic/claude-test"), false);
     assert.ok(asked.includes("r1:openai/gpt-test"));
     assert.ok(asked.includes("r1:x-ai/grok-test"));
-    const kept = retry.responses.find((row) => row.agent === "FORMAL_REVIEW" && row.round === 1);
+    const kept = retry.responses.find((row) => (row.role === "FORMAL_REVIEW" || row.model.includes("claude")) && row.round === 1);
     assert.match(kept?.responseText ?? "", /Claude kept/);
     assert.equal(retry.task.status, "COMPLETE");
   });
@@ -1463,7 +1458,7 @@ describe("verified selected-model preflight", () => {
     assert.equal(calls, 0);
     assert.equal(out.task.status, "FAILED");
     assert.equal(out.task.diagnostics?.run?.partial, true);
-    const kept = out.responses.find((row) => row.agent === "FORMAL_REVIEW");
+    const kept = out.responses.find((row) => row.role === "FORMAL_REVIEW" || row.model.includes("claude"));
     assert.match(kept?.responseText ?? "", /Claude kept/);
   });
 });

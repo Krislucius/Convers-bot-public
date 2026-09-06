@@ -318,9 +318,9 @@ describe("NanoGPT live routing", () => {
 });
 
 const members: CouncilMember[] = [
-  { role: "LEAD_REASONER", modelId: "openai/gpt-5", label: "GPT-5", family: "openai" },
-  { role: "ADVERSARIAL", modelId: "deepseek/deepseek-r1", label: "DeepSeek R1", family: "deepseek" },
-  { role: "FORMAL_REVIEW", modelId: "anthropic/claude-sonnet-4", label: "Claude", family: "anthropic" },
+  { memberId: "m_lead", role: "LEAD_REASONER", modelId: "openai/gpt-5", label: "GPT-5", family: "openai" },
+  { memberId: "m_adv", role: "ADVERSARIAL", modelId: "deepseek/deepseek-r1", label: "DeepSeek R1", family: "deepseek" },
+  { memberId: "m_form", role: "FORMAL_REVIEW", modelId: "anthropic/claude-sonnet-4", label: "Claude", family: "anthropic" },
 ];
 
 const pipeline: EvidencePipelineResult = {

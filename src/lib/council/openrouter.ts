@@ -47,7 +47,8 @@ function abortedResult(opts: { provider?: ProviderId; model: string; stage?: str
     provider: opts.provider ?? "nanogpt",
     model: opts.model,
     stage: opts.stage ?? "complete",
-    httpClass: "unknown",
+    httpClass: "aborted",
+    errorClass: "ABORTED",
     raw: "Council run stopped.",
   });
   failure.message = "Council run stopped.";

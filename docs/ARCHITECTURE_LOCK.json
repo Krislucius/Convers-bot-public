@@ -1,14 +1,14 @@
 {
   "project_id": "01a048b8-c1f7-7382-9dfd-fb30bff7137d",
   "production_host": "https://cb-gptgrokclaud.grok.me",
-  "architecture_revision": "CB-ARCH-20260906-003",
-  "architecture_hash": "ccfbd714de4a4f1e8310c7e14eaff84f662efb5eeb12bd8daa30234fdc135f83",
-  "module_registry_hash": "531acf15612605c58ee733fa5265d77675e854c3108b15aa2a155624fd019d7a",
-  "schema_hash": "5a830e097babf6ae62bc42d4a1be754f20aeab7b99fb8790fe385bf7ce9212b8",
-  "critical_contract_hash": "b0398f10b3b4b3f807d8cfa906d6c68dbacd647f8c04b29dcfb6581c38938980",
+  "architecture_revision": "CB-ARCH-20260906-004",
+  "architecture_hash": "3972263b8258d94db32bbd4c47e982757ef9f9060f78623b3e14ad049096bdd1",
+  "module_registry_hash": "b03da9bba7fd36adf9e2ec9353bb17e9886dcffbd3178a789557df1e2bc98c48",
+  "schema_hash": "705acc7ea31e33e73a4542f747088d797837e4a5b341c78fa409add1c7910201",
+  "critical_contract_hash": "014cf68dda3b519d2edd2268d9cc7b11aed96383b52ebe975ad1656fd4a8a572",
   "created_at": "2026-08-29T18:45:00.000Z",
-  "build_id": "CB-BUILD-20260906-003",
-  "schema_version": "0010_nanogpt_billing",
+  "build_id": "CB-BUILD-20260906-004",
+  "schema_version": "0011_council_member_identity",
   "source_root": "src",
   "protected_invariants": [
     "ONE_AUTHORITATIVE_PROJECT",
@@ -28,7 +28,8 @@
     "COUNCIL_VERIFIED_SELECTED_PREFLIGHT",
     "NANOGPT_BILLING_MODE_PER_RUN",
     "SETTINGS_SAVE_CANONICAL_SCAN",
-    "SETTINGS_SAVE_CONNECTION_ACCEPTANCE"
+    "SETTINGS_SAVE_CONNECTION_ACCEPTANCE",
+    "COUNCIL_MEMBER_ID_NOT_ROLE"
   ],
   "runtime_shell_hash": "798ee8f88852ed3006b6624985eaeb669f26a525f917a0c4cbee1090331e19f5",
   "runtime_shell_id": "CB-SHELL-20260903-001"

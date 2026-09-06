@@ -111,8 +111,14 @@ export function formatCouncilOpLog(input: {
   };
   responses: Array<{
     agent: string;
+    memberId?: string | null;
+    role?: string | null;
     round: number;
+    stage?: string | null;
     model: string;
+    dispatchedModelId?: string | null;
+    provider?: string | null;
+    attempt?: number | null;
     error: string | null;
     inputTokens: number | null;
     outputTokens: number | null;
@@ -150,9 +156,15 @@ export function formatCouncilOpLog(input: {
         latencyMs: input.task.totalLatencyMs,
       },
       responses: input.responses.map((row) => ({
-        agent: row.agent,
+        memberId: row.memberId || row.agent,
+        agent: row.memberId || row.agent,
+        role: row.role ?? null,
         round: row.round,
+        stage: row.stage ?? null,
         model: row.model,
+        dispatchedModelId: row.dispatchedModelId || row.model,
+        provider: row.provider ?? null,
+        attempt: row.attempt ?? null,
         ok: !row.error,
         error: row.error,
         inputTokens: row.inputTokens,
