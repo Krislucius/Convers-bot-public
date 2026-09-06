@@ -119,3 +119,12 @@ Only ACTIVE rows define current architecture.
 - RATIONALE: Settings probe caps and catalog listings let inaccessible selected models start paid Council runs. Failed runs hid surviving responses and collapsed provider failures into a generic "provider error".
 - SUPERSEDES: none (tightens ADR-010 / ADR-011)
 - AFFECTED_MODULES: council.discovery, council.orchestrator, ui.settings
+
+## ADR-014
+
+- DECISION: NanoGPT Subscription and Pay-as-you-go are first-class, mutually exclusive billing modes. Default is Subscription whenever a subscription catalog is used. Subscription discovery is `GET /api/subscription/v1/models?detailed=true` and is the only catalog that may recommend or select Council models in Subscription mode. Subscription execution (Round 1, Round 2, synthesis, access probes, retries) is `POST /api/subscription/v1/chat/completions`. Generic `/api/v1/models` and `/api/v1/chat/completions` are used only when the user explicitly selects Pay-as-you-go. There is no silent PAYG fallback. HTTP 402 on PAYG is reported as `PAYG_BALANCE_REQUIRED`, never “subscription credits exhausted”. Subscription quota/rate failures are `SUBSCRIPTION_LIMIT_REACHED` / `RATE_LIMITED`. Other classes: `MODEL_NOT_INCLUDED`, `MODEL_UNAVAILABLE`, `PROVIDER_ERROR`. Runtime errors include HTTP status and the sanitized provider message. Billing mode is persisted on the account and frozen on the task for the run.
+- STATUS: ACTIVE
+- ARCHITECTURE_REVISION: CB-ARCH-20260906-001
+- RATIONALE: NanoGPT subscription and PAYG are separate APIs. Routing Council through generic `/api/v1` billed PAYG when the user selected Subscription.
+- SUPERSEDES: none (tightens ADR-009 / ADR-013)
+- AFFECTED_MODULES: council.providers, council.discovery, council.orchestrator, account.persistence, ui.settings

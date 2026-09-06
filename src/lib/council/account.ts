@@ -45,6 +45,7 @@ export const saveAccountSettings = createServerFn({ method: "POST" })
       lastTestLog?: string;
       lastTestAt?: string | null;
       lastTestOk?: boolean | null;
+      nanogptBilling?: import("./nano-billing").NanoGptBillingMode;
     }) => data,
   )
   .handler(async ({ context, data }): Promise<AccountSettingsPublic> => {

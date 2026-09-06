@@ -42,6 +42,7 @@ const emptySettings: AccountSettingsPublic = {
   lastTestLog: "",
   lastTestAt: null,
   lastTestOk: null,
+  nanogptBilling: "subscription",
   nanogpt: { saved: false, masked: "" },
   openrouter: { saved: false, masked: "" },
   openrusrouter: { saved: false, masked: "" },

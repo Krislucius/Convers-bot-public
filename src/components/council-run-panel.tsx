@@ -22,17 +22,24 @@ export function CouncilRunMeter({
   used,
   limit,
   costUsd,
+  billing,
 }: {
   provider: string;
   used: number;
   limit: number;
   costUsd?: number | null;
+  billing?: string | null;
 }) {
   return (
     <p className="m-0 flex flex-wrap gap-x-4 gap-y-1 text-sm tabular-nums">
       <span>
         Provider: <span className="text-fg">{provider}</span>
       </span>
+      {billing ? (
+        <span>
+          Billing: <span className="text-fg">{billing}</span>
+        </span>
+      ) : null}
       <span>
         Calls: <span className="text-fg">{used} / {limit}</span>
       </span>
@@ -58,6 +65,7 @@ export function CouncilRunPanel({
   onRun,
   onProviderChange,
   projectFiles,
+  billing,
 }: {
   project: Project;
   task: Task;
@@ -75,6 +83,7 @@ export function CouncilRunPanel({
   onRun: (pipeline: EvidencePipelineResult) => void;
   onProviderChange?: (provider: ProviderId) => void;
   projectFiles?: ProjectFile[];
+  billing?: string | null;
 }) {
   const candidate = artifacts.find((row) => row.id === task.candidateArtifactId) ?? null;
   const pipeline = cachedEvidencePipeline({
@@ -132,7 +141,13 @@ export function CouncilRunPanel({
         </div>
       </fieldset>
 
-      <CouncilRunMeter provider={providerName(provider)} used={0} limit={limit} costUsd={estimate.costUsd} />
+      <CouncilRunMeter
+        provider={providerName(provider)}
+        used={0}
+        limit={limit}
+        costUsd={estimate.costUsd}
+        billing={billing}
+      />
 
       <dl className="m-0 mt-4 grid grid-cols-3 gap-2 lg:grid-cols-5">
         <Stat label="Mode" value={task.mode} />

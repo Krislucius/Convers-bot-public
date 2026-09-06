@@ -12,11 +12,12 @@ import { testProvider } from "@/lib/council/openrouter";
 import { PROVIDER_IDS, PROVIDERS, slotFor } from "@/lib/council/providers";
 import { useSession } from "@/lib/council/session";
 import type { DiscoverySnapshot, ProviderId } from "@/lib/council/types";
+import { billingLabel, type NanoGptBillingMode } from "@/lib/council/nano-billing";
 
 export const Route = createFileRoute("/settings")({ component: SettingsPage });
 
 function SettingsPage() {
-  const { config, save, clearKey, setProvider } = useSession();
+  const { config, save, clearKey, setProvider, setNanoGptBilling } = useSession();
   const navigate = useNavigate();
   const provider = config.provider;
   const meta = PROVIDERS[provider];
@@ -70,6 +71,7 @@ function SettingsPage() {
       maxCostUsd: config.maxCostUsd > 0 ? config.maxCostUsd : 1,
       selectedModelIds: selectedIds,
       catalog: liveCatalog,
+      nanogptBilling: config.nanogptBilling,
     };
   }
 
@@ -128,6 +130,18 @@ function SettingsPage() {
     setProvider(next);
     setApiKey("");
     setShowKey(false);
+    setLog("");
+    setMsg("");
+    setQuery("");
+    setCatalog(null);
+    setLastTestOk(null);
+    setSelectedIds([]);
+    setSynthesizerModel("");
+  }
+
+  function onBilling(next: NanoGptBillingMode) {
+    if (next === config.nanogptBilling) return;
+    setNanoGptBilling(next);
     setLog("");
     setMsg("");
     setQuery("");
@@ -289,7 +303,8 @@ function SettingsPage() {
       <PageHeader title="API Settings">
         <p className="max-w-measure text-muted">
           NanoGPT and OpenRouter are API providers, not Council members. Test Connection discovers models this key can
-          actually call. Only AVAILABLE models can join the Council.
+          actually call. NanoGPT Subscription and Pay-as-you-go are separate APIs — Council never mixes them. Only
+          AVAILABLE models from the current billing catalog can join the Council.
         </p>
       </PageHeader>
 
@@ -323,6 +338,40 @@ function SettingsPage() {
               })}
             </div>
           </fieldset>
+          {provider === "nanogpt" ? (
+            <fieldset className="grid gap-2">
+              <legend className="text-xs font-semibold tracking-widest text-muted uppercase">NanoGPT billing</legend>
+              <div className="flex flex-wrap gap-2">
+                {(
+                  [
+                    ["subscription", "Subscription"],
+                    ["payg", "Pay-as-you-go"],
+                  ] as const
+                ).map(([id, label]) => {
+                  const selected = config.nanogptBilling === id;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => onBilling(id)}
+                      className={`min-h-11 rounded-sm px-3.5 py-2.5 font-semibold ${
+                        selected
+                          ? "border border-accent bg-accent text-accent-fg"
+                          : "border border-line bg-transparent text-fg"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="m-0 max-w-measure text-sm text-muted">
+                Subscription uses the subscription catalog and{" "}
+                <span className="font-mono text-xs">/api/subscription/v1/chat/completions</span>. Pay-as-you-go uses the
+                generic catalog only when you select it. Council never falls back.
+              </p>
+            </fieldset>
+          ) : null}
           <Field label={`${meta.name} key`}>
             <div className="flex flex-wrap gap-2">
               <TextInput
@@ -386,9 +435,20 @@ function SettingsPage() {
         <h2 className="font-display mt-0 mb-4 text-xl">{meta.name}</h2>
         <dl className="m-0 grid gap-3 sm:grid-cols-2">
           <StatusRow label="Provider" value={meta.name} />
+          {provider === "nanogpt" ? (
+            <StatusRow label="Billing" value={billingLabel(config.nanogptBilling)} />
+          ) : null}
           <StatusRow label="Status" value={view.status} ok={statusOk} />
           <StatusRow label="Last tested" value={lastTested} />
-          <StatusRow label="Models discovered" value={String(view.discovered)} />
+          {provider === "nanogpt" && config.nanogptBilling === "subscription" ? (
+            <StatusRow label="Subscription models" value={String(view.discovered)} />
+          ) : (
+            <StatusRow label="Models discovered" value={String(view.discovered)} />
+          )}
+          <StatusRow
+            label="Selected Council"
+            value={String(selectedIds.length)}
+          />
           <StatusRow label="Models available" value={String(view.available)} />
         </dl>
         {view.stale ? (

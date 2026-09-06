@@ -46,6 +46,7 @@ import { createRequestCounter, isEmptyCompletion, isRequestLimitError, type Requ
 import { MODEL_UNAVAILABLE, type CatalogCheckResult } from "./catalog.ts";
 import { accessBlocksRun, isVerifiedAvailable, type DiscoveredModel } from "./discover.ts";
 import { assertCouncilSelection, type CouncilMember } from "./members.ts";
+import { normalizeNanoGptBilling, type NanoGptBillingMode } from "./nano-billing.ts";
 import type {
   AgentKey,
   AgentProgress,
@@ -92,6 +93,7 @@ export type CouncilCompleteChat = (opts: {
   temperature: number;
   responseFormat?: Record<string, unknown>;
   signal?: AbortSignal;
+  nanogptBilling?: NanoGptBillingMode;
 }) => Promise<{ ok: true; completion: Completion } | { ok: false; error: string; failure?: ProviderFailure }>;
 
 export type CouncilRuntime = {
@@ -100,11 +102,13 @@ export type CouncilRuntime = {
     provider: ProviderId;
     apiKey: string;
     models: string[];
+    nanogptBilling?: NanoGptBillingMode;
   }) => Promise<CatalogCheckResult>;
   accessCheck?: (opts: {
     provider: ProviderId;
     apiKey: string;
     models: string[];
+    nanogptBilling?: NanoGptBillingMode;
   }) => Promise<{ ok: boolean; blocked: Array<{ id: string; access: string }>; error?: string }>;
   now?: () => string;
   yieldFn?: () => Promise<void>;
@@ -126,18 +130,24 @@ async function defaultCatalogCheck(opts: {
   provider: ProviderId;
   apiKey: string;
   models: string[];
+  nanogptBilling?: NanoGptBillingMode;
 }): Promise<CatalogCheckResult> {
   const mod = await import("./run-council.ts");
-  return mod.checkCatalog({ data: { provider: opts.provider, apiKey: opts.apiKey, models: opts.models } });
+  return mod.checkCatalog({
+    data: { provider: opts.provider, apiKey: opts.apiKey, models: opts.models, nanogptBilling: opts.nanogptBilling },
+  });
 }
 
 async function defaultAccessCheck(opts: {
   provider: ProviderId;
   apiKey: string;
   models: string[];
+  nanogptBilling?: NanoGptBillingMode;
 }): Promise<{ ok: boolean; blocked: Array<{ id: string; access: string }>; error?: string }> {
   const mod = await import("./run-council.ts");
-  return mod.checkAccess({ data: { provider: opts.provider, apiKey: opts.apiKey, models: opts.models } });
+  return mod.checkAccess({
+    data: { provider: opts.provider, apiKey: opts.apiKey, models: opts.models, nanogptBilling: opts.nanogptBilling },
+  });
 }
 
 function waitingAgents(members: CouncilMember[]): Partial<Record<AgentKey, AgentProgress>> {
@@ -155,6 +165,7 @@ export function runCredsFromReady(config: {
   members: CouncilMember[];
   synthesizerModel: string;
   maxCostUsd: number;
+  nanogptBilling?: NanoGptBillingMode;
 }): ProviderCreds | null {
   if (!config.ready) return null;
   if (assertCouncilSelection(config.members.map((row) => row.modelId))) return null;
@@ -164,6 +175,7 @@ export function runCredsFromReady(config: {
     members: config.members,
     synthesizerModel: config.synthesizerModel,
     maxCostUsd: config.maxCostUsd,
+    nanogptBilling: config.provider === "nanogpt" ? normalizeNanoGptBilling(config.nanogptBilling) : undefined,
   };
 }
 
@@ -240,10 +252,17 @@ export async function runCouncil(input: {
   const signal = input.signal;
   const artifacts = input.artifacts ?? [];
   const runProvider: ProviderId = input.creds.provider;
+  const runBilling: NanoGptBillingMode | undefined =
+    runProvider === "nanogpt" ? normalizeNanoGptBilling(input.creds.nanogptBilling ?? input.task.nanogptBilling) : undefined;
   const members = input.creds.members;
   const agentKeys = members.map((row) => row.role);
   const selectedIds = members.map((row) => row.modelId);
-  const boundTask: Task = { ...input.task, provider: runProvider, selectedModels: members };
+  const boundTask: Task = {
+    ...input.task,
+    provider: runProvider,
+    selectedModels: members,
+    nanogptBilling: runBilling ?? null,
+  };
   const precheck = councilPreflight({ task: boundTask, artifacts });
   if (!precheck.ok) {
     return precheckOutput(boundTask, precheck.error ?? "PRECHECK_FAIL");
@@ -288,6 +307,7 @@ export async function runCouncil(input: {
     costUsd: spent,
     partial: false,
     synthesisSkipped: null,
+    nanogptBilling: runBilling,
   });
 
   const emit = (status: TaskStatus, stage: CouncilStageName, message: string, extra?: Partial<CouncilProgress>) => {
@@ -396,6 +416,7 @@ export async function runCouncil(input: {
       provider: runProvider,
       apiKey: key,
       models: selectedIds,
+      nanogptBilling: runBilling,
     });
     if (!catalog.ok) {
       const error = catalog.error ?? MODEL_UNAVAILABLE;
@@ -419,6 +440,7 @@ export async function runCouncil(input: {
       provider: runProvider,
       apiKey: key,
       models: verifyIds,
+      nanogptBilling: runBilling,
     });
     const accessError =
       access.error ??
@@ -510,6 +532,7 @@ export async function runCouncil(input: {
             temperature,
             responseFormat,
             signal,
+            nanogptBilling: runBilling,
           });
           if (isCancelledSignal(signal) || (!out.ok && out.error === "Council run stopped.")) {
             agents[agent] = { state: "FAILED", attempt, maxAttempts: PROVIDER_ATTEMPTS, error: "Council run stopped." };

@@ -29,6 +29,7 @@ const emptySettings = {
   lastTestLog: "",
   lastTestAt: null,
   lastTestOk: null,
+  nanogptBilling: "subscription" as const,
   nanogpt: { saved: false, masked: "" },
   openrouter: { saved: false, masked: "" },
   openrusrouter: { saved: false, masked: "" },

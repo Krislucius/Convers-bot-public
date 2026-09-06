@@ -1,6 +1,7 @@
 import type { CouncilMember } from "./members.ts";
 import type { AgentKey, AgentProgress, AgentResponse, ProviderId, TaskStatus } from "./types.ts";
 import type { RequestBudget } from "./request-budget.ts";
+import type { NanoGptBillingMode } from "./nano-billing.ts";
 
 export const RUN_ID_FIELD = "__runId";
 export const MAX_AUDITED_RUNS = 8;
@@ -24,6 +25,7 @@ export type CouncilRunSnapshot = {
   costUsd?: number | null;
   partial?: boolean;
   synthesisSkipped?: string | null;
+  nanogptBilling?: NanoGptBillingMode;
 };
 
 export class CouncilCancelled extends Error {

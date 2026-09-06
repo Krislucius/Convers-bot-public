@@ -12,6 +12,7 @@ import { displayVerdict } from "@/lib/council/evaluate";
 import { councilPartial } from "@/lib/council/agents";
 import { runCouncil, isStaleDisconnectError, runCredsFromReady } from "@/lib/council/orchestrate";
 import { providerName } from "@/lib/council/providers";
+import { billingLabel } from "@/lib/council/nano-billing";
 import { attemptLimit, expectedSuccessfulCalls, memberLabel } from "@/lib/council/members";
 import {
   applyCouncilOutput,
@@ -184,7 +185,12 @@ function TaskPage() {
       return;
     }
     if (busy && !opts?.force) return;
-    patchTask(currentTask.id, { provider: runCreds.provider, selectedModels: runCreds.members, error: null });
+    patchTask(currentTask.id, {
+      provider: runCreds.provider,
+      selectedModels: runCreds.members,
+      nanogptBilling: runCreds.nanogptBilling ?? null,
+      error: null,
+    });
     const handle = beginCouncilRun(currentTask.id);
     runGen.current = handle.generation;
     setBusy(true);
@@ -209,6 +215,7 @@ function TaskPage() {
       provider: runCreds.provider,
       requestBudget: { used: 0, limit: callLimit, expected: callExpected },
       costUsd: 0,
+      nanogptBilling: runCreds.nanogptBilling,
     });
     await new Promise<void>((resolve) => {
       window.setTimeout(resolve, 0);
@@ -352,6 +359,7 @@ function TaskPage() {
           message={isStaleDisconnectError(msg, config.ready) ? "" : msg}
           onRun={(prepared) => void onRun(prepared)}
           onProviderChange={setProvider}
+          billing={config.provider === "nanogpt" ? billingLabel(config.nanogptBilling) : null}
         />
       ) : null}
 
@@ -377,6 +385,11 @@ function TaskPage() {
               used={task.diagnostics?.run?.requestBudget?.used ?? 0}
               limit={task.diagnostics?.run?.requestBudget?.limit ?? callLimit}
               costUsd={task.diagnostics?.run?.costUsd ?? task.totalCostUsd}
+              billing={
+                (task.diagnostics?.run?.provider ?? task.provider ?? config.provider) === "nanogpt"
+                  ? billingLabel(task.diagnostics?.run?.nanogptBilling ?? task.nanogptBilling ?? config.nanogptBilling)
+                  : null
+              }
             />
           </div>
           <p className="mt-3 mb-1 text-xs font-semibold tracking-widest text-muted uppercase">{persistedStage}</p>
@@ -619,6 +632,12 @@ function TaskPage() {
               {task.diagnostics?.run?.requestBudget?.limit ?? callLimit}
             </span>
             <span>Provider: {providerName(task.provider ?? task.diagnostics?.run?.provider ?? config.provider)}</span>
+            {(task.provider ?? task.diagnostics?.run?.provider ?? config.provider) === "nanogpt" ? (
+              <span>
+                Billing:{" "}
+                {billingLabel(task.nanogptBilling ?? task.diagnostics?.run?.nanogptBilling ?? config.nanogptBilling)}
+              </span>
+            ) : null}
             <span>Input tokens: {task.totalInputTokens ?? "—"}</span>
             <span>Output tokens: {task.totalOutputTokens ?? "—"}</span>
             <span>Total latency: {task.totalLatencyMs != null ? `${task.totalLatencyMs} ms` : "—"}</span>

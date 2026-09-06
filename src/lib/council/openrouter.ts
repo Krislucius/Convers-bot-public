@@ -16,6 +16,7 @@ export async function discoverModels(opts: {
   provider?: ProviderId;
   apiKey?: string;
   selectedIds?: string[];
+  nanogptBilling?: import("./nano-billing").NanoGptBillingMode;
 }): Promise<{
   ok: boolean;
   error?: string;
@@ -51,6 +52,7 @@ export async function completeChat(opts: {
   temperature: number;
   responseFormat?: Record<string, unknown>;
   signal?: AbortSignal;
+  nanogptBilling?: import("./nano-billing").NanoGptBillingMode;
 }): Promise<{ ok: true; completion: Completion } | { ok: false; error: string; failure?: ProviderFailure }> {
   const { signal, ...data } = opts;
   if (signal?.aborted) return abortedResult(opts);

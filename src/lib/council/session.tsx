@@ -12,6 +12,7 @@ import {
   slotFor,
 } from "./providers";
 import type { AccountSettingsPublic, DiscoverySnapshot, ProviderCreds, ProviderId } from "./types";
+import { DEFAULT_NANOGPT_BILLING, normalizeNanoGptBilling, type NanoGptBillingMode } from "./nano-billing";
 
 export type { ProviderCreds, ProviderId };
 
@@ -29,6 +30,7 @@ export type SessionConfig = {
   lastTestAt: string | null;
   lastTestOk: boolean | null;
   ready: boolean;
+  nanogptBilling: NanoGptBillingMode;
   nanogpt: { saved: boolean; masked: string };
   openrouter: { saved: boolean; masked: string };
   openrusrouter: { saved: boolean; masked: string };
@@ -39,6 +41,7 @@ type SessionApi = {
   creds: ProviderCreds | null;
   hydrateFromAccount: (settings: AccountSettingsPublic) => void;
   setProvider: (provider: ProviderId) => void;
+  setNanoGptBilling: (billing: NanoGptBillingMode) => void;
   save: (
     next: ProviderCreds & {
       selectedModelIds?: string[];
@@ -46,6 +49,7 @@ type SessionApi = {
       lastTestLog?: string;
       lastTestAt?: string | null;
       lastTestOk?: boolean | null;
+      nanogptBilling?: NanoGptBillingMode;
     },
   ) => Promise<AccountSettingsPublic>;
   clearKey: () => Promise<AccountSettingsPublic>;
@@ -65,6 +69,7 @@ const emptySettings: AccountSettingsPublic = {
   lastTestLog: "",
   lastTestAt: null,
   lastTestOk: null,
+  nanogptBilling: DEFAULT_NANOGPT_BILLING,
   nanogpt: { saved: false, masked: "" },
   openrouter: { saved: false, masked: "" },
   openrusrouter: { saved: false, masked: "" },
@@ -97,6 +102,7 @@ function fromPublic(settings: AccountSettingsPublic): SessionConfig {
     lastTestAt: settings.lastTestAt ?? null,
     lastTestOk: settings.lastTestOk ?? null,
     ready: slot.saved,
+    nanogptBilling: normalizeNanoGptBilling(settings.nanogptBilling),
     nanogpt: settings.nanogpt,
     openrouter: settings.openrouter,
     openrusrouter: settings.openrusrouter,
@@ -143,6 +149,43 @@ export function SessionProvider({ children }: { children: ReactNode }) {
                 lastTestLog: "",
                 lastTestAt: null,
                 lastTestOk: null,
+                nanogptBilling: provider === "nanogpt" ? DEFAULT_NANOGPT_BILLING : next.nanogptBilling,
+              },
+            }),
+          ).then((saved) => setConfig(fromPublic(saved)));
+          return { ...next, nanogptBilling: provider === "nanogpt" ? DEFAULT_NANOGPT_BILLING : prev.nanogptBilling };
+        });
+      },
+      setNanoGptBilling: (billing) => {
+        const nextBilling = normalizeNanoGptBilling(billing);
+        setConfig((prev) => {
+          if (prev.provider !== "nanogpt" || prev.nanogptBilling === nextBilling) return prev;
+          const next = {
+            ...prev,
+            nanogptBilling: nextBilling,
+            catalog: null,
+            selectedModelIds: [],
+            members: [],
+            synthesizerModel: "",
+            lastTestLog: "",
+            lastTestAt: null,
+            lastTestOk: null,
+          };
+          void runWithPersistRetry(() =>
+            saveAccountSettings({
+              data: {
+                provider: prev.provider,
+                selectedModelIds: [],
+                synthesizerModel: "",
+                catalog: null,
+                gptModel: "",
+                grokModel: "",
+                claudeModel: "",
+                maxCostUsd: next.maxCostUsd,
+                lastTestLog: "",
+                lastTestAt: null,
+                lastTestOk: null,
+                nanogptBilling: nextBilling,
               },
             }),
           ).then((saved) => setConfig(fromPublic(saved)));
@@ -174,6 +217,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
               lastTestLog: next.lastTestLog,
               lastTestAt: next.lastTestAt,
               lastTestOk: next.lastTestOk,
+              nanogptBilling: normalizeNanoGptBilling(next.nanogptBilling ?? config.nanogptBilling),
             },
           }),
         );
@@ -195,6 +239,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
               lastTestLog: config.lastTestLog,
               lastTestAt: config.lastTestAt,
               lastTestOk: config.lastTestOk,
+              nanogptBilling: config.nanogptBilling,
               clearKey: true,
             },
           }),

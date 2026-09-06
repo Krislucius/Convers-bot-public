@@ -7,6 +7,7 @@ import { isProviderId, normalizeProviderId } from "./providers";
 import type { ChatMessage, Completion, PreflightClientReport, ProviderCreds, ProviderId } from "./types";
 import type { ProviderFailure } from "./provider-error";
 import type { DiscoverySnapshot } from "./discover";
+import { normalizeNanoGptBilling, type NanoGptBillingMode } from "./nano-billing";
 
 function normalizeCreds(data: ProviderCreds & {
   gptModel?: string;
@@ -22,6 +23,7 @@ function normalizeCreds(data: ProviderCreds & {
     members,
     synthesizerModel: String(data.synthesizerModel ?? ""),
     maxCostUsd: Number(data.maxCostUsd) > 0 ? Number(data.maxCostUsd) : 1,
+    nanogptBilling: provider === "nanogpt" ? normalizeNanoGptBilling(data.nanogptBilling) : undefined,
   };
 }
 
@@ -43,6 +45,10 @@ async function loadProvider(id: ProviderId) {
   return import("./nanogpt.server");
 }
 
+function billingArg(provider: ProviderId, value?: NanoGptBillingMode): NanoGptBillingMode | undefined {
+  return provider === "nanogpt" ? normalizeNanoGptBilling(value) : undefined;
+}
+
 export const testProvider = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((data: ProviderCreds) => {
@@ -59,7 +65,11 @@ export const testProvider = createServerFn({ method: "POST" })
     }
     const creds = { ...data, apiKey };
     const mod = await loadProvider(data.provider);
-    const discovered = await mod.discoverAccount(apiKey, creds.members.map((row) => row.modelId));
+    const discovered = await mod.discoverAccount(
+      apiKey,
+      creds.members.map((row) => row.modelId),
+      billingArg(data.provider, data.nanogptBilling),
+    );
     return {
       ok: discovered.ok,
       error: discovered.error ? redact(discovered.error, apiKey) : undefined,
@@ -74,7 +84,7 @@ export const testProvider = createServerFn({ method: "POST" })
 
 export const discoverModels = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((data: { provider?: ProviderId; apiKey?: string; selectedIds?: string[] }) => data)
+  .validator((data: { provider?: ProviderId; apiKey?: string; selectedIds?: string[]; nanogptBilling?: NanoGptBillingMode }) => data)
   .handler(
     async ({
       context,
@@ -99,7 +109,11 @@ export const discoverModels = createServerFn({ method: "POST" })
         };
       }
       const mod = await loadProvider(provider);
-      const discovered = await mod.discoverAccount(apiKey, data.selectedIds ?? []);
+      const discovered = await mod.discoverAccount(
+        apiKey,
+        data.selectedIds ?? [],
+        billingArg(provider, data.nanogptBilling),
+      );
       return {
         ok: discovered.ok,
         error: discovered.error ? redact(discovered.error, apiKey) : undefined,
@@ -120,6 +134,7 @@ export const checkCatalog = createServerFn({ method: "POST" })
       gptModel?: string;
       grokModel?: string;
       claudeModel?: string;
+      nanogptBilling?: NanoGptBillingMode;
     }) => data,
   )
   .handler(async ({ context, data }): Promise<CatalogCheckResult> => {
@@ -137,7 +152,11 @@ export const checkCatalog = createServerFn({ method: "POST" })
       };
     }
     const mod = await loadProvider(provider);
-    const result = await mod.catalogCheck({ apiKey, models });
+    const result = await mod.catalogCheck({
+      apiKey,
+      models,
+      nanogptBilling: billingArg(provider, data.nanogptBilling),
+    });
     return {
       ...result,
       error: result.error ? redact(result.error, apiKey) : undefined,
@@ -148,7 +167,7 @@ export const checkCatalog = createServerFn({ method: "POST" })
 
 export const checkAccess = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
-  .validator((data: { provider?: ProviderId; apiKey?: string; models: string[] }) => data)
+  .validator((data: { provider?: ProviderId; apiKey?: string; models: string[]; nanogptBilling?: NanoGptBillingMode }) => data)
   .handler(
     async ({
       context,
@@ -165,7 +184,11 @@ export const checkAccess = createServerFn({ method: "POST" })
         };
       }
       const mod = await loadProvider(provider);
-      const result = await mod.accessCheck({ apiKey, models: data.models });
+      const result = await mod.accessCheck({
+        apiKey,
+        models: data.models,
+        nanogptBilling: billingArg(provider, data.nanogptBilling),
+      });
       return {
         ok: result.ok,
         blocked: result.blocked,
@@ -185,6 +208,7 @@ export const completeChat = createServerFn({ method: "POST" })
       maxTokens: number;
       temperature: number;
       responseFormat?: Record<string, unknown>;
+      nanogptBilling?: NanoGptBillingMode;
     }) => data,
   )
   .handler(
@@ -202,7 +226,11 @@ export const completeChat = createServerFn({ method: "POST" })
       try {
         return {
           ok: true,
-          completion: await mod.complete({ ...data, apiKey }),
+          completion: await mod.complete({
+            ...data,
+            apiKey,
+            nanogptBilling: billingArg(provider, data.nanogptBilling),
+          }),
         };
       } catch (err) {
         const { toProviderFailure, formatProviderFailure } = await import("./provider-error");

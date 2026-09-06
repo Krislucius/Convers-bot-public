@@ -67,7 +67,7 @@ describe("provider failure formatting", () => {
     assert.equal(text.includes("Check API Settings"), false);
   });
 
-  it("names 402 credits", () => {
+  it("names 402 as payment required, not subscription credits", () => {
     const text = formatProviderFailure(
       providerFailure({
         provider: "openrouter",
@@ -77,7 +77,8 @@ describe("provider failure formatting", () => {
       }),
     );
     assert.match(text, /HTTP 402/);
-    assert.match(text, /credits/);
+    assert.match(text, /Payment was required/);
+    assert.equal(/subscription credits exhausted/i.test(text), false);
     assert.equal(text.includes("Check API Settings"), false);
   });
 

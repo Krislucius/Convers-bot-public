@@ -155,7 +155,7 @@ export async function probeModel(apiKey: string, modelId: string) {
   return probeModelWith(transport(), apiKey, modelId);
 }
 
-export async function discoverAccount(apiKey: string, selectedIds: string[] = []) {
+export async function discoverAccount(apiKey: string, selectedIds: string[] = [], _billing?: string) {
   return discoverAccountWith(transport(), apiKey, selectedIds);
 }
 
@@ -177,6 +177,7 @@ export async function catalogCheck(opts: {
   gptModel?: string;
   grokModel?: string;
   claudeModel?: string;
+  nanogptBilling?: string;
 }): Promise<CatalogCheckResult> {
   const models =
     opts.models && opts.models.length
@@ -185,7 +186,7 @@ export async function catalogCheck(opts: {
   return catalogCheckWith(transport(), opts.apiKey, models);
 }
 
-export async function accessCheck(opts: { apiKey: string; models: string[] }) {
+export async function accessCheck(opts: { apiKey: string; models: string[]; nanogptBilling?: string }) {
   return accessCheckWith(transport(), opts.apiKey, opts.models);
 }
 
@@ -196,6 +197,7 @@ export async function complete(opts: {
   maxTokens: number;
   temperature: number;
   responseFormat?: Record<string, unknown>;
+  nanogptBilling?: string;
 }): Promise<Completion> {
   const key = sanitizeApiKey(opts.apiKey, PROVIDER);
   if (!key) throw new Error(`${API_LABEL} is not connected. Connect your API key before running the Council.`);

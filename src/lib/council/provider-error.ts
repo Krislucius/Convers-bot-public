@@ -19,6 +19,7 @@ export type ProviderFailure = {
   retryExhausted: boolean;
   message: string;
   detail?: string;
+  code?: string;
 };
 
 export class ProviderError extends Error {
@@ -90,14 +91,20 @@ function classLabel(httpClass: HttpClass, httpStatus: number | null): string {
   return `HTTP ${httpClass}`;
 }
 
-function classAdvice(httpClass: HttpClass): string {
+function classAdvice(httpClass: HttpClass, code?: string): string {
+  if (code === "PAYG_BALANCE_REQUIRED") return "Pay-as-you-go balance is required.";
+  if (code === "SUBSCRIPTION_LIMIT_REACHED") return "Subscription limit reached.";
+  if (code === "MODEL_NOT_INCLUDED") return "This model is not included in the selected billing mode.";
+  if (code === "MODEL_UNAVAILABLE") return "This model is unavailable.";
+  if (code === "RATE_LIMITED") return "Rate limited.";
+  if (code === "PROVIDER_ERROR") return "The request did not complete.";
   switch (httpClass) {
     case "400":
       return "The request was rejected.";
     case "401":
       return "Check API Settings and save a valid key.";
     case "402":
-      return "Provider credits are exhausted.";
+      return "Payment was required.";
     case "429":
       return "Rate limited.";
     case "5xx":
@@ -118,6 +125,7 @@ export function formatProviderFailure(failure: ProviderFailure): string {
   const model = failure.model.trim();
   const where = failure.stage.trim() || "request";
   const subject = model ? `${who} ${model}` : who;
+  const named = failure.code?.trim() ? `${failure.code.trim()} ` : "";
   const code = classLabel(failure.httpClass, failure.httpStatus);
   const klass = ` class ${failure.httpClass}`;
   const attempt =
@@ -126,8 +134,8 @@ export function formatProviderFailure(failure: ProviderFailure): string {
       : "";
   const retry = failure.retryExhausted ? " (retries exhausted)" : "";
   const detail = failure.detail?.trim();
-  const extra = detail && !code.includes(detail) ? ` ${detail}` : "";
-  return `${subject} failed in ${where}: ${code}${klass}${attempt}${retry}.${extra ? extra : ""} ${classAdvice(failure.httpClass)}`.replace(
+  const extra = detail && !code.includes(detail) && !named.includes(detail) ? ` ${detail}` : "";
+  return `${subject} failed in ${where}: ${named}${code}${klass}${attempt}${retry}.${extra ? extra : ""} ${classAdvice(failure.httpClass, failure.code)}`.replace(
     /\s+/g,
     " ",
   ).trim();
@@ -144,6 +152,7 @@ export function providerFailure(input: {
   retryExhausted?: boolean;
   raw?: string;
   detail?: string;
+  code?: string;
 }): ProviderFailure {
   const httpStatus = input.httpStatus ?? null;
   const httpClass = input.httpClass ?? classifyHttp(httpStatus, input.raw ?? "");
@@ -158,6 +167,7 @@ export function providerFailure(input: {
     retryExhausted: Boolean(input.retryExhausted),
     message: "",
     detail: input.detail,
+    code: input.code,
   };
   failure.message = formatProviderFailure(failure);
   return failure;

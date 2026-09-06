@@ -4,9 +4,9 @@ import {
   keyRejectedMessage,
   redact,
   sanitizeApiKey,
-} from "./api-key";
-import type { ChatMessage, Completion, PreflightClientReport } from "./types";
-import { type CatalogCheckResult } from "./catalog";
+} from "./api-key.ts";
+import type { ChatMessage, Completion, PreflightClientReport } from "./types.ts";
+import { type CatalogCheckResult } from "./catalog.ts";
 import {
   accessCheckWith,
   catalogCheckWith,
@@ -14,7 +14,7 @@ import {
   listCatalogWith,
   preflightWith,
   probeModelWith,
-} from "./provider-discover";
+} from "./provider-discover.ts";
 import {
   COMPLETE_TIMEOUT_MS,
   ProviderError,
@@ -22,11 +22,16 @@ import {
   httpClassOfStatus,
   providerFailure,
   toProviderFailure,
-} from "./provider-error";
+} from "./provider-error.ts";
+import {
+  DEFAULT_NANOGPT_BILLING,
+  classifyNanoGptError,
+  nanogptEndpoints,
+  normalizeNanoGptBilling,
+  type NanoGptBillingMode,
+} from "./nano-billing.ts";
 
-const BASE = "https://nano-gpt.com/api/v1";
 const PROVIDER = "nanogpt" as const;
-const CREDIT_MESSAGE = "NanoGPT needs credits on this key. Add balance at nano-gpt.com/api, then test again.";
 const API_LABEL = "NanoGPT";
 
 export type ModelPricing = { prompt: number | null; completion: number | null };
@@ -60,16 +65,16 @@ function pickHeaders(res: Response): Record<string, string> {
   return out;
 }
 
-async function probeGet(path: string, apiKey: string, timeoutMs: number): Promise<Probe> {
+async function probeGet(url: string, apiKey: string, timeoutMs: number): Promise<Probe> {
   const started = Date.now();
   try {
-    const res = await fetch(`${BASE}${path}`, {
+    const res = await fetch(url, {
       method: "GET",
       headers: headersFor(apiKey),
       signal: AbortSignal.timeout(timeoutMs),
     });
     return {
-      path,
+      path: url,
       status: res.status,
       latencyMs: Date.now() - started,
       body: redact(await res.text(), apiKey),
@@ -77,7 +82,7 @@ async function probeGet(path: string, apiKey: string, timeoutMs: number): Promis
     };
   } catch (err) {
     return {
-      path,
+      path: url,
       status: 0,
       latencyMs: Date.now() - started,
       body: "",
@@ -87,17 +92,17 @@ async function probeGet(path: string, apiKey: string, timeoutMs: number): Promis
   }
 }
 
-async function probePost(path: string, apiKey: string, payload: unknown, timeoutMs: number): Promise<Probe> {
+async function probePost(url: string, apiKey: string, payload: unknown, timeoutMs: number): Promise<Probe> {
   const started = Date.now();
   try {
-    const res = await fetch(`${BASE}${path}`, {
+    const res = await fetch(url, {
       method: "POST",
       headers: headersFor(apiKey, true),
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(timeoutMs),
     });
     return {
-      path,
+      path: url,
       status: res.status,
       latencyMs: Date.now() - started,
       body: redact(await res.text(), apiKey),
@@ -105,7 +110,7 @@ async function probePost(path: string, apiKey: string, payload: unknown, timeout
     };
   } catch (err) {
     return {
-      path,
+      path: url,
       status: 0,
       latencyMs: Date.now() - started,
       body: "",
@@ -125,15 +130,21 @@ export function operatorError(err: unknown, apiKey = ""): string {
   return formatProviderFailure(toProviderFailure(err, { provider: PROVIDER, model: "", stage: "request" }, apiKey));
 }
 
-function transport() {
+export function transport(mode: NanoGptBillingMode = DEFAULT_NANOGPT_BILLING) {
+  const billing = normalizeNanoGptBilling(mode);
+  const endpoints = nanogptEndpoints(billing);
   return {
     provider: PROVIDER,
     label: API_LABEL,
-    creditMessage: CREDIT_MESSAGE,
-    listModels: (apiKey: string) => probeGet("/models", apiKey, 20000),
+    billingMode: billing,
+    catalogUrl: endpoints.catalogUrl,
+    completeUrl: endpoints.completeUrl,
+    creditMessage:
+      billing === "payg" ? "Pay-as-you-go balance is required." : "Subscription limit reached.",
+    listModels: (apiKey: string) => probeGet(endpoints.catalogUrl, apiKey, 20000),
     pingModel: (apiKey: string, modelId: string) =>
       probePost(
-        "/chat/completions",
+        endpoints.completeUrl,
         apiKey,
         {
           model: modelId,
@@ -146,28 +157,37 @@ function transport() {
   };
 }
 
-export async function listCatalog(apiKey: string) {
-  return listCatalogWith(transport(), apiKey);
+export async function listCatalog(apiKey: string, billing: NanoGptBillingMode = DEFAULT_NANOGPT_BILLING) {
+  return listCatalogWith(transport(billing), apiKey);
 }
 
-export async function probeModel(apiKey: string, modelId: string) {
-  return probeModelWith(transport(), apiKey, modelId);
+export async function probeModel(
+  apiKey: string,
+  modelId: string,
+  billing: NanoGptBillingMode = DEFAULT_NANOGPT_BILLING,
+) {
+  return probeModelWith(transport(billing), apiKey, modelId);
 }
 
-export async function discoverAccount(apiKey: string, selectedIds: string[] = []) {
-  return discoverAccountWith(transport(), apiKey, selectedIds);
+export async function discoverAccount(
+  apiKey: string,
+  selectedIds: string[] = [],
+  billing: NanoGptBillingMode = DEFAULT_NANOGPT_BILLING,
+) {
+  return discoverAccountWith(transport(billing), apiKey, selectedIds);
 }
 
 export async function preflightWithKey(opts: {
   apiKey: string;
-  members?: import("./members").CouncilMember[];
+  members?: import("./members.ts").CouncilMember[];
   selectedIds?: string[];
   gptModel?: string;
   grokModel?: string;
   claudeModel?: string;
   synthesizerModel?: string;
-}): Promise<PreflightClientReport & { catalog?: import("./discover").DiscoverySnapshot }> {
-  return preflightWith(transport(), opts);
+  nanogptBilling?: NanoGptBillingMode;
+}): Promise<PreflightClientReport & { catalog?: import("./discover.ts").DiscoverySnapshot }> {
+  return preflightWith(transport(normalizeNanoGptBilling(opts.nanogptBilling)), opts);
 }
 
 export async function catalogCheck(opts: {
@@ -176,16 +196,21 @@ export async function catalogCheck(opts: {
   gptModel?: string;
   grokModel?: string;
   claudeModel?: string;
+  nanogptBilling?: NanoGptBillingMode;
 }): Promise<CatalogCheckResult> {
   const models =
     opts.models && opts.models.length
       ? opts.models
       : [opts.gptModel, opts.grokModel, opts.claudeModel].filter((id): id is string => Boolean(id));
-  return catalogCheckWith(transport(), opts.apiKey, models);
+  return catalogCheckWith(transport(normalizeNanoGptBilling(opts.nanogptBilling)), opts.apiKey, models);
 }
 
-export async function accessCheck(opts: { apiKey: string; models: string[] }) {
-  return accessCheckWith(transport(), opts.apiKey, opts.models);
+export async function accessCheck(opts: {
+  apiKey: string;
+  models: string[];
+  nanogptBilling?: NanoGptBillingMode;
+}) {
+  return accessCheckWith(transport(normalizeNanoGptBilling(opts.nanogptBilling)), opts.apiKey, opts.models);
 }
 
 export async function complete(opts: {
@@ -195,9 +220,12 @@ export async function complete(opts: {
   maxTokens: number;
   temperature: number;
   responseFormat?: Record<string, unknown>;
+  nanogptBilling?: NanoGptBillingMode;
 }): Promise<Completion> {
   const key = sanitizeApiKey(opts.apiKey, PROVIDER);
   if (!key) throw new Error(`${API_LABEL} is not connected. Connect your API key before running the Council.`);
+  const billing = normalizeNanoGptBilling(opts.nanogptBilling);
+  const endpoints = nanogptEndpoints(billing);
   const body: Record<string, unknown> = {
     model: opts.model,
     messages: opts.messages,
@@ -208,14 +236,16 @@ export async function complete(opts: {
   const started = Date.now();
   let res: Response;
   try {
-    res = await fetch(`${BASE}/chat/completions`, {
+    res = await fetch(endpoints.completeUrl, {
       method: "POST",
       headers: headersFor(key, true),
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(COMPLETE_TIMEOUT_MS),
     });
   } catch (err) {
-    throw new ProviderError(toProviderFailure(err, { provider: PROVIDER, model: opts.model, stage: "complete" }, key));
+    throw new ProviderError(
+      toProviderFailure(err, { provider: PROVIDER, model: opts.model, stage: "complete" }, key),
+    );
   }
   const textBody = redact(await res.text(), key);
   let payload: unknown = null;
@@ -224,10 +254,27 @@ export async function complete(opts: {
   } catch {
     payload = null;
   }
+  const providerMessage = extractErrorMessage(payload, res.status);
   if (res.status === 401 || res.status === 403) {
-    throw new Error(keyRejectedMessage(res.status, extractErrorMessage(payload, res.status), keyFingerprint(key, PROVIDER), PROVIDER));
+    const code = classifyNanoGptError({ billing, status: res.status, raw: providerMessage });
+    if (code === "MODEL_NOT_INCLUDED" || code === "MODEL_UNAVAILABLE") {
+      throw new ProviderError(
+        providerFailure({
+          provider: PROVIDER,
+          model: opts.model,
+          stage: "complete",
+          httpStatus: res.status,
+          httpClass: httpClassOfStatus(res.status),
+          raw: providerMessage,
+          detail: providerMessage,
+          code,
+        }),
+      );
+    }
+    throw new Error(keyRejectedMessage(res.status, providerMessage, keyFingerprint(key, PROVIDER), PROVIDER));
   }
   if (!res.ok) {
+    const code = classifyNanoGptError({ billing, status: res.status, raw: providerMessage });
     throw new ProviderError(
       providerFailure({
         provider: PROVIDER,
@@ -235,7 +282,9 @@ export async function complete(opts: {
         stage: "complete",
         httpStatus: res.status,
         httpClass: httpClassOfStatus(res.status),
-        raw: extractErrorMessage(payload, res.status),
+        raw: providerMessage,
+        detail: providerMessage,
+        code,
       }),
     );
   }

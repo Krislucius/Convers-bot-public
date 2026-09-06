@@ -1,4 +1,5 @@
 import { COUNCIL_ROLES, type CouncilRole } from "./roles.ts";
+import type { NanoGptBillingMode } from "./nano-billing.ts";
 
 export type ModelAccess = "AVAILABLE" | "UNAVAILABLE" | "NOT_INCLUDED" | "UNKNOWN";
 
@@ -34,6 +35,8 @@ export type DiscoverySnapshot = {
   models: DiscoveredModel[];
   recommendedIds: string[];
   catalogShape?: CatalogShapeKind;
+  billingMode?: NanoGptBillingMode;
+  catalogUrl?: string;
 };
 
 export const MAX_PROBE_TARGETS = 8;

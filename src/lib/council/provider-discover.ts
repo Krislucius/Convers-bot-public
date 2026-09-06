@@ -28,6 +28,7 @@ import { providerName } from "./providers.ts";
 import { emptyAccessCounts, formatTestLog, type CatalogParseLog } from "./test-log.ts";
 import type { ConnectionCheck, PreflightClientReport, ProviderId } from "./types.ts";
 import type { CouncilMember } from "./members.ts";
+import type { NanoGptBillingMode } from "./nano-billing.ts";
 
 export type TransportProbe = {
   status: number;
@@ -42,6 +43,9 @@ export type ProviderTransport = {
   listModels: (apiKey: string) => Promise<TransportProbe>;
   pingModel: (apiKey: string, modelId: string) => Promise<TransportProbe>;
   creditMessage: string;
+  billingMode?: NanoGptBillingMode;
+  catalogUrl?: string;
+  completeUrl?: string;
 };
 
 function jsonPayload(body: string): unknown {
@@ -214,7 +218,16 @@ export async function discoverAccountWith(
         selected: opts.selected ?? [],
         warnings: opts.warnings ?? [],
         error: opts.error ?? null,
-        extra: { authenticated: opts.authenticated === true },
+        extra: {
+          authenticated: opts.authenticated === true,
+          ...(transport.billingMode
+            ? {
+                billing: transport.billingMode,
+                catalog_url: transport.catalogUrl,
+                complete_url: transport.completeUrl,
+              }
+            : {}),
+        },
       },
       key,
     );
@@ -303,14 +316,18 @@ export async function discoverAccountWith(
     };
   }
 
-  const snapshot = buildDiscovery(
-    transport.provider,
-    catalog.entries,
-    probes,
-    selectedIds,
-    new Date().toISOString(),
-    catalog.shape,
-  );
+  const snapshot = {
+    ...buildDiscovery(
+      transport.provider,
+      catalog.entries,
+      probes,
+      selectedIds,
+      new Date().toISOString(),
+      catalog.shape,
+    ),
+    billingMode: transport.billingMode,
+    catalogUrl: transport.catalogUrl,
+  };
   const usable = pruneToAvailable(selectedIds, snapshot.models);
   const warnings: string[] = [];
   for (const id of selectedIds) {

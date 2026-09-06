@@ -11,6 +11,7 @@ import type { AgentResponse, AccountSettingsPublic, Artifact, ContextItem, Conte
 import type { ProviderId } from "./types";
 import type { ChatSource, HistoryMessage } from "@/lib/history/types";
 import type { FileKind } from "./files";
+import { normalizeNanoGptBilling, type NanoGptBillingMode } from "./nano-billing";
 
 type SettingsRow = {
   user_id: string;
@@ -28,6 +29,7 @@ type SettingsRow = {
   last_test_log?: string;
   last_test_at?: string | null;
   last_test_ok?: boolean | null;
+  nanogpt_billing_mode?: string | null;
 };
 
 function asString(value: unknown, fallback = ""): string {
@@ -116,6 +118,7 @@ function publicSettings(row: SettingsRow | null): AccountSettingsPublic {
     lastTestLog: row?.last_test_log ?? "",
     lastTestAt: row?.last_test_at ?? null,
     lastTestOk: row?.last_test_ok ?? null,
+    nanogptBilling: normalizeNanoGptBilling(row?.nanogpt_billing_mode),
     nanogpt: {
       saved: Boolean(sanitizeApiKey(row?.nanogpt_key ?? "", "nanogpt")),
       masked: row?.nanogpt_key ? maskKey(row.nanogpt_key, "nanogpt") : "",
@@ -174,6 +177,7 @@ export async function saveSettings(
     lastTestLog?: string;
     lastTestAt?: string | null;
     lastTestOk?: boolean | null;
+    nanogptBilling?: NanoGptBillingMode;
   },
 ): Promise<AccountSettingsPublic> {
   const sql = await getSql();
@@ -208,13 +212,16 @@ export async function saveSettings(
   const lastTestLog = input.lastTestLog !== undefined ? input.lastTestLog : (current?.last_test_log ?? "");
   const lastTestAt = input.lastTestAt !== undefined ? input.lastTestAt : (current?.last_test_at ?? null);
   const lastTestOk = input.lastTestOk !== undefined ? input.lastTestOk : (current?.last_test_ok ?? null);
+  const nanogptBilling = normalizeNanoGptBilling(
+    input.nanogptBilling !== undefined ? input.nanogptBilling : current?.nanogpt_billing_mode,
+  );
   await sql`
     insert into account_settings (
       user_id, provider, nanogpt_key, openrouter_key, openrusrouter_key, gpt_model, grok_model, claude_model, max_cost_usd,
-      selected_model_ids, synthesizer_model, model_catalog, last_test_log, last_test_at, last_test_ok, updated_at
+      selected_model_ids, synthesizer_model, model_catalog, last_test_log, last_test_at, last_test_ok, nanogpt_billing_mode, updated_at
     ) values (
       ${userId}, ${provider}, ${nanogptKey}, ${openrouterKey}, ${openrusrouterKey}, ${gptModel}, ${grokModel}, ${claudeModel}, ${maxCostUsd},
-      ${jsonParam(selectedModelIds)}::jsonb, ${synthesizerModel}, ${jsonParam(catalog)}::jsonb, ${lastTestLog}, ${lastTestAt}, ${lastTestOk}, ${updatedAt}
+      ${jsonParam(selectedModelIds)}::jsonb, ${synthesizerModel}, ${jsonParam(catalog)}::jsonb, ${lastTestLog}, ${lastTestAt}, ${lastTestOk}, ${nanogptBilling}, ${updatedAt}
     )
     on conflict (user_id) do update set
       provider = excluded.provider,
@@ -231,6 +238,7 @@ export async function saveSettings(
       last_test_log = excluded.last_test_log,
       last_test_at = excluded.last_test_at,
       last_test_ok = excluded.last_test_ok,
+      nanogpt_billing_mode = excluded.nanogpt_billing_mode,
       updated_at = excluded.updated_at
   `;
   await durable();
@@ -251,6 +259,7 @@ export async function saveSettings(
     last_test_log: lastTestLog,
     last_test_at: lastTestAt,
     last_test_ok: lastTestOk,
+    nanogpt_billing_mode: nanogptBilling,
   });
 }
 
@@ -300,6 +309,7 @@ function mapTask(row: Record<string, unknown>): Task {
     contextHash: row.context_hash == null ? null : asString(row.context_hash),
     provider: isProviderId(row.provider) ? row.provider : null,
     selectedModels: asMembers(row.selected_models),
+    nanogptBilling: row.nanogpt_billing_mode ? normalizeNanoGptBilling(row.nanogpt_billing_mode) : null,
   };
 }
 
@@ -584,13 +594,13 @@ async function insertTaskRow(userId: string, task: Task) {
     insert into tasks (
       id, user_id, project_id, title, prompt, status, error, created_at, completed_at,
       total_input_tokens, total_output_tokens, total_cost_usd, total_latency_ms, diagnostics, selected_chat_source_ids,
-      selected_file_ids, mode, requires_historical_context, candidate_artifact_id, decision_question, context_manifest_id, context_hash, provider, selected_models
+      selected_file_ids, mode, requires_historical_context, candidate_artifact_id, decision_question, context_manifest_id, context_hash, provider, selected_models, nanogpt_billing_mode
     ) values (
       ${task.id}, ${userId}, ${task.projectId}, ${task.title}, ${task.prompt}, ${task.status}, ${task.error},
       ${task.createdAt}, ${task.completedAt}, ${task.totalInputTokens}, ${task.totalOutputTokens}, ${task.totalCostUsd},
       ${task.totalLatencyMs}, ${jsonParam(task.diagnostics)}::jsonb, ${jsonParam(task.selectedChatSourceIds) ?? "[]"}::jsonb,
       ${jsonParam(task.selectedFileIds) ?? "[]"}::jsonb, ${task.mode}, ${task.requiresHistoricalContext}, ${task.candidateArtifactId}, ${task.decisionQuestion},
-      ${task.contextManifestId}, ${task.contextHash}, ${task.provider}, ${jsonParam(task.selectedModels)}::jsonb
+      ${task.contextManifestId}, ${task.contextHash}, ${task.provider}, ${jsonParam(task.selectedModels)}::jsonb, ${task.nanogptBilling ?? null}
     )
     on conflict (id) do update set
       title = excluded.title,
@@ -612,7 +622,8 @@ async function insertTaskRow(userId: string, task: Task) {
       context_manifest_id = excluded.context_manifest_id,
       context_hash = excluded.context_hash,
       provider = excluded.provider,
-      selected_models = excluded.selected_models
+      selected_models = excluded.selected_models,
+      nanogpt_billing_mode = excluded.nanogpt_billing_mode
     where tasks.user_id = ${userId}
   `;
 }

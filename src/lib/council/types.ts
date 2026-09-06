@@ -4,6 +4,7 @@ import type { ChatSource, HistoryMessage } from "@/lib/history/types";
 import type { CouncilRole } from "./roles";
 import type { CouncilMember } from "./members";
 import type { DiscoverySnapshot } from "./discover";
+import type { NanoGptBillingMode } from "./nano-billing";
 
 export type AgentKey = CouncilRole;
 
@@ -138,6 +139,7 @@ export type ProviderCreds = {
   members: CouncilMember[];
   synthesizerModel: string;
   maxCostUsd: number;
+  nanogptBilling?: NanoGptBillingMode;
 };
 
 export type ChatMessage = { role: "system" | "user"; content: string };
@@ -306,6 +308,7 @@ export type RunDiagnostics = {
   costUsd?: number | null;
   partial?: boolean;
   synthesisSkipped?: string | null;
+  nanogptBilling?: NanoGptBillingMode;
 };
 
 export type Task = {
@@ -338,6 +341,7 @@ export type Task = {
   contextHash: string | null;
   provider: ProviderId | null;
   selectedModels?: CouncilMember[] | null;
+  nanogptBilling?: NanoGptBillingMode | null;
 };
 
 export type StoreShape = {
@@ -377,6 +381,7 @@ export type AccountSettingsPublic = {
   lastTestLog: string;
   lastTestAt: string | null;
   lastTestOk: boolean | null;
+  nanogptBilling: NanoGptBillingMode;
   nanogpt: { saved: boolean; masked: string };
   openrouter: { saved: boolean; masked: string };
   openrusrouter: { saved: boolean; masked: string };
@@ -392,4 +397,4 @@ export type PreflightClientReport = {
 };
 
 export type { ChatSource, HistoryMessage };
-export type { CouncilMember, DiscoverySnapshot };
+export type { CouncilMember, DiscoverySnapshot, NanoGptBillingMode };
