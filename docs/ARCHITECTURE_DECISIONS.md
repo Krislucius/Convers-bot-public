@@ -137,3 +137,12 @@ Only ACTIVE rows define current architecture.
 - RATIONALE: Save after a successful Refresh restored a stale FAILED discovery state because Save had separate persist/discovery logic and a stale closure overwrite.
 - SUPERSEDES: none (tightens ADR-012)
 - AFFECTED_MODULES: ui.settings, council.discovery, account.persistence
+
+## ADR-016
+
+- DECISION: API Settings Save reports CONNECTED only after every acceptance stage PASSes: persisted config round-trip, provider catalog request, authenticated provider probe, every selected Council model VERIFIED_AVAILABLE, Test Log `attempt_id` matches the save attempt, one lightweight completion through the selected NanoGPT billing mode, and a reload that preserves provider, billing, selected models, and CONNECTED (no stale FAILED). Any failed stage is STATUS FAILED with that stage name and the sanitized provider error. Refresh models still uses the canonical discovery scan and does not skip these Save gates.
+- STATUS: ACTIVE
+- ARCHITECTURE_REVISION: CB-ARCH-20260906-003
+- RATIONALE: Catalog AVAILABLE from a capped scan is not enough to claim the saved connection works. Save must prove persist, auth, every selected model, billing-mode completion, and reload isolation.
+- SUPERSEDES: none (tightens ADR-015)
+- AFFECTED_MODULES: ui.settings, council.discovery, council.providers

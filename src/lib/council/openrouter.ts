@@ -2,11 +2,13 @@ import {
   completeChat as completeChatFn,
   discoverModels as discoverModelsFn,
   testProvider as testProviderFn,
+  checkAccess as checkAccessFn,
 } from "./run-council";
 import { providerFailure } from "./provider-error";
 import type { ProviderFailure } from "./provider-error";
 import type { ChatMessage, Completion, PreflightClientReport, ProviderCreds, ProviderId } from "./types";
 import type { DiscoverySnapshot } from "./discover";
+import type { NanoGptBillingMode } from "./nano-billing";
 
 export async function testProvider(creds: ProviderCreds): Promise<PreflightClientReport> {
   return testProviderFn({ data: creds });
@@ -16,7 +18,7 @@ export async function discoverModels(opts: {
   provider?: ProviderId;
   apiKey?: string;
   selectedIds?: string[];
-  nanogptBilling?: import("./nano-billing").NanoGptBillingMode;
+  nanogptBilling?: NanoGptBillingMode;
 }): Promise<{
   ok: boolean;
   error?: string;
@@ -25,6 +27,15 @@ export async function discoverModels(opts: {
   log: string;
 }> {
   return discoverModelsFn({ data: opts });
+}
+
+export async function checkAccess(opts: {
+  provider?: ProviderId;
+  apiKey?: string;
+  models: string[];
+  nanogptBilling?: NanoGptBillingMode;
+}): Promise<{ ok: boolean; blocked: Array<{ id: string; access: string }>; error?: string }> {
+  return checkAccessFn({ data: opts });
 }
 
 function abortedResult(opts: { provider?: ProviderId; model: string; stage?: string }): {
@@ -52,7 +63,7 @@ export async function completeChat(opts: {
   temperature: number;
   responseFormat?: Record<string, unknown>;
   signal?: AbortSignal;
-  nanogptBilling?: import("./nano-billing").NanoGptBillingMode;
+  nanogptBilling?: NanoGptBillingMode;
 }): Promise<{ ok: true; completion: Completion } | { ok: false; error: string; failure?: ProviderFailure }> {
   const { signal, ...data } = opts;
   if (signal?.aborted) return abortedResult(opts);

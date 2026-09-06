@@ -8,11 +8,12 @@ import { describeKey, keyFingerprint, redact, sanitizeApiKey } from "@/lib/counc
 import { currentConnectionView } from "@/lib/council/discover";
 import { emptyAccessCounts, formatTestLog } from "@/lib/council/test-log";
 import { assertAvailableSelection, MAX_COUNCIL_MEMBERS, attemptLimit, expectedSuccessfulCalls, membersFromIds } from "@/lib/council/members";
-import { testProvider } from "@/lib/council/openrouter";
+import { checkAccess, completeChat, testProvider } from "@/lib/council/openrouter";
 import { PROVIDER_IDS, PROVIDERS, slotFor } from "@/lib/council/providers";
-import { useSession, type SessionConfig } from "@/lib/council/session";
-import type { ProviderId } from "@/lib/council/types";
+import { refreshAccountSettings, useSession, type SessionConfig } from "@/lib/council/session";
+import type { AccountSettingsPublic, ProviderId } from "@/lib/council/types";
 import { billingLabel, type NanoGptBillingMode } from "@/lib/council/nano-billing";
+import { runSaveAcceptance } from "@/lib/council/save-acceptance";
 import {
   applyDiscovery,
   attemptIdFromLog,
@@ -42,7 +43,7 @@ function attemptFromConfig(config: SessionConfig): ScanAttempt {
 }
 
 function SettingsPage() {
-  const { config, save, clearKey, setProvider, setNanoGptBilling } = useSession();
+  const { config, save, clearKey, setProvider, setNanoGptBilling, hydrateFromAccount } = useSession();
   const provider = config.provider;
   const meta = PROVIDERS[provider];
   const [apiKey, setApiKey] = useState("");
@@ -180,7 +181,7 @@ function SettingsPage() {
     scanningRef.current = true;
     setBusy(true);
     setScan(invalidateScan(previous, attemptId));
-    setMsg("Discovering models and checking account access…");
+    setMsg(mode === "save" ? "Saving, then discovering models…" : "Discovering models and checking account access…");
     const persistBase = {
       provider,
       apiKey: sanitized,
@@ -190,6 +191,7 @@ function SettingsPage() {
       selectedModelIds: previous.selectedIds,
       nanogptBilling: config.nanogptBilling,
     };
+    let persisted: AccountSettingsPublic | null = null;
     try {
       const out = await runCanonicalScan({
         mode,
@@ -197,7 +199,7 @@ function SettingsPage() {
         persistConfig:
           mode === "save"
             ? async () => {
-                await save({
+                persisted = await save({
                   ...persistBase,
                   lastTestOk: null,
                   lastTestLog: "",
@@ -219,19 +221,74 @@ function SettingsPage() {
         },
       });
       if (!shouldApplyAttempt(attemptRef.current, out.attemptId)) return;
-      setScan(out.result);
-      const live = currentConnectionView(out.result.lastTestOk, out.result.catalog);
-      setMsg(
-        out.result.status === "CONNECTED"
-          ? `CONNECTED. ${live.available} AVAILABLE · ${out.result.catalog?.recommendedIds.length ?? 0} recommended.`
-          : out.result.error || "Connection failed.",
-      );
-      await save({
-        ...persistBase,
-        members: membersFromIds(out.result.selectedIds, out.result.catalog?.models ?? []),
-        ...persistScanFields(out.result),
+      if (mode === "refresh") {
+        setScan(out.result);
+        const live = currentConnectionView(out.result.lastTestOk, out.result.catalog);
+        setMsg(
+          out.result.status === "CONNECTED"
+            ? `CONNECTED. ${live.available} AVAILABLE · ${out.result.catalog?.recommendedIds.length ?? 0} recommended.`
+            : out.result.error || "Connection failed.",
+        );
+        await save({
+          ...persistBase,
+          members: membersFromIds(out.result.selectedIds, out.result.catalog?.models ?? []),
+          ...persistScanFields(out.result),
+        });
+        return;
+      }
+      setMsg("Verifying selected models and billing completion…");
+      const accepted = await runSaveAcceptance({
+        attemptId: out.attemptId,
+        previous,
+        persisted,
+        expected: { provider, nanogptBilling: config.nanogptBilling },
+        report: {
+          ok: out.result.lastTestOk === true && Boolean(out.result.catalog),
+          error: out.result.error ?? undefined,
+          catalog: out.result.catalog,
+          log: out.result.log,
+        },
+        verifySelected: async (ids) => {
+          const checked = await checkAccess({
+            provider,
+            apiKey: sanitized,
+            models: ids,
+            nanogptBilling: config.nanogptBilling,
+          });
+          return { ok: checked.ok, blocked: checked.blocked, error: checked.error };
+        },
+        completionProbe: async (args) => {
+          const ping = await completeChat({
+            provider: args.provider,
+            apiKey: sanitized,
+            model: args.model,
+            messages: [{ role: "user", content: "ping" }],
+            maxTokens: 1,
+            temperature: 0,
+            nanogptBilling: args.nanogptBilling,
+          });
+          return { ok: ping.ok, error: ping.ok ? undefined : ping.error, model: args.model };
+        },
+        persistResult: async (attempt) => {
+          await save({
+            ...persistBase,
+            members: membersFromIds(attempt.selectedIds, attempt.catalog?.models ?? previous.catalog?.models ?? []),
+            ...persistScanFields(attempt),
+          });
+        },
+        reload: () => refreshAccountSettings(),
       });
-      if (mode === "save" && sanitized) setApiKey("");
+      if (!shouldApplyAttempt(attemptRef.current, out.attemptId)) return;
+      setScan(accepted.result);
+      if (accepted.reloaded && accepted.result.status === "CONNECTED") {
+        hydrateFromAccount(accepted.reloaded);
+      }
+      setMsg(
+        accepted.result.status === "CONNECTED"
+          ? `CONNECTED. Persist, catalog, probe, ${accepted.result.selectedIds.length} VERIFIED_AVAILABLE, billing completion, and reload passed.`
+          : accepted.result.error || "Connection failed.",
+      );
+      if (sanitized && accepted.result.status === "CONNECTED") setApiKey("");
     } catch (err) {
       if (!shouldApplyAttempt(attemptRef.current, attemptId)) return;
       const text = err instanceof Error ? err.message : "Connection failed.";
@@ -285,10 +342,10 @@ function SettingsPage() {
     <Page>
       <PageHeader title="API Settings">
         <p className="max-w-measure text-muted">
-          NanoGPT and OpenRouter are API providers, not Council members. Test Connection discovers models this key can
-          actually call. Save persists the key, then runs that same discovery. NanoGPT Subscription and Pay-as-you-go
-          are separate APIs — Council never mixes them. Only AVAILABLE models from the current billing catalog can join
-          the Council.
+          NanoGPT and OpenRouter are API providers, not Council members. Refresh models discovers the catalog. Save
+          reports CONNECTED only after persist, catalog, an authenticated probe, every selected model is
+          VERIFIED_AVAILABLE, one billing-mode completion, and a reload that still shows CONNECTED. A failed stage is
+          named in the status. Council never mixes Subscription with Pay-as-you-go.
         </p>
       </PageHeader>
 
@@ -511,7 +568,7 @@ function SettingsPage() {
 
       <OpLogPanel
         title={logResult ? `Test log · ${logResult}` : "Test log"}
-        hint="Copy log works for PASS and FAIL. The API secret is never included. The latest log is kept after reload."
+        hint="Copy log works for PASS and FAIL. The API secret is never included. The latest log is kept after reload. A failed Save names the exact stage."
         value={scan.log}
         empty="Run Test Connection to capture a detailed log."
       />
