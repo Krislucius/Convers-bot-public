@@ -68,7 +68,10 @@ describe("access classification", () => {
     const tiny = discovery.models.find((row) => row.id === "mistralai/mistral-tiny");
     const gpt = discovery.models.find((row) => row.id === "openai/gpt-5");
     const unprobed = discovery.models.find((row) => row.id === "perplexity/sonar-pro");
-    assert.equal(gpt?.access, "AVAILABLE");
+    assert.ok(discovery.fingerprint);
+    assert.equal(discovery.mode, "subscription");
+    assert.equal(discovery.fingerprint, "nanogpt:subscription");
+    assert.equal(gpt?.access, "VERIFIED_AVAILABLE");
     assert.equal(premium?.access, "NOT_INCLUDED");
     assert.equal(tiny?.access, "UNAVAILABLE");
     assert.equal(unprobed?.access, "UNKNOWN");
@@ -76,6 +79,7 @@ describe("access classification", () => {
     assert.equal(accessBlocksRun("NOT_INCLUDED"), true);
     assert.equal(accessBlocksRun("UNAVAILABLE"), true);
     assert.equal(accessBlocksRun("AVAILABLE"), false);
+    assert.equal(accessBlocksRun("VERIFIED_AVAILABLE"), false);
   });
 
   it("classifies a catalog-visible but call-denied model as NOT_INCLUDED", () => {
@@ -84,7 +88,7 @@ describe("access classification", () => {
       "NOT_INCLUDED",
     );
     assert.equal(classifyProbe({ id: "x", status: 404, body: "model not found" }, true), "UNAVAILABLE");
-    assert.equal(classifyProbe({ id: "x", status: 200, body: "{}" }, true), "AVAILABLE");
+    assert.equal(classifyProbe({ id: "x", status: 200, body: "{}" }, true), "VERIFIED_AVAILABLE");
     assert.equal(classifyProbe({ id: "x", status: 429, body: "rate" }, true), "UNKNOWN");
   });
 
@@ -316,7 +320,7 @@ describe("AVAILABLE-only recommendations and selection", () => {
     assert.ok(discovery.recommendedIds.length >= 3);
     assert.ok(discovery.recommendedIds.length <= 5);
     for (const id of discovery.recommendedIds) {
-      assert.equal(discovery.models.find((row) => row.id === id)?.access, "AVAILABLE");
+      assert.equal(discovery.models.find((row) => row.id === id)?.access, "VERIFIED_AVAILABLE");
     }
   });
 
@@ -347,7 +351,7 @@ describe("AVAILABLE-only recommendations and selection", () => {
       { id: "anthropic/claude-sonnet-4", status: 200, body: "{}" },
     ]);
     for (const id of discovery.recommendedIds) {
-      assert.equal(discovery.models.find((row) => row.id === id)?.access, "AVAILABLE");
+      assert.equal(discovery.models.find((row) => row.id === id)?.access, "VERIFIED_AVAILABLE");
     }
     const unprobed = discovery.models.filter((row) => row.access === "UNKNOWN");
     assert.ok(unprobed.length > 0);

@@ -10,11 +10,10 @@ import {
   accessCounts,
   availableModels,
   buildDiscovery,
-  classifyVerified,
   isVerifiedAvailable,
-  normalizeCatalogPayload,
   pickProbeTargets,
   pruneToAvailable,
+  providerModeOf,
   type CatalogEntry,
   type CatalogNormalizeResult,
   type CatalogShapeKind,
@@ -23,30 +22,15 @@ import {
   type ModelProbe,
   type VerifiedAccess,
 } from "./discover.ts";
+import { adapterFromTransport, type ProviderAdapter, type ProviderTransport, type TransportProbe } from "./provider-adapter.ts";
 import { coerceMembers } from "./members.ts";
 import { providerName } from "./providers.ts";
 import { emptyAccessCounts, formatTestLog, type CatalogParseLog } from "./test-log.ts";
-import type { ConnectionCheck, PreflightClientReport, ProviderId } from "./types.ts";
+import type { ConnectionCheck, PreflightClientReport } from "./types.ts";
 import type { CouncilMember } from "./members.ts";
 import type { NanoGptBillingMode } from "./nano-billing.ts";
 
-export type TransportProbe = {
-  status: number;
-  body: string;
-  error?: string;
-  latencyMs?: number;
-};
-
-export type ProviderTransport = {
-  provider: ProviderId;
-  label: string;
-  listModels: (apiKey: string) => Promise<TransportProbe>;
-  pingModel: (apiKey: string, modelId: string) => Promise<TransportProbe>;
-  creditMessage: string;
-  billingMode?: NanoGptBillingMode;
-  catalogUrl?: string;
-  completeUrl?: string;
-};
+export type { ProviderAdapter, ProviderTransport, TransportProbe };
 
 function jsonPayload(body: string): unknown {
   const trimmed = (body ?? "").trim();
@@ -65,6 +49,12 @@ function parseLogFromNormalize(norm: CatalogNormalizeResult): CatalogParseLog {
     error: norm.error,
     meta: norm.meta,
   };
+}
+
+function asAdapter(input: ProviderAdapter | ProviderTransport): ProviderAdapter {
+  return "fingerprint" in input && typeof input.fingerprint === "string" && "testConnection" in input
+    ? (input as ProviderAdapter)
+    : adapterFromTransport(input as ProviderTransport);
 }
 
 export type CatalogListOk = {
@@ -89,21 +79,22 @@ export type CatalogListFail = {
 };
 
 export async function listCatalogWith(
-  transport: ProviderTransport,
+  transport: ProviderAdapter | ProviderTransport,
   apiKey: string,
 ): Promise<CatalogListOk | CatalogListFail> {
-  const key = sanitizeApiKey(apiKey, transport.provider);
+  const adapter = asAdapter(transport);
+  const key = sanitizeApiKey(apiKey, adapter.id);
   if (!key) {
     return {
       ok: false,
       code: "KEY_REJECTED",
-      error: `${transport.label} is not connected. Connect your API key before running the Council.`,
+      error: `${adapter.label} is not connected. Connect your API key before running the Council.`,
       status: 0,
       latencyMs: 0,
       shape: "none",
     };
   }
-  const probe = await transport.listModels(key);
+  const probe = await adapter.listModels(key);
   const latencyMs = probe.latencyMs ?? 0;
   const httpStatus = probe.status || "NETWORK_ERROR";
   if (probe.error || probe.status < 200 || probe.status >= 300) {
@@ -113,8 +104,8 @@ export async function listCatalogWith(
         ? keyRejectedMessage(
             probe.status,
             extractErrorMessage(parsed, probe.status),
-            keyFingerprint(key, transport.provider),
-            transport.provider,
+            keyFingerprint(key, adapter.id),
+            adapter.id,
           )
         : redact(probe.error || extractErrorMessage(parsed, probe.status), key);
     return {
@@ -127,7 +118,7 @@ export async function listCatalogWith(
     };
   }
   const payload = jsonPayload(probe.body);
-  const norm = normalizeCatalogPayload(payload);
+  const norm = adapter.normalizeCatalog(payload);
   if (!norm.ok) {
     return {
       ok: false,
@@ -152,12 +143,13 @@ export async function listCatalogWith(
 }
 
 export async function probeModelWith(
-  transport: ProviderTransport,
+  transport: ProviderAdapter | ProviderTransport,
   apiKey: string,
   modelId: string,
 ): Promise<ModelProbe> {
-  const key = sanitizeApiKey(apiKey, transport.provider);
-  const ping = await transport.pingModel(key, modelId);
+  const adapter = asAdapter(transport);
+  const key = sanitizeApiKey(apiKey, adapter.id);
+  const ping = await adapter.probeModel(key, modelId);
   return {
     id: modelId,
     status: ping.status,
@@ -175,13 +167,14 @@ export type DiscoverAccountResult = {
 };
 
 export async function discoverAccountWith(
-  transport: ProviderTransport,
+  transport: ProviderAdapter | ProviderTransport,
   apiKey: string,
   selectedIds: string[] = [],
 ): Promise<DiscoverAccountResult> {
-  const key = sanitizeApiKey(apiKey, transport.provider);
+  const adapter = asAdapter(transport);
+  const key = sanitizeApiKey(apiKey, adapter.id);
   const checks: Record<string, ConnectionCheck> = {
-    [transport.provider]: { ok: false, label: transport.label, detail: "Not checked" },
+    [adapter.id]: { ok: false, label: adapter.label, detail: "Not checked" },
   };
   const makeLog = (opts: {
     ok: boolean;
@@ -200,10 +193,10 @@ export async function discoverAccountWith(
     formatTestLog(
       {
         result: opts.ok ? "PASS" : "FAIL",
-        provider: transport.provider,
+        provider: adapter.id,
         connection: {
           status: opts.ok ? "CONNECTED" : "FAILED",
-          detail: opts.error ?? (opts.ok ? `${transport.label} connected` : "Connection failed"),
+          detail: opts.error ?? (opts.ok ? `${adapter.label} connected` : "Connection failed"),
         },
         catalog: {
           http_status: opts.catalogStatus,
@@ -220,21 +213,25 @@ export async function discoverAccountWith(
         error: opts.error ?? null,
         extra: {
           authenticated: opts.authenticated === true,
-          ...(transport.billingMode
+          mode: adapter.mode,
+          fingerprint: adapter.fingerprint,
+          models_discovered: opts.catalogCount,
+          verified_available: opts.snapshot ? availableModels(opts.snapshot.models).length : 0,
+          ...(adapter.catalogUrl
             ? {
-                billing: transport.billingMode,
-                catalog_url: transport.catalogUrl,
-                complete_url: transport.completeUrl,
+                billing: adapter.mode,
+                catalog_url: adapter.catalogUrl,
+                complete_url: adapter.completeUrl,
               }
-            : {}),
+            : { billing: adapter.mode }),
         },
       },
       key,
     );
 
   if (!key) {
-    const error = `${transport.label} is not connected. Connect your API key before running the Council.`;
-    checks[transport.provider] = { ok: false, label: transport.label, detail: error };
+    const error = `${adapter.label} is not connected. Connect your API key before running the Council.`;
+    checks[adapter.id] = { ok: false, label: adapter.label, detail: error };
     return {
       ok: false,
       error,
@@ -244,9 +241,10 @@ export async function discoverAccountWith(
     };
   }
 
-  const catalog = await listCatalogWith(transport, key);
+  const connected = await adapter.testConnection(key);
+  const catalog = await listCatalogWith(adapter, key);
   if (!catalog.ok) {
-    checks[transport.provider] = { ok: false, label: transport.label, detail: catalog.error };
+    checks[adapter.id] = { ok: false, label: adapter.label, detail: catalog.error };
     return {
       ok: false,
       error: catalog.error,
@@ -266,16 +264,16 @@ export async function discoverAccountWith(
   }
 
   const targets = pickProbeTargets(catalog.entries, selectedIds);
-  const probes = await Promise.all(targets.map((id) => probeModelWith(transport, key, id)));
+  const probes = await Promise.all(targets.map((id) => probeModelWith(adapter, key, id)));
   const authFail = probes.find((row) => row.status === 401);
   if (authFail) {
     const error = keyRejectedMessage(
       authFail.status,
       extractErrorMessage(jsonPayload(authFail.body ?? ""), authFail.status),
-      keyFingerprint(key, transport.provider),
-      transport.provider,
+      keyFingerprint(key, adapter.id),
+      adapter.id,
     );
-    checks[transport.provider] = { ok: false, label: transport.label, detail: error };
+    checks[adapter.id] = { ok: false, label: adapter.label, detail: error };
     return {
       ok: false,
       error,
@@ -296,15 +294,15 @@ export async function discoverAccountWith(
   }
   const creditFail = probes.find((row) => row.status === 402);
   if (creditFail && probes.every((row) => row.status === 402 || row.status === 0 || row.status >= 500)) {
-    checks[transport.provider] = { ok: false, label: transport.label, detail: transport.creditMessage };
+    checks[adapter.id] = { ok: false, label: adapter.label, detail: adapter.creditMessage };
     return {
       ok: false,
-      error: transport.creditMessage,
+      error: adapter.creditMessage,
       snapshot: null,
       checks,
       log: makeLog({
         ok: false,
-        error: transport.creditMessage,
+        error: adapter.creditMessage,
         catalogStatus: catalog.status,
         catalogCount: catalog.entries.length,
         latencyMs: catalog.latencyMs,
@@ -316,28 +314,30 @@ export async function discoverAccountWith(
     };
   }
 
-  const snapshot = {
-    ...buildDiscovery(
-      transport.provider,
-      catalog.entries,
-      probes,
-      selectedIds,
-      new Date().toISOString(),
-      catalog.shape,
-    ),
-    billingMode: transport.billingMode,
-    catalogUrl: transport.catalogUrl,
-  };
+  const snapshot = buildDiscovery(
+    adapter.id,
+    catalog.entries,
+    probes,
+    selectedIds,
+    new Date().toISOString(),
+    catalog.shape,
+    {
+      mode: adapter.mode,
+      billingMode: adapter.mode === "payg" || adapter.mode === "subscription" ? (adapter.mode as NanoGptBillingMode) : undefined,
+      catalogUrl: adapter.catalogUrl,
+    },
+  );
   const usable = pruneToAvailable(selectedIds, snapshot.models);
   const warnings: string[] = [];
   for (const id of selectedIds) {
-    if (id && !usable.includes(id)) warnings.push(`Dropped stale selection ${id} — not AVAILABLE on this scan.`);
+    if (id && !usable.includes(id)) warnings.push(`Dropped stale selection ${id} — not VERIFIED_AVAILABLE on this scan.`);
   }
+  if (!connected.ok) warnings.push(connected.error || `${adapter.label} catalog check was weak.`);
   const availableCount = availableModels(snapshot.models).length;
-  checks[transport.provider] = {
+  checks[adapter.id] = {
     ok: true,
-    label: transport.label,
-    detail: `CONNECTED · ${catalog.entries.length} discovered · ${availableCount} available`,
+    label: adapter.label,
+    detail: `CONNECTED · ${catalog.entries.length} discovered · ${availableCount} VERIFIED_AVAILABLE · mode ${adapter.mode}`,
   };
   return {
     ok: true,
@@ -360,11 +360,12 @@ export async function discoverAccountWith(
 }
 
 export async function catalogCheckWith(
-  transport: ProviderTransport,
+  transport: ProviderAdapter | ProviderTransport,
   apiKey: string,
   models: string[],
 ): Promise<CatalogCheckResult> {
-  const catalog = await listCatalogWith(transport, apiKey);
+  const adapter = asAdapter(transport);
+  const catalog = await listCatalogWith(adapter, apiKey);
   if (!catalog.ok) {
     return {
       ok: false,
@@ -375,11 +376,11 @@ export async function catalogCheckWith(
     };
   }
   const known = new Set(catalog.entries.map((row) => row.id));
-  return catalogFromIds(transport.provider, models.map((id) => id.trim()).filter(Boolean), known);
+  return catalogFromIds(adapter.id, models.map((id) => id.trim()).filter(Boolean), known);
 }
 
 export async function accessCheckWith(
-  transport: ProviderTransport,
+  transport: ProviderAdapter | ProviderTransport,
   apiKey: string,
   models: string[],
 ): Promise<{
@@ -393,7 +394,7 @@ export async function accessCheckWith(
 }
 
 export async function verifySelectedWith(
-  transport: ProviderTransport,
+  transport: ProviderAdapter | ProviderTransport,
   apiKey: string,
   models: string[],
 ): Promise<{
@@ -403,30 +404,31 @@ export async function verifySelectedWith(
   snapshot?: DiscoverySnapshot;
   verified?: Array<{ id: string; access: VerifiedAccess; status: number }>;
 }> {
+  const adapter = asAdapter(transport);
   const unique = [...new Set(models.map((id) => id.trim()).filter(Boolean))];
   if (!unique.length) {
     return {
       ok: false,
       blocked: [],
-      error: `${MODEL_UNAVAILABLE}: no selected models to verify on ${providerName(transport.provider)}.`,
+      error: `${MODEL_UNAVAILABLE}: no selected models to verify on ${providerName(adapter.id)}.`,
     };
   }
-  const key = sanitizeApiKey(apiKey, transport.provider);
+  const key = sanitizeApiKey(apiKey, adapter.id);
   if (!key) {
     return {
       ok: false,
       blocked: unique.map((id) => ({ id, access: "UNAVAILABLE" })),
-      error: `${transport.label} is not connected. Connect your API key before running the Council.`,
+      error: `${adapter.label} is not connected. Connect your API key before running the Council.`,
     };
   }
-  const probes = await Promise.all(unique.map((id) => probeModelWith(transport, key, id)));
+  const probes = await Promise.all(unique.map((id) => probeModelWith(adapter, key, id)));
   const authFail = probes.find((row) => row.status === 401);
   if (authFail) {
     const error = keyRejectedMessage(
       authFail.status,
       extractErrorMessage(jsonPayload(authFail.body ?? ""), authFail.status),
-      keyFingerprint(key, transport.provider),
-      transport.provider,
+      keyFingerprint(key, adapter.id),
+      adapter.id,
     );
     return {
       ok: false,
@@ -436,7 +438,7 @@ export async function verifySelectedWith(
   }
   const verified = probes.map((probe) => ({
     id: probe.id,
-    access: classifyVerified(probe),
+    access: adapter.classifyVerified(probe),
     status: probe.status,
   }));
   const blocked = verified
@@ -449,14 +451,14 @@ export async function verifySelectedWith(
       verified,
       error: `${MODEL_UNAVAILABLE}: ${blocked
         .map((row) => `${row.id} (${row.access})`)
-        .join(", ")} is not VERIFIED_AVAILABLE on ${providerName(transport.provider)}. Refresh models and pick a replacement.`,
+        .join(", ")} is not VERIFIED_AVAILABLE on ${providerName(adapter.id)}. Refresh models and pick a replacement.`,
     };
   }
   return { ok: true, blocked: [], verified };
 }
 
 export async function preflightWith(
-  transport: ProviderTransport,
+  transport: ProviderAdapter | ProviderTransport,
   opts: {
     apiKey: string;
     members?: CouncilMember[];
@@ -482,7 +484,7 @@ export async function preflightWith(
   const missing = selectedIds.filter((id) => id && !usable.includes(id));
   const models: Record<string, string> = Object.fromEntries(usable.map((id, index) => [`m${index + 1}`, id]));
   if (missing.length) {
-    const error = `${MODEL_UNAVAILABLE}: ${missing.join(", ")} is not accessible on ${providerName(transport.provider)}. Refresh models and pick a replacement.`;
+    const error = `${MODEL_UNAVAILABLE}: ${missing.join(", ")} is not accessible on ${providerName(asAdapter(transport).id)}. Refresh models and pick a replacement.`;
     return {
       ok: false,
       error,
@@ -513,3 +515,5 @@ export function selectedIdsFromPreflight(opts: {
   if (members.length) return members.map((row) => row.modelId);
   return (opts.selectedIds ?? []).map((id) => id.trim()).filter(Boolean);
 }
+
+export { providerModeOf };

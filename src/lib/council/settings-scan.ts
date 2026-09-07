@@ -62,7 +62,7 @@ export function shouldApplyAttempt(currentAttemptId: string, incomingAttemptId: 
 }
 
 /**
- * Keep the current Council only when every selected id is still AVAILABLE.
+ * Keep the current Council only when every selected id is still VERIFIED_AVAILABLE.
  * Otherwise drop the invalid ids. An empty previous selection takes the recommendation.
  */
 export function selectionAfterScan(previousIds: string[], catalog: DiscoverySnapshot): string[] {

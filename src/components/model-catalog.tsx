@@ -1,9 +1,17 @@
 import { Check } from "lucide-react";
 import { ROLE_LABEL, type CouncilRole } from "@/lib/council/roles";
 import { MAX_COUNCIL_MEMBERS } from "@/lib/council/members";
-import { availableModels, type DiscoveredModel, type DiscoverySnapshot, type ModelAccess } from "@/lib/council/discover";
+import {
+  availableModels,
+  isVerifiedAvailable,
+  type DiscoveredModel,
+  type DiscoverySnapshot,
+  type ModelAccess,
+  type ModelCapabilities,
+} from "@/lib/council/discover";
 
 const ACCESS_CLASS: Record<ModelAccess, string> = {
+  VERIFIED_AVAILABLE: "text-ok",
   AVAILABLE: "text-ok",
   UNKNOWN: "text-muted",
   NOT_INCLUDED: "text-warn",
@@ -11,11 +19,23 @@ const ACCESS_CLASS: Record<ModelAccess, string> = {
 };
 
 const ACCESS_LABEL: Record<ModelAccess, string> = {
+  VERIFIED_AVAILABLE: "VERIFIED AVAILABLE",
   AVAILABLE: "AVAILABLE",
   UNKNOWN: "UNKNOWN",
   NOT_INCLUDED: "NOT INCLUDED",
   UNAVAILABLE: "UNAVAILABLE",
 };
+
+function capabilityChips(caps?: ModelCapabilities): string[] {
+  if (!caps) return [];
+  const out: string[] = [];
+  if (caps.reasoning) out.push("reasoning");
+  if (caps.coding) out.push("coding");
+  if (caps.longContext) out.push("long context");
+  if (caps.research) out.push("research");
+  if (caps.adversarial) out.push("adversarial");
+  return out;
+}
 
 export function ModelCatalogPanel({
   catalog,
@@ -40,7 +60,7 @@ export function ModelCatalogPanel({
     return (
       <p className="m-0 max-w-measure text-muted">
         Test Connection fetches this provider's catalog and probes whether the account can actually call those
-        models. Only AVAILABLE models can join the Council.
+        models. Only VERIFIED_AVAILABLE models from the current scan can join the Council.
       </p>
     );
   }
@@ -48,7 +68,7 @@ export function ModelCatalogPanel({
   const needle = query.trim().toLowerCase();
   const selected = new Set(selectedIds);
   const available = availableModels(catalog.models);
-  const others = catalog.models.filter((row) => row.access !== "AVAILABLE");
+  const others = catalog.models.filter((row) => !isVerifiedAvailable(row.access));
   const filteredAvailable = available.filter((row) =>
     needle ? `${row.id} ${row.name} ${row.family}`.toLowerCase().includes(needle) : true,
   );
@@ -63,19 +83,19 @@ export function ModelCatalogPanel({
         <p className="mt-1 mb-0 text-sm text-muted">
           {stale
             ? `Cached from a previous successful scan (${catalog.models.length} models). Not current Test Connection results.`
-            : `${available.length} AVAILABLE of ${catalog.models.length} discovered. Select 2–${MAX_COUNCIL_MEMBERS}. Provider names are not models.`}
+            : `${available.length} VERIFIED_AVAILABLE of ${catalog.models.length} discovered · mode ${catalog.mode ?? catalog.billingMode ?? "default"}. Select 2–${MAX_COUNCIL_MEMBERS}. Provider names are not models.`}
         </p>
       </div>
       {stale ? (
         <p className="m-0 text-sm text-warn">
-          Run Test Connection again. Council membership is saved only from a current AVAILABLE scan.
+          Run Test Connection again. Council membership is saved only from a current VERIFIED_AVAILABLE scan.
         </p>
       ) : null}
       <input
         type="search"
         value={query}
         onChange={(e) => onQuery(e.target.value)}
-        placeholder="Search AVAILABLE model id or family"
+        placeholder="Search VERIFIED_AVAILABLE model id or family"
         className="min-h-11 w-full rounded-sm border border-line bg-bg px-3 text-fg"
       />
       {filteredAvailable.length ? (
@@ -91,7 +111,7 @@ export function ModelCatalogPanel({
           ))}
         </ul>
       ) : (
-        <p className="m-0 text-sm text-muted">No AVAILABLE models in this scan.</p>
+        <p className="m-0 text-sm text-muted">No VERIFIED_AVAILABLE models in this scan.</p>
       )}
       {filteredOthers.length ? (
         <div className="grid gap-2">
@@ -115,7 +135,7 @@ export function ModelCatalogPanel({
           disabled={stale}
           onChange={(e) => onSynthesizer(e.target.value)}
         >
-          <option value="">Automatic — strongest selected AVAILABLE model</option>
+          <option value="">Automatic — strongest selected VERIFIED_AVAILABLE model</option>
           {selectedIds.map((id) => (
             <option key={id} value={id}>
               {id}
@@ -138,6 +158,7 @@ function ModelRow({
   disabled: boolean;
   onToggle: () => void;
 }) {
+  const chips = capabilityChips(row.capabilities);
   return (
     <li>
       <label
@@ -165,6 +186,15 @@ function ModelRow({
               <span className="text-muted">Recommended: {roleName(row.recommendedRole)}</span>
             ) : null}
           </span>
+          {chips.length ? (
+            <span className="mt-1 flex flex-wrap gap-1 text-xs text-faint">
+              {chips.map((chip) => (
+                <span key={chip} className="rounded-sm border border-line px-1.5 py-0.5">
+                  {chip}
+                </span>
+              ))}
+            </span>
+          ) : null}
         </span>
       </label>
     </li>

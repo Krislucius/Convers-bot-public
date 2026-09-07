@@ -1,5 +1,5 @@
 {
-  "architecture_revision": "CB-ARCH-20260906-004",
+  "architecture_revision": "CB-ARCH-20260907-001",
   "modules": [
     {
       "module_id": "app.shell",
@@ -113,8 +113,8 @@
       "module_id": "council.orchestrator",
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/orchestrate.ts",
-      "architecture_revision": "CB-ARCH-20260906-004",
-      "responsibilities": ["single Council execution path: verified selected-model preflight, catalog, request budget, member_id identity (role may repeat), DISPATCHED_MODEL_ID integrity, NanoGPT billing freeze, round1, round2, synthesis fallback or PARTIAL RESULT, packet"],
+      "architecture_revision": "CB-ARCH-20260907-001",
+      "responsibilities": ["single Council execution path: verified selected-model preflight, catalog fingerprint must match run provider/mode, request budget, member_id identity (role may repeat), DISPATCHED_MODEL_ID integrity, NanoGPT billing freeze, round1, round2, synthesis fallback or PARTIAL RESULT, packet"],
       "dependencies": ["council.protocol", "council.providers", "council.manifest", "council.artifact", "council.packet", "context.evidence-ledger"],
       "supersedes": []
     },
@@ -140,11 +140,11 @@
       "module_id": "council.providers",
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/run-council.ts",
-      "architecture_revision": "CB-ARCH-20260906-001",
+      "architecture_revision": "CB-ARCH-20260907-001",
       "responsibilities": [
-        "NanoGPT and OpenRouter server functions",
+        "NanoGPT, OpenRouter, and OpenRusRouter via ProviderAdapter",
         "per-run provider freeze",
-        "NanoGPT Subscription vs PAYG routing",
+        "NanoGPT Subscription vs PAYG routing inside the NanoGPT adapter",
         "catalog + access discovery",
         "dynamic Council membership",
         "key resolve from account"
@@ -156,14 +156,16 @@
       "module_id": "council.discovery",
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/discover.ts",
-      "architecture_revision": "CB-ARCH-20260906-003",
+      "architecture_revision": "CB-ARCH-20260907-001",
       "responsibilities": [
+        "canonical ProviderAdapter for every API provider",
         "provider catalog normalize (direct array or OpenAI data[])",
         "CATALOG_PARSE_ERROR for unsupported shapes",
         "account access probe",
-        "AVAILABLE / UNAVAILABLE / NOT_INCLUDED / UNKNOWN scan states",
+        "VERIFIED_AVAILABLE / UNAVAILABLE / NOT_INCLUDED / UNKNOWN scan states",
         "VERIFIED_AVAILABLE selected-model preflight before paid Council",
-        "AVAILABLE-only recommendation and Council membership",
+        "capability ranking without hardcoded GPT/Claude/Grok/DeepSeek/Kimi",
+        "provider:mode discovery fingerprint",
         "NanoGPT subscription catalog vs PAYG catalog isolation",
         "provider names are not models",
         "atomic Test Connection current vs STALE",
@@ -223,8 +225,8 @@
       "module_id": "ui.settings",
       "status": "ACTIVE",
       "implementation_path": "src/routes/settings.tsx",
-      "architecture_revision": "CB-ARCH-20260906-003",
-      "responsibilities": ["provider keys", "Save CONNECTED after persist/catalog/probe/verify/completion/reload", "AVAILABLE model checkboxes", "Council recommendation", "current vs STALE catalog", "persisted test log", "system identity"],
+      "architecture_revision": "CB-ARCH-20260907-001",
+      "responsibilities": ["provider keys", "Save CONNECTED after persist/catalog/probe/verify/completion/reload", "VERIFIED_AVAILABLE model checkboxes with capabilities and recommended role", "Recommended Council", "current vs STALE catalog", "persisted test log", "system identity"],
       "dependencies": ["council.providers", "architecture.lock"],
       "supersedes": []
     },

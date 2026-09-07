@@ -5,7 +5,7 @@ import { ModelCatalogPanel } from "@/components/model-catalog";
 import { OpLogPanel } from "@/components/op-log";
 import { SystemInfoPanel } from "@/components/system-info";
 import { describeKey, keyFingerprint, redact, sanitizeApiKey } from "@/lib/council/api-key";
-import { currentConnectionView } from "@/lib/council/discover";
+import { currentConnectionView, isVerifiedAvailable } from "@/lib/council/discover";
 import { emptyAccessCounts, formatTestLog } from "@/lib/council/test-log";
 import { assertAvailableSelection, MAX_COUNCIL_MEMBERS, attemptLimit, expectedSuccessfulCalls, membersFromIds } from "@/lib/council/members";
 import { checkAccess, completeChat, testProvider } from "@/lib/council/openrouter";
@@ -66,7 +66,7 @@ function SettingsPage() {
     ? assertAvailableSelection(scan.selectedIds, liveCatalog.models)
     : scan.status === "TESTING"
       ? null
-      : "Test Connection or Save to discover AVAILABLE models. Only AVAILABLE models from the current scan can join the Council.";
+      : "Test Connection or Save to discover VERIFIED_AVAILABLE models. Only VERIFIED_AVAILABLE models from the current scan can join the Council.";
   const lastTested = scan.lastTestAt
     ? new Date(scan.lastTestAt).toLocaleString()
     : liveCatalog?.fetchedAt
@@ -226,7 +226,7 @@ function SettingsPage() {
         const live = currentConnectionView(out.result.lastTestOk, out.result.catalog);
         setMsg(
           out.result.status === "CONNECTED"
-            ? `CONNECTED. ${live.available} AVAILABLE · ${out.result.catalog?.recommendedIds.length ?? 0} recommended.`
+            ? `CONNECTED. ${live.available} VERIFIED_AVAILABLE · ${out.result.catalog?.recommendedIds.length ?? 0} recommended.`
             : out.result.error || "Connection failed.",
         );
         await save({
@@ -342,10 +342,11 @@ function SettingsPage() {
     <Page>
       <PageHeader title="API Settings">
         <p className="max-w-measure text-muted">
-          NanoGPT and OpenRouter are API providers, not Council members. Refresh models discovers the catalog. Save
-          reports CONNECTED only after persist, catalog, an authenticated probe, every selected model is
+          NanoGPT, OpenRouter, and OpenRusRouter are API providers, not Council members. Refresh models discovers the
+          catalog for the selected provider and mode, then probes whether this account can actually call those models.
+          Save reports CONNECTED only after persist, catalog, an authenticated probe, every selected model is
           VERIFIED_AVAILABLE, one billing-mode completion, and a reload that still shows CONNECTED. A failed stage is
-          named in the status. Council never mixes Subscription with Pay-as-you-go.
+          named in the status. Council never mixes providers or NanoGPT Subscription with Pay-as-you-go.
         </p>
       </PageHeader>
 
@@ -472,22 +473,22 @@ function SettingsPage() {
       </Panel>
 
       <Panel>
-        <p className="mb-1 text-xs font-semibold tracking-widest text-muted uppercase">Connection status</p>
+        <p className="mb-1 text-xs font-semibold tracking-widest text-muted uppercase">Provider status</p>
         <h2 className="font-display mt-0 mb-4 text-xl">{meta.name}</h2>
         <dl className="m-0 grid gap-3 sm:grid-cols-2">
-          <StatusRow label="Provider" value={meta.name} />
-          {provider === "nanogpt" ? (
-            <StatusRow label="Billing" value={billingLabel(config.nanogptBilling)} />
-          ) : null}
-          <StatusRow label="Status" value={statusLabel} ok={statusOk} />
+          <StatusRow label="Provider status" value={statusLabel} ok={statusOk} />
           <StatusRow label="Last tested" value={lastTested} />
-          {provider === "nanogpt" && config.nanogptBilling === "subscription" ? (
-            <StatusRow label="Subscription models" value={String(view.discovered)} />
-          ) : (
-            <StatusRow label="Models discovered" value={String(view.discovered)} />
-          )}
+          <StatusRow
+            label="Mode"
+            value={
+              provider === "nanogpt"
+                ? billingLabel(config.nanogptBilling)
+                : (liveCatalog?.mode ?? scan.catalog?.mode ?? "default")
+            }
+          />
+          <StatusRow label="Models discovered" value={String(view.discovered)} />
+          <StatusRow label="Verified available" value={String(view.available)} />
           <StatusRow label="Selected Council" value={String(scan.selectedIds.length)} />
-          <StatusRow label="Models available" value={String(view.available)} />
         </dl>
         {view.stale ? (
           <p className="mt-4 mb-0 text-sm text-warn">
@@ -509,7 +510,7 @@ function SettingsPage() {
           onToggle={(id) => {
             if (view.stale) return;
             const row = liveCatalog?.models.find((item) => item.id === id);
-            if (row && row.access !== "AVAILABLE") return;
+            if (row && !isVerifiedAvailable(row.access)) return;
             setScan((prev) => {
               const selectedIds = prev.selectedIds.includes(id)
                 ? prev.selectedIds.filter((item) => item !== id)
@@ -530,8 +531,8 @@ function SettingsPage() {
       <Panel>
         <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
           <div>
-            <p className="mb-1 text-xs font-semibold tracking-widest text-muted uppercase">Council recommendation</p>
-            <h2 className="font-display m-0 text-xl">Selected AVAILABLE models only</h2>
+            <p className="mb-1 text-xs font-semibold tracking-widest text-muted uppercase">Recommended Council</p>
+            <h2 className="font-display m-0 text-xl">Selected VERIFIED_AVAILABLE models only</h2>
           </div>
           <button
             type="button"
@@ -557,7 +558,7 @@ function SettingsPage() {
             ))}
           </ul>
         ) : (
-          <p className="m-0 text-sm text-muted">No Council yet. Test Connection, then accept the AVAILABLE recommendation or tick models.</p>
+          <p className="m-0 text-sm text-muted">No Council yet. Test Connection, then accept the recommended Council or tick VERIFIED_AVAILABLE models.</p>
         )}
         {selectionError ? <p className="mt-3 mb-0 text-danger">{selectionError}</p> : null}
         <p className="mt-3 mb-0 max-w-measure text-sm text-muted">

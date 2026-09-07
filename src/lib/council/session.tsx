@@ -5,6 +5,7 @@ import { runWithPersistRetry } from "./persist-queue";
 import { runCredsFromReady } from "./orchestrate";
 import { coerceMembers, membersFromIds, type CouncilMember } from "./members";
 import { pruneToAvailable } from "./discover";
+import { sameProviderScan } from "./provider-adapter";
 import {
   DEFAULT_MAX_COST_USD,
   DEFAULT_PROVIDER,
@@ -78,10 +79,15 @@ const emptySettings: AccountSettingsPublic = {
 function fromPublic(settings: AccountSettingsPublic): SessionConfig {
   const provider = isProviderId(settings.provider) ? settings.provider : DEFAULT_PROVIDER;
   const slot = slotFor(settings, provider);
-  const catalog = settings.catalog ?? null;
+  const billing = normalizeNanoGptBilling(settings.nanogptBilling);
+  const rawCatalog = settings.catalog ?? null;
+  const mixed = sameProviderScan(rawCatalog, provider, billing);
+  const catalog = mixed ? null : rawCatalog;
   const selectedModelIds = catalog?.models?.length
     ? pruneToAvailable(settings.selectedModelIds ?? [], catalog.models)
-    : (settings.selectedModelIds ?? []).filter(Boolean);
+    : mixed
+      ? []
+      : (settings.selectedModelIds ?? []).filter(Boolean);
   const members = coerceMembers({
     selectedModelIds,
     catalog: catalog?.models,
@@ -102,7 +108,7 @@ function fromPublic(settings: AccountSettingsPublic): SessionConfig {
     lastTestAt: settings.lastTestAt ?? null,
     lastTestOk: settings.lastTestOk ?? null,
     ready: slot.saved,
-    nanogptBilling: normalizeNanoGptBilling(settings.nanogptBilling),
+    nanogptBilling: billing,
     nanogpt: settings.nanogpt,
     openrouter: settings.openrouter,
     openrusrouter: settings.openrusrouter,

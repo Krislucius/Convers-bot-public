@@ -155,3 +155,12 @@ Only ACTIVE rows define current architecture.
 - RATIONALE: Role-keyed state collapsed duplicate-role members, dispatched fewer models than selected, treated synthesis as round 3 with no survivor fallback, and left unclassified provider failures.
 - SUPERSEDES: none (tightens ADR-011 / COUNCIL_DYNAMIC_MEMBERS_TWO_ROUNDS)
 - AFFECTED_MODULES: council.orchestrator, council.protocol, council.providers, persist.postgres, ui.task
+
+## ADR-018
+
+- DECISION: Every API provider implements one `ProviderAdapter` (`testConnection`, `listModels`, `normalizeCatalog`, `probeModel`, `classifyAccess`, `getCapabilities`). Discovery is CONNECT → DISCOVER → VERIFY → RANK → SELECT. Catalog presence is never usable access. Scan membership and recommendations use only VERIFIED_AVAILABLE models from the current `provider:mode` fingerprint. Ranking is capability-based (reasoning, coding/architecture, long context, research/adversarial, reliability, family diversity) and never injects GPT / Claude / Grok / DeepSeek / Kimi. Provider-specific billing (NanoGPT Subscription vs PAYG) stays inside the adapter and is part of the fingerprint. Switching provider or mode invalidates the current attempt and drops stale selected models. Council never mixes providers or billing modes in one run. Settings shows Provider status, Last tested, Models discovered, Verified available, capabilities, recommended roles, and Recommended Council.
+- STATUS: ACTIVE
+- ARCHITECTURE_REVISION: CB-ARCH-20260907-001
+- RATIONALE: Discovery, access verification, and Council recommendations were NanoGPT-shaped with vendor family scoring. OpenRouter and OpenRusRouter reused HTTP transport but not a first-class adapter, so inaccessible catalog rows and hardcoded families could still enter a Council.
+- SUPERSEDES: none (tightens ADR-010 / ADR-011 / ADR-014)
+- AFFECTED_MODULES: council.discovery, council.providers, council.orchestrator, ui.settings

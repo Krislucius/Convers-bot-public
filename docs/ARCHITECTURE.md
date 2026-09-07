@@ -1,6 +1,6 @@
 # Conversation Bot architecture
 
-Current revision: **CB-ARCH-20260906-004**
+Current revision: **CB-ARCH-20260907-001**
 
 This document describes the system that is running now. Obsolete trees are listed only under History.
 
@@ -30,7 +30,7 @@ UI (routes + council-ui)
 → task create (CREATE / REVIEW / DECIDE)
 → council.orchestrator (only path)
 → council.protocol (roles + synthesis schemas + gate)
-→ council.providers (NanoGPT / OpenRouter)
+→ council.providers (NanoGPT / OpenRouter / OpenRusRouter via ProviderAdapter)
 → Implementation Packet (when CREATE is APPROVED)
 → persist.postgres
 ```

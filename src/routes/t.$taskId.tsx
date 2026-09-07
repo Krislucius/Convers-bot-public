@@ -249,6 +249,7 @@ function TaskPage() {
         parentPacket,
         pipeline: prepared,
         catalog: config.catalog?.models,
+        scan: config.catalog ?? undefined,
         resume: opts?.resume,
         runId: handle.runId,
         generation: handle.generation,

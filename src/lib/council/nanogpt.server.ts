@@ -15,6 +15,7 @@ import {
   preflightWith,
   probeModelWith,
 } from "./provider-discover.ts";
+import { adapterFromTransport } from "./provider-adapter.ts";
 import {
   COMPLETE_TIMEOUT_MS,
   ProviderError,
@@ -157,8 +158,12 @@ export function transport(mode: NanoGptBillingMode = DEFAULT_NANOGPT_BILLING) {
   };
 }
 
+export function adapter(mode: NanoGptBillingMode = DEFAULT_NANOGPT_BILLING) {
+  return adapterFromTransport(transport(mode));
+}
+
 export async function listCatalog(apiKey: string, billing: NanoGptBillingMode = DEFAULT_NANOGPT_BILLING) {
-  return listCatalogWith(transport(billing), apiKey);
+  return listCatalogWith(adapter(billing), apiKey);
 }
 
 export async function probeModel(
@@ -166,7 +171,7 @@ export async function probeModel(
   modelId: string,
   billing: NanoGptBillingMode = DEFAULT_NANOGPT_BILLING,
 ) {
-  return probeModelWith(transport(billing), apiKey, modelId);
+  return probeModelWith(adapter(billing), apiKey, modelId);
 }
 
 export async function discoverAccount(
@@ -174,7 +179,7 @@ export async function discoverAccount(
   selectedIds: string[] = [],
   billing: NanoGptBillingMode = DEFAULT_NANOGPT_BILLING,
 ) {
-  return discoverAccountWith(transport(billing), apiKey, selectedIds);
+  return discoverAccountWith(adapter(billing), apiKey, selectedIds);
 }
 
 export async function preflightWithKey(opts: {
@@ -187,7 +192,7 @@ export async function preflightWithKey(opts: {
   synthesizerModel?: string;
   nanogptBilling?: NanoGptBillingMode;
 }): Promise<PreflightClientReport & { catalog?: import("./discover.ts").DiscoverySnapshot }> {
-  return preflightWith(transport(normalizeNanoGptBilling(opts.nanogptBilling)), opts);
+  return preflightWith(adapter(normalizeNanoGptBilling(opts.nanogptBilling)), opts);
 }
 
 export async function catalogCheck(opts: {
@@ -202,7 +207,7 @@ export async function catalogCheck(opts: {
     opts.models && opts.models.length
       ? opts.models
       : [opts.gptModel, opts.grokModel, opts.claudeModel].filter((id): id is string => Boolean(id));
-  return catalogCheckWith(transport(normalizeNanoGptBilling(opts.nanogptBilling)), opts.apiKey, models);
+  return catalogCheckWith(adapter(normalizeNanoGptBilling(opts.nanogptBilling)), opts.apiKey, models);
 }
 
 export async function accessCheck(opts: {
@@ -210,7 +215,7 @@ export async function accessCheck(opts: {
   models: string[];
   nanogptBilling?: NanoGptBillingMode;
 }) {
-  return accessCheckWith(transport(normalizeNanoGptBilling(opts.nanogptBilling)), opts.apiKey, opts.models);
+  return accessCheckWith(adapter(normalizeNanoGptBilling(opts.nanogptBilling)), opts.apiKey, opts.models);
 }
 
 export async function complete(opts: {

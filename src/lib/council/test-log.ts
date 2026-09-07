@@ -25,7 +25,7 @@ export type TestLogPayload = {
     parse?: CatalogParseLog;
   };
   probes: { performed: number; ids: string[] };
-  access: Record<ModelAccess, number>;
+  access: Partial<Record<ModelAccess, number>>;
   recommended: string[];
   selected: string[];
   warnings: string[];
@@ -34,7 +34,7 @@ export type TestLogPayload = {
 };
 
 export function emptyAccessCounts(): Record<ModelAccess, number> {
-  return { AVAILABLE: 0, NOT_INCLUDED: 0, UNAVAILABLE: 0, UNKNOWN: 0 };
+  return { VERIFIED_AVAILABLE: 0, AVAILABLE: 0, NOT_INCLUDED: 0, UNAVAILABLE: 0, UNKNOWN: 0 };
 }
 
 export function countsFromModels(models: DiscoveredModel[]): Record<ModelAccess, number> {
@@ -49,29 +49,32 @@ export function formatTestLog(payload: TestLogPayload, apiKey = ""): string {
   if (payload.catalog.latency_ms != null) catalog.latency_ms = payload.catalog.latency_ms;
   catalog.response_shape = payload.catalog.response_shape ?? "none";
   if (payload.catalog.parse) catalog.parse = payload.catalog.parse;
+  const extra = payload.extra ? { ...payload.extra } : {};
+  delete extra.apiKey;
+  delete extra.Authorization;
+  delete extra.key;
   const body: Record<string, unknown> = {
     title: "Conversation Bot · API test log",
     result: payload.result,
     time: payload.time ?? new Date().toISOString(),
     provider: payload.provider,
+    mode: extra.mode ?? extra.billing ?? "default",
     connection: payload.connection,
     catalog,
     probes: {
       performed: payload.probes.performed,
       ids: payload.probes.ids,
     },
-    access: payload.access,
+    access: { ...emptyAccessCounts(), ...payload.access },
     recommended: payload.recommended,
     selected: payload.selected,
     warnings: payload.warnings,
     error: payload.error ?? null,
     note: "The API secret is not included in this log.",
   };
-  if (payload.extra) {
-    for (const [key, value] of Object.entries(payload.extra)) {
-      if (key === "apiKey" || key === "Authorization" || key === "key") continue;
-      body[key] = value;
-    }
+  for (const [key, value] of Object.entries(extra)) {
+    if (key === "apiKey" || key === "Authorization" || key === "key") continue;
+    body[key] = value;
   }
   const text = JSON.stringify(body, null, 2);
   const redacted = apiKey ? redact(text, apiKey) : text;

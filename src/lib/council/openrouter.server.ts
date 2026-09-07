@@ -4,9 +4,9 @@ import {
   keyRejectedMessage,
   redact,
   sanitizeApiKey,
-} from "./api-key";
-import type { ChatMessage, Completion, PreflightClientReport } from "./types";
-import { type CatalogCheckResult } from "./catalog";
+} from "./api-key.ts";
+import type { ChatMessage, Completion, PreflightClientReport } from "./types.ts";
+import { type CatalogCheckResult } from "./catalog.ts";
 import {
   accessCheckWith,
   catalogCheckWith,
@@ -14,7 +14,8 @@ import {
   listCatalogWith,
   preflightWith,
   probeModelWith,
-} from "./provider-discover";
+} from "./provider-discover.ts";
+import { adapterFromTransport } from "./provider-adapter.ts";
 import {
   COMPLETE_TIMEOUT_MS,
   ProviderError,
@@ -22,7 +23,7 @@ import {
   httpClassOfStatus,
   providerFailure,
   toProviderFailure,
-} from "./provider-error";
+} from "./provider-error.ts";
 
 const BASE = "https://openrouter.ai/api/v1";
 const PROVIDER = "openrouter" as const;
@@ -126,11 +127,13 @@ export function operatorError(err: unknown, apiKey = ""): string {
   return formatProviderFailure(toProviderFailure(err, { provider: PROVIDER, model: "", stage: "request" }, apiKey));
 }
 
-function transport() {
+export function transport() {
   return {
     provider: PROVIDER,
     label: API_LABEL,
     creditMessage: CREDIT_MESSAGE,
+    catalogUrl: `${BASE}/models`,
+    completeUrl: `${BASE}/chat/completions`,
     listModels: (apiKey: string) => probeGet("/models", apiKey, 20000),
     pingModel: (apiKey: string, modelId: string) =>
       probePost(
@@ -147,16 +150,20 @@ function transport() {
   };
 }
 
+export function adapter() {
+  return adapterFromTransport(transport());
+}
+
 export async function listCatalog(apiKey: string) {
-  return listCatalogWith(transport(), apiKey);
+  return listCatalogWith(adapter(), apiKey);
 }
 
 export async function probeModel(apiKey: string, modelId: string) {
-  return probeModelWith(transport(), apiKey, modelId);
+  return probeModelWith(adapter(), apiKey, modelId);
 }
 
 export async function discoverAccount(apiKey: string, selectedIds: string[] = [], _billing?: string) {
-  return discoverAccountWith(transport(), apiKey, selectedIds);
+  return discoverAccountWith(adapter(), apiKey, selectedIds);
 }
 
 export async function preflightWithKey(opts: {
@@ -168,7 +175,7 @@ export async function preflightWithKey(opts: {
   claudeModel?: string;
   synthesizerModel?: string;
 }): Promise<PreflightClientReport & { catalog?: import("./discover").DiscoverySnapshot }> {
-  return preflightWith(transport(), opts);
+  return preflightWith(adapter(), opts);
 }
 
 export async function catalogCheck(opts: {
@@ -183,11 +190,11 @@ export async function catalogCheck(opts: {
     opts.models && opts.models.length
       ? opts.models
       : [opts.gptModel, opts.grokModel, opts.claudeModel].filter((id): id is string => Boolean(id));
-  return catalogCheckWith(transport(), opts.apiKey, models);
+  return catalogCheckWith(adapter(), opts.apiKey, models);
 }
 
 export async function accessCheck(opts: { apiKey: string; models: string[]; nanogptBilling?: string }) {
-  return accessCheckWith(transport(), opts.apiKey, opts.models);
+  return accessCheckWith(adapter(), opts.apiKey, opts.models);
 }
 
 export async function complete(opts: {

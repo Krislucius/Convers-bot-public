@@ -50,7 +50,8 @@ import {
 import { providerName } from "./providers.ts";
 import { createRequestCounter, isEmptyCompletion, isRequestLimitError, type RequestBudget } from "./request-budget.ts";
 import { MODEL_UNAVAILABLE, type CatalogCheckResult } from "./catalog.ts";
-import { accessBlocksRun, isVerifiedAvailable, type DiscoveredModel } from "./discover.ts";
+import { accessBlocksRun, isVerifiedAvailable, type DiscoveredModel, type DiscoverySnapshot } from "./discover.ts";
+import { sameProviderScan } from "./provider-adapter.ts";
 import { assertCouncilSelection, ensureMembers, findMember, type CouncilMember } from "./members.ts";
 import { normalizeNanoGptBilling, type NanoGptBillingMode } from "./nano-billing.ts";
 import type {
@@ -253,6 +254,7 @@ export async function runCouncil(input: {
   parentPacket?: ImplementationPacket | null;
   pipeline?: EvidencePipelineResult;
   catalog?: DiscoveredModel[];
+  scan?: DiscoverySnapshot | null;
   resume?: { responses: AgentResponse[] };
   runId?: string;
   generation?: number;
@@ -399,6 +401,11 @@ export async function runCouncil(input: {
     const credsError = assertRunCredentials({ ...input.creds, members });
     if (credsError) {
       return precheckOutput(boundTask, credsError);
+    }
+
+    const scanMix = sameProviderScan(input.scan ?? null, runProvider, runBilling);
+    if (scanMix) {
+      return precheckOutput(boundTask, scanMix);
     }
 
     if (input.catalog?.length) {

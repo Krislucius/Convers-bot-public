@@ -1,4 +1,4 @@
-import { familyOf, pruneToAvailable, type DiscoveredModel } from "./discover.ts";
+import { familyOf, isVerifiedAvailable, pruneToAvailable, type DiscoveredModel } from "./discover.ts";
 import {
   COUNCIL_ROLES,
   DEFAULT_ROLES,
@@ -67,9 +67,9 @@ export function assertCouncilSelection(ids: string[]): string | null {
 export function assertAvailableSelection(ids: string[], models: DiscoveredModel[]): string | null {
   const countError = assertCouncilSelection(ids);
   if (countError) return countError;
-  const missing = ids.filter((id) => !models.some((row) => row.id === id && row.access === "AVAILABLE"));
+  const missing = ids.filter((id) => !models.some((row) => row.id === id && isVerifiedAvailable(row.access)));
   if (missing.length) {
-    return `MODEL_UNAVAILABLE: ${missing.join(", ")} is not in the current AVAILABLE set. Refresh models and pick a replacement.`;
+    return `MODEL_UNAVAILABLE: ${missing.join(", ")} is not VERIFIED_AVAILABLE in the current scan. Refresh models and pick a replacement.`;
   }
   return null;
 }
@@ -106,7 +106,16 @@ export function ensureMembers(rows: MemberDraft[]): CouncilMember[] {
 }
 
 export function assignRoles(
-  models: Array<{ id: string; name?: string; family?: string; score?: number; reasoning?: boolean }>,
+  models: Array<{
+    id: string;
+    name?: string;
+    family?: string;
+    score?: number;
+    reasoning?: boolean;
+    adversarial?: boolean;
+    research?: boolean;
+    coding?: boolean;
+  }>,
 ): CouncilMember[] {
   const unique: typeof models = [];
   const seen = new Set<string>();
@@ -125,13 +134,14 @@ export function assignRoles(
     return remaining.splice(index, 1)[0] ?? null;
   };
   const picked: Array<{ role: CouncilRole; model: (typeof sorted)[number] }> = [];
-  const lead = take((row) => Boolean(row.reasoning) || familyOf(row.id, row.family) === "anthropic" || familyOf(row.id, row.family) === "openai");
+  const lead = take((row) => Boolean(row.reasoning));
   if (lead) picked.push({ role: "LEAD_REASONER", model: lead });
   if (remaining.length) {
-    const adv = take((row) => {
-      const family = familyOf(row.id, row.family);
-      return family === "xai" || family === "deepseek" || family === "perplexity" || family === "kimi";
-    });
+    const adv = take(
+      (row) =>
+        Boolean(row.adversarial) ||
+        /\b(critic|adversarial|debate|audit|attack)\b/i.test(`${row.id} ${row.name ?? ""}`),
+    );
     if (adv) picked.push({ role: "ADVERSARIAL", model: adv });
   }
   const restRoles = COUNCIL_ROLES.filter((role) => !picked.some((row) => row.role === role));
@@ -139,10 +149,12 @@ export function assignRoles(
     const role = restRoles[picked.length] ?? restRoles[restRoles.length - 1] ?? "ALTERNATIVE_REASONER";
     const next =
       role === "RESEARCH"
-        ? take((row) => familyOf(row.id, row.family) === "perplexity" || familyOf(row.id, row.family) === "kimi")
-        : role === "FORMAL_REVIEW"
-          ? take((row) => familyOf(row.id, row.family) === "anthropic" || familyOf(row.id, row.family) === "openai")
-          : remaining.shift() ?? null;
+        ? take(
+            (row) =>
+              Boolean(row.research) ||
+              /\b(sonar|search|research|browse|online)\b/i.test(`${row.id} ${row.name ?? ""}`),
+          )
+        : remaining.shift() ?? null;
     if (!next) break;
     picked.push({ role, model: next });
   }
@@ -166,7 +178,16 @@ export function membersFromIds(
     pruned.map((id) => {
       const hit = byId.get(id);
       return hit
-        ? { id: hit.id, name: hit.name, family: hit.family, score: hit.score, reasoning: hit.reasoning }
+        ? {
+            id: hit.id,
+            name: hit.name,
+            family: hit.family,
+            score: hit.score,
+            reasoning: hit.reasoning,
+            adversarial: Boolean(hit.capabilities?.adversarial),
+            research: Boolean(hit.capabilities?.research),
+            coding: Boolean(hit.capabilities?.coding),
+          }
         : { id, name: id, family: familyOf(id), score: 0, reasoning: false };
     }),
   );
