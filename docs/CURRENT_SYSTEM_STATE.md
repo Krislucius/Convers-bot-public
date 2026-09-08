@@ -59,7 +59,8 @@ FUNCTION BLOCKERS: none.
 
 ### BUILD WORKFLOW
 
-- Production Publish is a user action; git `CB-BUILD-20260908-002` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
+- Production Publish is a user action; git `CB-BUILD-20260908-003` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
+- The Council sweeper cron is declared once in `vercel.json`. Post-build must not also inject the same path+schedule into `.vercel/output/config.json` (Grok/Vercel merge both and reject the duplicate).
 - Production FUNCTIONALITY READY requires a real browser smoke to an interactive UI. HTTP 200 / bundles / identity / auth-health are necessary but not sufficient.
 - The protected runtime shell is `docs/RUNTIME_SHELL.json`. `npm run shell:gate` (hash, product-vs-shell scope, no client `.server` imports, production build, built-browser smoke) must pass before a release. Functional Council/evidence/history patches that also change shell files fail with `SHELL_SCOPE_VIOLATION`.
 - Nitro Vercel SSR barrels that re-export undefined `ssr_exports` are patched in the nitro `compiled` and `close` hooks during `vite build` (`scripts/patch-nitro-ssr.mjs`), then again from `npm run build`. The same hook writes Vercel `config.json` / `.vc-config.json` and **rewrites** them when routes drift (missing hashed `/assets/*` 404 instead of SSR; CSP `frame-ancestors` for grok.com). PGLite `pglite.data`, `pglite.wasm`, and `initdb.wasm` are staged next to the bundled driver. Eager PGLite bootstrap failures are logged and do not kill the isolate. Production uses Neon. Sandbox PGLite is durable on disk (`artifacts/pglite`); a live process does not close that handle under Better Auth. Production preview and Vercel without `DATABASE_URL` stay in-memory.

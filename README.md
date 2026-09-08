@@ -1,7 +1,7 @@
 # Conversation Bot
 
 Grok Build project `01a048b8-c1f7-7382-9dfd-fb30bff7137d`  
-Architecture `CB-ARCH-20260908-002` · Build `CB-BUILD-20260908-002`  
+Architecture `CB-ARCH-20260908-002` · Build `CB-BUILD-20260908-003`  
 Production: https://cb-gptgrokclaud.grok.me
 
 Source root: `src/` (TanStack Start / React 19). Python `conversation-bot/` is superseded.
