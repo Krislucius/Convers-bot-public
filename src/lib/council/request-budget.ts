@@ -16,10 +16,10 @@ export function emptyRequestBudget(memberCount = 3): RequestBudget {
   };
 }
 
-export function createRequestCounter(memberCount = 3) {
+export function createRequestCounter(memberCount = 3, initialUsed = 0) {
   const limit = attemptLimit(memberCount);
   const expected = expectedSuccessfulCalls(memberCount);
-  let used = 0;
+  let used = Math.max(0, initialUsed);
   return {
     used: () => used,
     snapshot(): RequestBudget {

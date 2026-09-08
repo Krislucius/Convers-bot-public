@@ -2,10 +2,10 @@
 
 export const PROJECT_ID = "01a048b8-c1f7-7382-9dfd-fb30bff7137d";
 export const PRODUCTION_HOST = "https://cb-gptgrokclaud.grok.me";
-export const ARCHITECTURE_REVISION = "CB-ARCH-20260907-001";
-export const BUILD_ID = "CB-BUILD-20260907-001";
-export const BUILD_TIMESTAMP = "2026-09-07T07:30:00.000Z";
-export const SCHEMA_VERSION = "0011_council_member_identity";
+export const ARCHITECTURE_REVISION = "CB-ARCH-20260908-001";
+export const BUILD_ID = "CB-BUILD-20260908-001";
+export const BUILD_TIMESTAMP = "2026-09-08T05:30:00.000Z";
+export const SCHEMA_VERSION = "0012_durable_council_runs";
 export const SOURCE_ROOT = "src";
 export const LOCK_PATH = "docs/ARCHITECTURE_LOCK.json";
 export const REGISTRY_PATH = "docs/MODULE_REGISTRY.json";

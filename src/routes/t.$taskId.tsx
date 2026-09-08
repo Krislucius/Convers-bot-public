@@ -10,10 +10,10 @@ import { ImplementationPacketPanel } from "@/components/implementation-packet-pa
 import { OpLogPanel } from "@/components/op-log";
 import { displayVerdict } from "@/lib/council/evaluate";
 import { councilPartial, isSynthesisResponse, responseMemberId } from "@/lib/council/agents";
-import { runCouncil, isStaleDisconnectError, runCredsFromReady } from "@/lib/council/orchestrate";
+import { runCredsFromReady, isStaleDisconnectError } from "@/lib/council/orchestrate";
 import { providerName } from "@/lib/council/providers";
 import { billingLabel } from "@/lib/council/nano-billing";
-import { attemptLimit, expectedSuccessfulCalls, findMember, memberLabel } from "@/lib/council/members";
+import { attemptLimit, findMember, memberLabel } from "@/lib/council/members";
 import {
   applyCouncilOutput,
   getStoreSnapshot,
@@ -25,12 +25,13 @@ import {
   rememberResponses,
   useStore,
 } from "@/lib/council/store";
-import { beginCouncilRun, releaseCouncilRun, stopCouncilRun, type CouncilRunSnapshot } from "@/lib/council/run-control";
+import { getCouncilRun, restartCouncilRunFn, startCouncilRun, stopCouncilRunFn, type StartCouncilInput } from "@/lib/council/durable";
+import type { DurableRunPublic } from "@/lib/council/durable-run";
+import { type CouncilRunSnapshot } from "@/lib/council/run-control";
 import { councilPreflight } from "@/lib/council/task-mode";
 import { useSession } from "@/lib/council/session";
 import type { AgentKey, AgentProgress } from "@/lib/council/types";
 import type { EvidencePipelineResult } from "@/lib/evidence/pipeline-cache";
-import { selectedChatsToContext } from "@/lib/history/provenance";
 import { formatCouncilOpLog, formatExceptionLog, formatOpLog } from "@/lib/op-log";
 
 export const Route = createFileRoute("/t/$taskId")({ component: TaskPage });
@@ -99,6 +100,7 @@ function TaskPage() {
   const [activeRunId, setActiveRunId] = useState(task?.diagnostics?.run?.runId ?? "");
   const [confirmRestart, setConfirmRestart] = useState(false);
   const runGen = useRef(0);
+  const applyPublicRef = useRef<(run: DurableRunPublic) => void>(() => undefined);
 
   useEffect(() => {
     if (!config.ready) return;
@@ -107,6 +109,27 @@ function TaskPage() {
       patchTask(task.id, { error: null });
     }
   }, [config.ready, msg, task?.id, task?.error]);
+
+  useEffect(() => {
+    const running = busy || RUNNING.has(task?.status ?? "");
+    if (!taskId || (!running && !activeRunId)) return;
+    let cancelled = false;
+    async function poll() {
+      try {
+        const run = await getCouncilRun({ data: { taskId, runId: activeRunId || undefined } });
+        if (cancelled || !run) return;
+        applyPublicRef.current(run);
+      } catch {
+        /* reconnect on the next interval */
+      }
+    }
+    void poll();
+    const handle = window.setInterval(() => void poll(), 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(handle);
+    };
+  }, [taskId, busy, task?.status, activeRunId]);
 
   if (!task || !project) {
     return (
@@ -117,17 +140,8 @@ function TaskPage() {
   }
 
   const currentTask = task;
-  const currentProject = project;
   const projectArtifacts = store.artifacts.filter((row) => row.projectId === project.id);
-  const currentContext = [
-    ...context,
-    ...selectedChatsToContext(task.projectId, task.selectedChatSourceIds, store.chatSources, store.historyMessages),
-  ];
   const isRunning = busy || RUNNING.has(task.status);
-  const parentPacket =
-    currentTask.mode === "CREATE"
-      ? store.packets.filter((row) => row.projectId === currentProject.id && row.status === "READY").at(-1) ?? null
-      : store.packets.find((row) => row.reviewTaskId === currentTask.id) ?? null;
   const currentRunId = task.diagnostics?.run?.runId ?? activeRunId;
   const responses = currentRunId ? allResponses.filter((row) => !row.runId || row.runId === currentRunId) : allResponses;
   const priorResponses = currentRunId ? allResponses.filter((row) => row.runId && row.runId !== currentRunId) : [];
@@ -139,7 +153,6 @@ function TaskPage() {
     members.map((row) => [row.memberId, { state: "WAITING" as const, attempt: 0, maxAttempts: 3, error: null }]),
   ) as Partial<Record<AgentKey, AgentProgress>>;
   const callLimit = attemptLimit(members.length || 3);
-  const callExpected = expectedSuccessfulCalls(members.length || 3);
 
   function applyProgress(
     runId: string,
@@ -164,6 +177,51 @@ function TaskPage() {
     setMsg(progress.message);
   }
 
+  function applyPublicRun(run: DurableRunPublic) {
+    applyProgress(run.runId, {
+      status: run.taskStatus,
+      message: run.message,
+      stage: run.stage,
+      agents: run.agents,
+      manifest: run.output?.manifest ?? undefined,
+      responses: run.responses,
+      snapshot: run.snapshot,
+    });
+    setActiveRunId(run.runId);
+    runGen.current = run.generation;
+    if (run.output && (run.status === "COMPLETE" || run.status === "FAILED" || run.status === "CANCELLED")) {
+      applyCouncilOutput(currentTask.id, run.output);
+      setLog(
+        formatCouncilOpLog({
+          provider: run.provider,
+          task: run.output.task,
+          responses: run.output.responses,
+          result: run.output.result,
+        }),
+      );
+      setBusy(false);
+    } else {
+      setBusy(true);
+    }
+  }
+  applyPublicRef.current = applyPublicRun;
+
+  function startPayload(resume?: { responses: typeof allResponses }): StartCouncilInput | null {
+    const runCreds = creds ?? runCredsFromReady(config);
+    if (!runCreds) return null;
+    return {
+      taskId: currentTask.id,
+      provider: runCreds.provider,
+      members: runCreds.members,
+      synthesizerModel: runCreds.synthesizerModel,
+      maxCostUsd: runCreds.maxCostUsd,
+      nanogptBilling: runCreds.nanogptBilling,
+      catalog: config.catalog?.models,
+      scan: config.catalog ?? null,
+      resumeResponses: resume?.responses,
+    };
+  }
+
   async function onRun(prepared?: EvidencePipelineResult, opts?: { force?: boolean; resume?: { responses: typeof allResponses } }) {
     const gate = councilPreflight({ task: currentTask, artifacts: projectArtifacts });
     if (!gate.ok) {
@@ -183,8 +241,8 @@ function TaskPage() {
       );
       return;
     }
-    const runCreds = creds ?? runCredsFromReady(config);
-    if (!runCreds) {
+    const payload = startPayload(opts?.resume);
+    if (!payload) {
       const text = `${providerName(config.provider)} is not connected. Connect your API key before running the Council.`;
       setMsg(text);
       setLog(
@@ -202,90 +260,38 @@ function TaskPage() {
     }
     if (busy && !opts?.force) return;
     patchTask(currentTask.id, {
-      provider: runCreds.provider,
-      selectedModels: runCreds.members,
-      nanogptBilling: runCreds.nanogptBilling ?? null,
+      provider: payload.provider,
+      selectedModels: payload.members,
+      nanogptBilling: payload.nanogptBilling ?? null,
       error: null,
     });
-    const handle = beginCouncilRun(currentTask.id);
-    runGen.current = handle.generation;
     setBusy(true);
     setConfirmRestart(false);
-    setActiveRunId(handle.runId);
-    setMsg("Preparing the evidence packet…");
+    setMsg("Queued on the server. Running in background.");
     setStage("PREPARING");
     setAgentState(waitingAgents);
-    const startedAt = new Date().toISOString();
-    rememberCouncilProgress(currentTask.id, {
-      runId: handle.runId,
-      generation: handle.generation,
-      stage: "PREPARING",
-      status: "PREPARING",
-      startedAt,
-      stageStartedAt: startedAt,
-      updatedAt: startedAt,
-      agents: waitingAgents,
-      members: runCreds.members,
-      synthesizerModel: runCreds.synthesizerModel,
-      message: "Preparing the evidence packet…",
-      provider: runCreds.provider,
-      requestBudget: { used: 0, limit: callLimit, expected: callExpected },
-      costUsd: 0,
-      nanogptBilling: runCreds.nanogptBilling,
-    });
-    await new Promise<void>((resolve) => {
-      window.setTimeout(resolve, 0);
-    });
     try {
-      const out = await runCouncil({
-        creds: runCreds,
-        project: currentProject,
-        context: currentContext,
-        task: currentTask,
-        chatSources: store.chatSources,
-        historyMessages: store.historyMessages,
-        artifacts: projectArtifacts,
-        projectFiles: store.projectFiles,
-        parentPacket,
-        pipeline: prepared,
-        catalog: config.catalog?.models,
-        scan: config.catalog ?? undefined,
-        resume: opts?.resume,
-        runId: handle.runId,
-        generation: handle.generation,
-        signal: handle.signal,
-        onProgress: (progress) => {
-          applyProgress(handle.runId, progress);
-        },
-      });
-      const live = getStoreSnapshot().tasks.find((row) => row.id === currentTask.id);
-      if (live?.diagnostics?.run?.runId && live.diagnostics.run.runId !== handle.runId) return;
-      applyCouncilOutput(currentTask.id, out);
-      setMsg(out.task.error ?? "");
-      setStage(out.task.status === "CANCELLED" ? "CANCELLED" : out.task.status === "COMPLETE" ? "COMPLETE" : stage);
+      const started = opts?.force
+        ? await restartCouncilRunFn({ data: payload })
+        : await startCouncilRun({ data: payload });
+      applyPublicRun(started);
       setLog(
-        formatCouncilOpLog({
-          provider: config.provider,
-          task: out.task,
-          responses: out.responses,
-          result: out.result,
-        }),
+        formatOpLog(
+          "council_run",
+          {
+            provider: payload.provider,
+            taskId: currentTask.id,
+            runId: started.runId,
+            background: true,
+          },
+          true,
+        ),
       );
     } catch (err) {
-      const live = getStoreSnapshot().tasks.find((row) => row.id === currentTask.id);
-      if (live?.diagnostics?.run?.runId && live.diagnostics.run.runId !== handle.runId) return;
-      const text =
-        err instanceof Error
-          ? err.message
-          : "Council stopped during request: PROVIDER_ERROR.";
-      if (handle.signal.aborted) {
-        markTaskCancelled(currentTask.id, "Council run stopped.");
-        setMsg("Council run stopped.");
-        setStage("CANCELLED");
-      } else {
-        markTaskFailed(currentTask.id, text);
-        setMsg(text);
-      }
+      const text = err instanceof Error ? err.message : "Council stopped during request: PROVIDER_ERROR.";
+      markTaskFailed(currentTask.id, text);
+      setMsg(text);
+      setBusy(false);
       setLog(
         formatExceptionLog("council_run", err, {
           provider: config.provider,
@@ -293,20 +299,27 @@ function TaskPage() {
           taskTitle: currentTask.title,
         }),
       );
-    } finally {
-      releaseCouncilRun(currentTask.id, handle.runId);
-      if (runGen.current === handle.generation) setBusy(false);
     }
   }
 
   function onStop() {
-    const stopped = stopCouncilRun(currentTask.id, activeRunId || undefined);
-    if (!stopped && !busy) {
-      markTaskCancelled(currentTask.id, "Council run stopped.");
-      setMsg("Council run stopped.");
-      setStage("CANCELLED");
-      setBusy(false);
-    }
+    void (async () => {
+      try {
+        const stopped = await stopCouncilRunFn({ data: { taskId: currentTask.id, runId: activeRunId || undefined } });
+        if (stopped) applyPublicRun(stopped);
+        else {
+          markTaskCancelled(currentTask.id, "Council run stopped.");
+          setMsg("Council run stopped.");
+          setStage("CANCELLED");
+          setBusy(false);
+        }
+      } catch {
+        markTaskCancelled(currentTask.id, "Council run stopped.");
+        setMsg("Council run stopped.");
+        setStage("CANCELLED");
+        setBusy(false);
+      }
+    })();
   }
 
   function onRestart() {
@@ -314,7 +327,6 @@ function TaskPage() {
       setConfirmRestart(true);
       return;
     }
-    stopCouncilRun(currentTask.id);
     setConfirmRestart(false);
     void onRun(undefined, { force: true });
   }
@@ -394,9 +406,17 @@ function TaskPage() {
 
       {isRunning ? (
         <Panel>
-          <p className="mb-1 text-xs font-semibold tracking-widest text-muted uppercase">In progress</p>
-          <h2 className="font-display mb-2 text-xl">Council is running</h2>
-          <p className="text-muted">{msg || task.diagnostics?.run?.message || "Preparing…"}</p>
+          <p className="mb-1 text-xs font-semibold tracking-widest text-muted uppercase">Running in background</p>
+          <h2 className="font-display mb-2 text-xl">Council is running on the server</h2>
+          <p className="text-muted">{msg || task.diagnostics?.run?.message || "Queued…"}</p>
+          <p className="mt-2 mb-0 text-sm text-muted">
+            You can close this page, reload, or sign out. This run keeps going until it finishes or you Stop it.
+          </p>
+          <p className="mt-3 mb-0 text-sm tabular-nums">
+            Started {task.diagnostics?.run?.startedAt ?? "just now"}
+            {" · "}
+            last progress {task.diagnostics?.run?.updatedAt ?? task.diagnostics?.run?.stageStartedAt ?? "pending"}
+          </p>
           <div className="mt-3">
             <CouncilRunMeter
               provider={providerName(task.diagnostics?.run?.provider ?? task.provider ?? config.provider)}

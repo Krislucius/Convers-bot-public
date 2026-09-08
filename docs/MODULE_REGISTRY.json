@@ -1,5 +1,5 @@
 {
-  "architecture_revision": "CB-ARCH-20260907-001",
+  "architecture_revision": "CB-ARCH-20260908-001",
   "modules": [
     {
       "module_id": "app.shell",
@@ -113,9 +113,39 @@
       "module_id": "council.orchestrator",
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/orchestrate.ts",
-      "architecture_revision": "CB-ARCH-20260907-001",
-      "responsibilities": ["single Council execution path: verified selected-model preflight, catalog fingerprint must match run provider/mode, request budget, member_id identity (role may repeat), DISPATCHED_MODEL_ID integrity, NanoGPT billing freeze, round1, round2, synthesis fallback or PARTIAL RESULT, packet"],
+      "architecture_revision": "CB-ARCH-20260908-001",
+      "responsibilities": ["protocol engine for CREATE REVIEW DECIDE: verified selected-model preflight, catalog fingerprint must match run provider/mode, request budget, member_id identity (role may repeat), DISPATCHED_MODEL_ID integrity, NanoGPT billing freeze, round1, round2, synthesis fallback or PARTIAL RESULT, packet"],
       "dependencies": ["council.protocol", "council.providers", "council.manifest", "council.artifact", "council.packet", "context.evidence-ledger"],
+      "supersedes": []
+    },
+    {
+      "module_id": "council.durable-runner",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/council/durable-engine.ts",
+      "architecture_revision": "CB-ARCH-20260908-001",
+      "responsibilities": [
+        "server-owned Council execution",
+        "START persists run_id and frozen provider/members/context identity then returns",
+        "DB-backed leases and checkpoints",
+        "one provider call per tick, resumable after interruption",
+        "browser is reconnect-only",
+        "STOP cancel flag, RESTART new run_id, one active run per task",
+        "discard late writes from old run_id/generation/lease epoch"
+      ],
+      "dependencies": ["council.orchestrator", "account.persistence", "persist.postgres"],
+      "supersedes": ["browser-owned runCouncil loop"]
+    },
+    {
+      "module_id": "ui.task",
+      "status": "ACTIVE",
+      "implementation_path": "src/routes/t.$taskId.tsx",
+      "architecture_revision": "CB-ARCH-20260908-001",
+      "responsibilities": [
+        "START/STOP/RESTART server RPCs",
+        "RUNNING IN BACKGROUND reconnect UI",
+        "poll persisted stage, member states, started_at, last_progress_at"
+      ],
+      "dependencies": ["council.durable-runner", "council.orchestrator"],
       "supersedes": []
     },
     {

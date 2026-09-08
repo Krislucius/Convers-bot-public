@@ -164,3 +164,12 @@ Only ACTIVE rows define current architecture.
 - RATIONALE: Discovery, access verification, and Council recommendations were NanoGPT-shaped with vendor family scoring. OpenRouter and OpenRusRouter reused HTTP transport but not a first-class adapter, so inaccessible catalog rows and hardcoded families could still enter a Council.
 - SUPERSEDES: none (tightens ADR-010 / ADR-011 / ADR-014)
 - AFFECTED_MODULES: council.discovery, council.providers, council.orchestrator, ui.settings
+
+## ADR-019
+
+- DECISION: Council execution is server-owned and durable. START creates a persisted `run_id`, freezes provider/members/billing/context identity, enqueues a server tick, and returns immediately. The durable store (`council_runs`) is the source of truth: status, stage, per-member state, cursor/completedKeys, lease owner/expiry, generation, timestamps. Browser, tab, and in-memory maps are cache only. Vercel has no long-lived worker; ticks are resumable staged jobs with DB leases (90s), one provider call per tick, `waitUntil` plus `/api/council/tick` self-schedule. Expired leases are reclaimable. Completed checkpointed calls are not repeated. Late writes that do not match `run_id` + generation + lease epoch are discarded. STOP persists `cancel_requested` and marks CANCELLED. RESTART cancels the old run and creates a new `run_id`, keeping the old row for audit. One active Council run per task. UI reconnects with RUNNING IN BACKGROUND, `started_at`, `last_progress_at`, stage, and member states. Closing the page does not cancel.
+- STATUS: ACTIVE
+- ARCHITECTURE_REVISION: CB-ARCH-20260908-001
+- RATIONALE: `runCouncil` was awaited in the browser with an in-process AbortController map. Tab close, reload, and logout stopped work and could not resume from checkpoints.
+- SUPERSEDES: none (tightens ADR-004 execution ownership; protocol remains one CREATE/REVIEW/DECIDE engine)
+- AFFECTED_MODULES: council.durable-runner, council.orchestrator, persist.postgres, account.persistence, ui.task

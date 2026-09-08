@@ -1,6 +1,6 @@
 # Conversation Bot architecture
 
-Current revision: **CB-ARCH-20260907-001**
+Current revision: **CB-ARCH-20260908-001**
 
 This document describes the system that is running now. Obsolete trees are listed only under History.
 
@@ -26,14 +26,15 @@ Control flow:
 
 ```text
 UI (routes + council-ui)
-→ account store (in-memory + persist RPCs)
-→ task create (CREATE / REVIEW / DECIDE)
-→ council.orchestrator (only path)
-→ council.protocol (roles + synthesis schemas + gate)
+→ START Council run (server RPC, returns immediately)
+→ council.durable-runner (DB lease + checkpoint ticks)
+→ council.orchestrator protocol (prepare, round1, round2, synthesis, packet)
 → council.providers (NanoGPT / OpenRouter / OpenRusRouter via ProviderAdapter)
 → Implementation Packet (when CREATE is APPROVED)
 → persist.postgres
 ```
+
+The browser never owns execution. Closing the tab, reload, or logout does not cancel a run. UI poll is reconnect-only.
 
 Evidence flow:
 
@@ -72,6 +73,7 @@ Applied migrations (basename order):
 9. `0009_provider_scan.sql` — `account_settings.last_test_log`, `last_test_at`, `last_test_ok`
 10. `0010_nanogpt_billing.sql` — `account_settings.nanogpt_billing_mode`, `tasks.nanogpt_billing_mode`
 11. `0011_council_member_identity.sql` — `agent_responses.member_id`, `role`, `stage`, `attempt`, `dispatched_model_id`
+12. `0012_durable_council_runs.sql` — `council_runs` (run_id, leases, checkpoints, frozen provider/members, one active run per task)
 
 `migrations/auth/` is a template copy. Appliers do not descend into subdirectories.
 
@@ -93,7 +95,7 @@ Settings UI writes `account_settings`. Council server functions resolve the stor
 
 ## Council workflow
 
-Modes: CREATE, REVIEW, DECIDE. Preflight lives in `council.task-mode`. Execution lives only in `src/lib/council/orchestrate.ts` (`runCouncil`). Membership is 2–5 user-selected models discovered from the connected provider. Each selected model is a unique immutable `member_id`; identity is `member_id` + `model_id` + role. Role is guidance and may repeat — never identity. Round 1 is independent (one dispatch per selected model). Round 2 is cross-examination of each surviving member. Synthesis is a separate stage, not Round 3: the preferred selected survivor synthesizes first, then the next strongest selected survivor, with bounded recorded attempts. CREATE fails for synthesis only when every eligible selected survivor fails. CREATE writes an artifact. REVIEW returns PASS / PATCH / BLOCKED and must not silently replace a candidate. DECIDE returns decision, alternatives, rationale, evidence, and risks. Unresolved DECIDE disagreement or CONFLICTED evidence becomes `USER_DECISION_REQUIRED`. Two of N models may complete a run; fewer than two survivors, or every synthesizer failing, is a PARTIAL RESULT: the task is FAILED, successful Round 1/2 responses stay visible, synthesis is skipped or recorded as failed with an explicit reason, and the UI offers Retry failed models, Replace failed models, and Restart Council. Each member is one card keyed by `member_id` (name, status, attempts n/m, last error). Catalog/access preflight blocks unverified models before paid dispatch. Selected members are marked RUNNING as Round 1 starts. Stop aborts in-flight provider waits and marks `CANCELLED` with partial responses. Restart creates a new `run_id`, preserves the previous run for audit, and ignores late writes from the cancelled generation. A new run may switch provider or NanoGPT billing mode; calls inside one run never mix providers or NanoGPT billing APIs.
+Modes: CREATE, REVIEW, DECIDE. Preflight lives in `council.task-mode`. Protocol sequencing lives in `src/lib/council/orchestrate.ts` (`runCouncil`) and the durable step engine (`advanceDurableStep`). Execution ownership lives in `council.durable-runner`: START persists a `run_id`, freezes provider/members/context identity, enqueues a server tick, and returns immediately. Each tick claims a DB lease, performs one unit of work (prepare or one provider call), checkpoints cursor + member state + responses, and self-schedules. Vercel has no long-lived worker; ticks are resumable staged jobs with `waitUntil` plus a token-authenticated `/api/council/tick` chain. Preview/dev drives ticks in-process against the same DB rows. Membership is 2–5 user-selected models discovered from the connected provider. Each selected model is a unique immutable `member_id`; identity is `member_id` + `model_id` + role. Role is guidance and may repeat — never identity. Round 1 is independent (one dispatch per selected model). Round 2 is cross-examination of each surviving member. Synthesis is a separate stage, not Round 3: the preferred selected survivor synthesizes first, then the next strongest selected survivor, with bounded recorded attempts. CREATE fails for synthesis only when every eligible selected survivor fails. CREATE writes an artifact. REVIEW returns PASS / PATCH / BLOCKED and must not silently replace a candidate. DECIDE returns decision, alternatives, rationale, evidence, and risks. Unresolved DECIDE disagreement or CONFLICTED evidence becomes `USER_DECISION_REQUIRED`. Two of N models may complete a run; fewer than two survivors, or every synthesizer failing, is a PARTIAL RESULT: the task is FAILED, successful Round 1/2 responses stay visible, synthesis is skipped or recorded as failed with an explicit reason, and the UI offers Retry failed models, Replace failed models, and Restart Council. Each member is one card keyed by `member_id` (name, status, attempts n/m, last error). Catalog/access preflight blocks unverified models before paid dispatch. Stop persists `cancel_requested` and marks `CANCELLED` with partial responses; an in-flight provider call cannot overwrite newer generation/lease state. Restart creates a new `run_id`, preserves the previous run for audit, and ignores late writes from the cancelled generation. One active Council run per task. The task UI shows RUNNING IN BACKGROUND, `started_at`, `last_progress_at`, current stage, and member states, and reconnects after reload or login. A new run may switch provider or NanoGPT billing mode; calls inside one run never mix providers or NanoGPT billing APIs.
 
 Positions, disagreements, blockers, resolved/unresolved issues, and citations are preserved on the Council result.
 

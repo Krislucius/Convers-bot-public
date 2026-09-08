@@ -1,14 +1,14 @@
 {
   "project_id": "01a048b8-c1f7-7382-9dfd-fb30bff7137d",
   "production_host": "https://cb-gptgrokclaud.grok.me",
-  "architecture_revision": "CB-ARCH-20260907-001",
-  "architecture_hash": "de69887b45c8c241afdd2835321d1008233d88d4efdf840d026050ce7c157f66",
-  "module_registry_hash": "fe14fc10a05e17e3d37c0c65720500aac7f6cd43f8fbefb1f2496fe6508951ba",
-  "schema_hash": "705acc7ea31e33e73a4542f747088d797837e4a5b341c78fa409add1c7910201",
-  "critical_contract_hash": "730d158d59ae3dd42410315e4dceab893bb1028725995271997a6ec91f419aa4",
+  "architecture_revision": "CB-ARCH-20260908-001",
+  "architecture_hash": "40d92ad7893d42ae4b08e1a1399f7f0d2792d3fbb05a04db5290bec9a40f18d7",
+  "module_registry_hash": "2848fdb2344c28940b5eb8b4498d70f63169d5f7e4efc2480d44ed359941eceb",
+  "schema_hash": "b4b087287d5bb631ea08d28e9210ce5619d497f9994db612954528e8b33e2f0c",
+  "critical_contract_hash": "b0253dbd4103f391076863caf0bc620054b89ddafc05b192126305c7494b3869",
   "created_at": "2026-08-29T18:45:00.000Z",
-  "build_id": "CB-BUILD-20260907-001",
-  "schema_version": "0011_council_member_identity",
+  "build_id": "CB-BUILD-20260908-001",
+  "schema_version": "0012_durable_council_runs",
   "source_root": "src",
   "protected_invariants": [
     "ONE_AUTHORITATIVE_PROJECT",
@@ -30,7 +30,8 @@
     "SETTINGS_SAVE_CANONICAL_SCAN",
     "SETTINGS_SAVE_CONNECTION_ACCEPTANCE",
     "COUNCIL_MEMBER_ID_NOT_ROLE",
-    "PROVIDER_ADAPTER_UNIFORM_DISCOVERY"
+    "PROVIDER_ADAPTER_UNIFORM_DISCOVERY",
+    "COUNCIL_DURABLE_SERVER_RUNNER"
   ],
   "runtime_shell_hash": "798ee8f88852ed3006b6624985eaeb669f26a525f917a0c4cbee1090331e19f5",
   "runtime_shell_id": "CB-SHELL-20260903-001"

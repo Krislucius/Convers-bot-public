@@ -562,11 +562,34 @@ export async function loadSnapshot(userId: string): Promise<StoreShape> {
     const message = err instanceof Error ? err.message : String(err);
     if (!/implementation_packets|does not exist|undefined_table/i.test(message)) throw err;
   }
+  let mappedTasks = tasks.map(mapTask);
+  let mappedResponses = responses.map(mapResponse);
+  try {
+    const { overlayTaskWithRun } = await import("./durable-run");
+    const { listActiveRuns } = await import("./durable-store.server");
+    const active = await listActiveRuns(userId);
+    if (active.length) {
+      mappedTasks = mappedTasks.map((task) => {
+        const run = active.find((row) => row.taskId === task.id);
+        return run ? overlayTaskWithRun(task, run) : task;
+      });
+      const extra = active.flatMap((row) => row.responses);
+      if (extra.length) {
+        const seen = new Set(mappedResponses.map((row) => row.id));
+        mappedResponses = [...mappedResponses, ...extra.filter((row) => row.id && !seen.has(row.id))];
+      }
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!/council_runs|does not exist|undefined_table/i.test(message)) {
+      console.error("[account] overlay durable runs", message);
+    }
+  }
   return {
     projects: projects.map(mapProject),
     context: context.map(mapContext),
-    tasks: tasks.map(mapTask),
-    responses: responses.map(mapResponse),
+    tasks: mappedTasks,
+    responses: mappedResponses,
     results: results.map(mapResult),
     chatSources: chatSources.map(mapChat),
     historyMessages: historyMessages.map(mapMessage),
@@ -921,6 +944,26 @@ export async function persistCouncilOutput(
   if (patch.artifacts) {
     for (const artifact of patch.artifacts) await insertArtifactRow(userId, artifact);
   }
+  if (patch.packet) await insertPacketRow(userId, patch.packet);
+  await durable();
+}
+
+export async function persistCouncilCheckpoint(
+  userId: string,
+  patch: {
+    task: Task;
+    responses: AgentResponse[];
+    result?: CouncilResult | null;
+    artifact?: Artifact | null;
+    manifest?: ContextManifest | null;
+    packet?: ImplementationPacket | null;
+  },
+) {
+  await insertTaskRow(userId, patch.task);
+  for (const row of patch.responses) await insertResponseRow(userId, row);
+  if (patch.result) await insertResultRow(userId, patch.result);
+  if (patch.manifest) await insertManifestRow(userId, patch.manifest);
+  if (patch.artifact) await insertArtifactRow(userId, patch.artifact);
   if (patch.packet) await insertPacketRow(userId, patch.packet);
   await durable();
 }
