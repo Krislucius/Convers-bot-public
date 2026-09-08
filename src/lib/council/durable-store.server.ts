@@ -8,6 +8,7 @@ import {
   canClaimLease,
   cloneRow,
   emptyCursor,
+  isReclaimable,
   isTerminalStatus,
   shouldAcceptDurableWrite,
   type DurableCursor,
@@ -106,6 +107,7 @@ function mapRow(raw: Record<string, unknown>): DurableRunRow {
     catalog: frozen.catalog ?? null,
     startedAt: asString(raw.started_at),
     lastProgressAt: asString(raw.last_progress_at),
+    lastWakeAt: raw.last_wake_at == null || raw.last_wake_at === "" ? null : asString(raw.last_wake_at),
     completedAt: raw.completed_at == null ? null : asString(raw.completed_at),
     error: raw.error == null ? null : asString(raw.error),
     createdAt: asString(raw.created_at),
@@ -211,6 +213,31 @@ export function createSqlDurableStore(): DurableStore {
         order by last_progress_at desc
       `;
       return rows.map(mapRow);
+    },
+    async listReclaimable(nowMs) {
+      const sql = await getSql();
+      const rows = await sql`
+        select * from council_runs
+        where status not in ('COMPLETE', 'FAILED', 'CANCELLED')
+      `;
+      return rows.map(mapRow).filter((row) => isReclaimable(row, nowMs));
+    },
+    async touchWakes(iso) {
+      const sql = await getSql();
+      try {
+        const rows = await sql`
+          update council_runs
+          set last_wake_at = ${iso}
+          where status not in ('COMPLETE', 'FAILED', 'CANCELLED')
+          returning id
+        `;
+        await durable();
+        return rows.length;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!/last_wake_at|does not exist|undefined_column/i.test(message)) throw err;
+        return 0;
+      }
     },
     async claimLease(runId, owner, nowMs, leaseMs = DURABLE_LEASE_MS) {
       const current = await this.get(runId);

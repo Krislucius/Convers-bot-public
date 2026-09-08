@@ -173,3 +173,12 @@ Only ACTIVE rows define current architecture.
 - RATIONALE: `runCouncil` was awaited in the browser with an in-process AbortController map. Tab close, reload, and logout stopped work and could not resume from checkpoints.
 - SUPERSEDES: none (tightens ADR-004 execution ownership; protocol remains one CREATE/REVIEW/DECIDE engine)
 - AFFECTED_MODULES: council.durable-runner, council.orchestrator, persist.postgres, account.persistence, ui.task
+
+## ADR-020
+
+- DECISION: Durable Council runs have a platform-owned independent waker. Production registers Vercel Cron `GET /api/council/sweep` every minute. The sweeper lists non-terminal `council_runs` (QUEUED, PREPARING, ROUND_1, ROUND_2, SYNTHESIS), reclaims rows with no lease or an expired lease, and resumes from the persisted checkpoint. Browser polling, START/RESTART, and a previous tick successfully scheduling `/api/council/tick` are not required for liveness. Existing `run_id` / generation / lease-epoch write guards stay in force. Duplicate sweeper invocations skip while a lease is held. STOP remains terminal. Max dormant time is cron interval (60s) plus lease expiry (90s). Preview without Vercel uses a process interval calling the same sweeper. If the deploy platform cannot register the cron, daemon status is not READY.
+- STATUS: ACTIVE
+- ARCHITECTURE_REVISION: CB-ARCH-20260908-002
+- RATIONALE: A killed Vercel isolate that died after a checkpoint and before self-tick left the run durable but unattended. UI poll could recover only while a browser tab was open.
+- SUPERSEDES: none (closes the wake-source gap in ADR-019)
+- AFFECTED_MODULES: council.durable-waker, council.durable-runner, persist.postgres, ui.task

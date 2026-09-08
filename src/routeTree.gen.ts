@@ -17,6 +17,7 @@ import { Route as ApiAuthReportRouteImport } from './routes/api/auth-report'
 import { Route as PProjectIdRouteImport } from './routes/p.$projectId'
 import { Route as TTaskIdRouteImport } from './routes/t.$taskId'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
+import { Route as ApiCouncilSweepRouteImport } from './routes/api/council.sweep'
 import { Route as ApiCouncilTickRouteImport } from './routes/api/council.tick'
 import { Route as ApiOauthStartProviderIdRouteImport } from './routes/api/oauth-start.$providerId'
 import { Route as PProjectIdIndexRouteImport } from './routes/p.$projectId.index'
@@ -69,6 +70,11 @@ const TTaskIdRoute = TTaskIdRouteImport.update({
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
   path: '/api/auth/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiCouncilSweepRoute = ApiCouncilSweepRouteImport.update({
+  id: '/api/council/sweep',
+  path: '/api/council/sweep',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiCouncilTickRoute = ApiCouncilTickRouteImport.update({
@@ -146,6 +152,7 @@ export interface FileRoutesByFullPath {
   '/p/$projectId': typeof PProjectIdRouteWithChildren
   '/t/$taskId': typeof TTaskIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/council/sweep': typeof ApiCouncilSweepRoute
   '/api/council/tick': typeof ApiCouncilTickRoute
   '/api/oauth-start/$providerId': typeof ApiOauthStartProviderIdRoute
   '/p/$projectId/chats': typeof PProjectIdChatsRouteWithChildren
@@ -168,6 +175,7 @@ export interface FileRoutesByTo {
   '/api/auth-report': typeof ApiAuthReportRoute
   '/t/$taskId': typeof TTaskIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/council/sweep': typeof ApiCouncilSweepRoute
   '/api/council/tick': typeof ApiCouncilTickRoute
   '/api/oauth-start/$providerId': typeof ApiOauthStartProviderIdRoute
   '/p/$projectId/decisions': typeof PProjectIdDecisionsRoute
@@ -191,6 +199,7 @@ export interface FileRoutesById {
   '/p/$projectId': typeof PProjectIdRouteWithChildren
   '/t/$taskId': typeof TTaskIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/council/sweep': typeof ApiCouncilSweepRoute
   '/api/council/tick': typeof ApiCouncilTickRoute
   '/api/oauth-start/$providerId': typeof ApiOauthStartProviderIdRoute
   '/p/$projectId/chats': typeof PProjectIdChatsRouteWithChildren
@@ -216,6 +225,7 @@ export interface FileRouteTypes {
     | '/p/$projectId'
     | '/t/$taskId'
     | '/api/auth/$'
+    | '/api/council/sweep'
     | '/api/council/tick'
     | '/api/oauth-start/$providerId'
     | '/p/$projectId/chats'
@@ -238,6 +248,7 @@ export interface FileRouteTypes {
     | '/api/auth-report'
     | '/t/$taskId'
     | '/api/auth/$'
+    | '/api/council/sweep'
     | '/api/council/tick'
     | '/api/oauth-start/$providerId'
     | '/p/$projectId/decisions'
@@ -260,6 +271,7 @@ export interface FileRouteTypes {
     | '/p/$projectId'
     | '/t/$taskId'
     | '/api/auth/$'
+    | '/api/council/sweep'
     | '/api/council/tick'
     | '/api/oauth-start/$providerId'
     | '/p/$projectId/chats'
@@ -284,6 +296,7 @@ export interface RootRouteChildren {
   PProjectIdRoute: typeof PProjectIdRouteWithChildren
   TTaskIdRoute: typeof TTaskIdRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
+  ApiCouncilSweepRoute: typeof ApiCouncilSweepRoute
   ApiCouncilTickRoute: typeof ApiCouncilTickRoute
   ApiOauthStartProviderIdRoute: typeof ApiOauthStartProviderIdRoute
 }
@@ -344,6 +357,13 @@ declare module '@tanstack/react-router' {
       path: '/api/auth/$'
       fullPath: '/api/auth/$'
       preLoaderRoute: typeof ApiAuthSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/council/sweep': {
+      id: '/api/council/sweep'
+      path: '/api/council/sweep'
+      fullPath: '/api/council/sweep'
+      preLoaderRoute: typeof ApiCouncilSweepRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/council/tick': {
@@ -491,6 +511,7 @@ const rootRouteChildren: RootRouteChildren = {
   PProjectIdRoute: PProjectIdRouteWithChildren,
   TTaskIdRoute: TTaskIdRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
+  ApiCouncilSweepRoute: ApiCouncilSweepRoute,
   ApiCouncilTickRoute: ApiCouncilTickRoute,
   ApiOauthStartProviderIdRoute: ApiOauthStartProviderIdRoute,
 }

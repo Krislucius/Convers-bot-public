@@ -23,6 +23,10 @@ import { PROVIDER_ATTEMPTS } from "./provider-error.ts";
 
 export const DURABLE_LEASE_MS = 90_000;
 export const DURABLE_TICK_BUDGET_MS = 25_000;
+export const SWEEP_INTERVAL_MS = 60_000;
+export const SWEEP_PATH = "/api/council/sweep";
+export const SWEEP_SCHEDULE = "* * * * *";
+export const MAX_DORMANT_MS = SWEEP_INTERVAL_MS + DURABLE_LEASE_MS;
 
 export const DURABLE_STATUSES = [
   "QUEUED",
@@ -96,6 +100,7 @@ export type DurableRunRow = {
   catalog: DiscoveredModel[] | null;
   startedAt: string;
   lastProgressAt: string;
+  lastWakeAt: string | null;
   completedAt: string | null;
   error: string | null;
   createdAt: string;
@@ -112,6 +117,9 @@ export type DurableRunPublic = {
   taskStatus: TaskStatus;
   startedAt: string;
   lastProgressAt: string;
+  lastWakeAt: string | null;
+  leaseExpiresAt: string | null;
+  nextRecoveryDeadline: string;
   message: string;
   provider: ProviderId;
   members: CouncilMember[];
@@ -210,8 +218,28 @@ export function canClaimLease(row: DurableRunRow, nowMs: number, owner: string):
   return false;
 }
 
-export function toPublic(row: DurableRunRow): DurableRunPublic {
+export function isReclaimable(row: DurableRunRow, nowMs: number): boolean {
+  if (isTerminalStatus(row.status)) return false;
+  return canClaimLease(row, nowMs, `sweep-${nowMs}`);
+}
+
+export function leaseExpiresAtIso(ms: number | null | undefined): string | null {
+  if (ms == null || !Number.isFinite(ms)) return null;
+  return new Date(ms).toISOString();
+}
+
+export function nextRecoveryDeadlineMs(
+  row: Pick<DurableRunRow, "leaseExpiresAt">,
+  nowMs: number,
+  intervalMs = SWEEP_INTERVAL_MS,
+): number {
+  const leaseEnd = row.leaseExpiresAt != null && row.leaseExpiresAt > nowMs ? row.leaseExpiresAt : nowMs;
+  return leaseEnd + intervalMs;
+}
+
+export function toPublic(row: DurableRunRow, nowMs = Date.now()): DurableRunPublic {
   const responses = row.responses.length ? row.responses : (row.output?.responses ?? []);
+  const deadline = nextRecoveryDeadlineMs(row, nowMs);
   return {
     runId: row.runId,
     taskId: row.taskId,
@@ -221,6 +249,9 @@ export function toPublic(row: DurableRunRow): DurableRunPublic {
     taskStatus: taskStatusFor(row.status, row.stage),
     startedAt: row.startedAt,
     lastProgressAt: row.lastProgressAt,
+    lastWakeAt: row.lastWakeAt,
+    leaseExpiresAt: leaseExpiresAtIso(row.leaseExpiresAt),
+    nextRecoveryDeadline: new Date(deadline).toISOString(),
     message: row.snapshot.message || row.error || "",
     provider: row.provider,
     members: row.members,
@@ -228,15 +259,18 @@ export function toPublic(row: DurableRunRow): DurableRunPublic {
     requestBudget: row.snapshot.requestBudget,
     costUsd: row.snapshot.costUsd ?? null,
     nanogptBilling: row.nanogptBilling,
-    snapshot: row.snapshot,
+    snapshot: {
+      ...row.snapshot,
+      lastWakeAt: row.lastWakeAt,
+      leaseExpiresAt: leaseExpiresAtIso(row.leaseExpiresAt),
+      nextRecoveryDeadline: new Date(deadline).toISOString(),
+    },
     responses,
     output: row.output,
     background: true,
     cancelRequested: row.cancelRequested,
   };
 }
-
-
 
 export function initialSnapshot(row: {
   runId: string;
@@ -272,6 +306,8 @@ export type DurableStore = {
   get(runId: string): Promise<DurableRunRow | null>;
   getActive(userId: string, taskId: string): Promise<DurableRunRow | null>;
   listActive(userId: string): Promise<DurableRunRow[]>;
+  listReclaimable(nowMs: number): Promise<DurableRunRow[]>;
+  touchWakes(iso: string): Promise<number>;
   claimLease(runId: string, owner: string, nowMs: number, leaseMs?: number): Promise<DurableRunRow | null>;
   write(
     row: DurableRunRow,
@@ -298,6 +334,7 @@ export function createMemoryDurableStore(seed: DurableRunRow[] = []): DurableSto
       );
       if (active) throw new OneActiveRunError(active.runId);
       const copy = cloneRow(row);
+      if (copy.lastWakeAt === undefined) copy.lastWakeAt = null;
       byId.set(copy.runId, copy);
       return cloneRow(copy);
     },
@@ -316,6 +353,18 @@ export function createMemoryDurableStore(seed: DurableRunRow[] = []): DurableSto
         .filter((item) => item.userId === userId && !isTerminalStatus(item.status))
         .map(cloneRow);
     },
+    async listReclaimable(nowMs) {
+      return [...byId.values()].filter((item) => isReclaimable(item, nowMs)).map(cloneRow);
+    },
+    async touchWakes(iso) {
+      let n = 0;
+      for (const row of byId.values()) {
+        if (isTerminalStatus(row.status)) continue;
+        row.lastWakeAt = iso;
+        n += 1;
+      }
+      return n;
+    },
     async claimLease(runId, owner, nowMs, leaseMs = DURABLE_LEASE_MS) {
       const row = byId.get(runId);
       if (!row) return null;
@@ -329,14 +378,16 @@ export function createMemoryDurableStore(seed: DurableRunRow[] = []): DurableSto
       const current = byId.get(row.runId);
       if (!current) return false;
       if (!shouldAcceptDurableWrite(current, { runId: row.runId, ...expected })) return false;
-      byId.set(row.runId, cloneRow(row));
+      const next = cloneRow(row);
+      if (next.lastWakeAt == null) next.lastWakeAt = current.lastWakeAt ?? null;
+      byId.set(row.runId, next);
       return true;
     },
   };
 }
 
-export function overlayTaskWithRun(task: Task, row: DurableRunRow): Task {
-  const snapshot = row.snapshot;
+export function overlayTaskWithRun(task: Task, row: DurableRunRow, nowMs = Date.now()): Task {
+  const snapshot = toPublic(row, nowMs).snapshot;
   return {
     ...task,
     status: taskStatusFor(row.status, row.stage),

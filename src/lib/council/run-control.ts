@@ -29,6 +29,9 @@ export type CouncilRunSnapshot = {
   partial?: boolean;
   synthesisSkipped?: string | null;
   nanogptBilling?: NanoGptBillingMode;
+  lastWakeAt?: string | null;
+  leaseExpiresAt?: string | null;
+  nextRecoveryDeadline?: string | null;
 };
 
 export class CouncilCancelled extends Error {

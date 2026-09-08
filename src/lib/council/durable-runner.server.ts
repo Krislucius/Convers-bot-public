@@ -18,6 +18,7 @@ import {
   stopDurableRun,
   tickDurableRun,
 } from "./durable-engine.ts";
+import { MAX_DORMANT_MS, SWEEP_INTERVAL_MS } from "./durable-run.ts";
 import { createSqlDurableStore, loadRunByToken } from "./durable-store.server.ts";
 import { persistCouncilCheckpoint, persistCouncilOutput } from "./account.server.ts";
 import type { CouncilMember } from "./members.ts";
@@ -312,6 +313,35 @@ export async function tickByToken(runId: string, token: string): Promise<Durable
   if (isTerminalStatus(authorized.status)) return toPublic(authorized);
   await enqueueCouncilRun(authorized.runId);
   return getDurableRun(store, authorized.runId);
+}
+
+export async function sweepServerCouncilRuns(): Promise<{
+  wokenAt: string;
+  considered: number;
+  reclaimed: number;
+  runIds: string[];
+  intervalMs: number;
+  maxDormantMs: number;
+}> {
+  const { ensureProcessWaker } = await import("./durable-waker.server.ts");
+  ensureProcessWaker();
+  const nowMs = Date.now();
+  const wokenAt = new Date(nowMs).toISOString();
+  await store.touchWakes(wokenAt);
+  const reclaimable = await store.listReclaimable(nowMs);
+  const runIds: string[] = [];
+  for (const row of reclaimable) {
+    await enqueueCouncilRun(row.runId);
+    runIds.push(row.runId);
+  }
+  return {
+    wokenAt,
+    considered: reclaimable.length,
+    reclaimed: runIds.length,
+    runIds,
+    intervalMs: SWEEP_INTERVAL_MS,
+    maxDormantMs: MAX_DORMANT_MS,
+  };
 }
 
 export function normalizeRunProvider(value: unknown): ProviderId {

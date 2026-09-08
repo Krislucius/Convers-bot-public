@@ -417,6 +417,13 @@ function TaskPage() {
             {" · "}
             last progress {task.diagnostics?.run?.updatedAt ?? task.diagnostics?.run?.stageStartedAt ?? "pending"}
           </p>
+          <p className="mt-1 mb-0 text-xs tabular-nums text-faint">
+            last wake {task.diagnostics?.run?.lastWakeAt ?? "pending"}
+            {" · "}
+            lease {task.diagnostics?.run?.leaseExpiresAt ?? "none"}
+            {" · "}
+            next recovery {task.diagnostics?.run?.nextRecoveryDeadline ?? "pending"}
+          </p>
           <div className="mt-3">
             <CouncilRunMeter
               provider={providerName(task.diagnostics?.run?.provider ?? task.provider ?? config.provider)}

@@ -1,13 +1,20 @@
 {
-  "architecture_revision": "CB-ARCH-20260908-001",
+  "architecture_revision": "CB-ARCH-20260908-002",
   "modules": [
     {
       "module_id": "app.shell",
       "status": "ACTIVE",
       "implementation_path": "src/routes/__root.tsx",
       "architecture_revision": "CB-ARCH-20260829-001",
-      "responsibilities": ["document shell", "session bootstrap", "auth provider"],
-      "dependencies": ["auth.session", "account.persistence"],
+      "responsibilities": [
+        "document shell",
+        "session bootstrap",
+        "auth provider"
+      ],
+      "dependencies": [
+        "auth.session",
+        "account.persistence"
+      ],
       "supersedes": []
     },
     {
@@ -21,7 +28,10 @@
         "built-browser smoke gate",
         "no client .server imports"
       ],
-      "dependencies": ["app.shell", "auth.session"],
+      "dependencies": [
+        "app.shell",
+        "auth.session"
+      ],
       "supersedes": []
     },
     {
@@ -29,8 +39,15 @@
       "status": "ACTIVE",
       "implementation_path": "src/lib/auth",
       "architecture_revision": "CB-ARCH-20260829-001",
-      "responsibilities": ["Better Auth", "Google/X/email", "authMiddleware", "per-user isolation"],
-      "dependencies": ["persist.postgres"],
+      "responsibilities": [
+        "Better Auth",
+        "Google/X/email",
+        "authMiddleware",
+        "per-user isolation"
+      ],
+      "dependencies": [
+        "persist.postgres"
+      ],
       "supersedes": []
     },
     {
@@ -38,8 +55,13 @@
       "status": "ACTIVE",
       "implementation_path": "src/lib/auth-loop.ts",
       "architecture_revision": "CB-ARCH-20260829-001",
-      "responsibilities": ["guest-gate hop cap", "returning-session wait"],
-      "dependencies": ["auth.session"],
+      "responsibilities": [
+        "guest-gate hop cap",
+        "returning-session wait"
+      ],
+      "dependencies": [
+        "auth.session"
+      ],
       "supersedes": []
     },
     {
@@ -60,17 +82,34 @@
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/account.server.ts",
       "architecture_revision": "CB-ARCH-20260829-001",
-      "responsibilities": ["projects", "chats", "files", "tasks", "artifacts", "packets", "settings scoped by user_id"],
-      "dependencies": ["persist.postgres", "auth.session"],
-      "supersedes": ["legacy.localStorage-v012"]
+      "responsibilities": [
+        "projects",
+        "chats",
+        "files",
+        "tasks",
+        "artifacts",
+        "packets",
+        "settings scoped by user_id"
+      ],
+      "dependencies": [
+        "persist.postgres",
+        "auth.session"
+      ],
+      "supersedes": [
+        "legacy.localStorage-v012"
+      ]
     },
     {
       "module_id": "legacy.localStorage-v012",
       "status": "LEGACY",
       "implementation_path": "src/lib/council/store.ts",
       "architecture_revision": "CB-ARCH-20260829-001",
-      "responsibilities": ["one-shot import of conversation-bot:v012 when account is empty"],
-      "dependencies": ["account.persistence"],
+      "responsibilities": [
+        "one-shot import of conversation-bot:v012 when account is empty"
+      ],
+      "dependencies": [
+        "account.persistence"
+      ],
       "supersedes": []
     },
     {
@@ -78,8 +117,15 @@
       "status": "ACTIVE",
       "implementation_path": "src/lib/history",
       "architecture_revision": "CB-ARCH-20260829-001",
-      "responsibilities": ["URL/file/paste import", "provider parse", "access preflight", "project isolation"],
-      "dependencies": ["account.persistence"],
+      "responsibilities": [
+        "URL/file/paste import",
+        "provider parse",
+        "access preflight",
+        "project isolation"
+      ],
+      "dependencies": [
+        "account.persistence"
+      ],
       "supersedes": []
     },
     {
@@ -87,8 +133,12 @@
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/files.ts",
       "architecture_revision": "CB-ARCH-20260829-001",
-      "responsibilities": ["zip/pdf/md as untrusted evidence"],
-      "dependencies": ["account.persistence"],
+      "responsibilities": [
+        "zip/pdf/md as untrusted evidence"
+      ],
+      "dependencies": [
+        "account.persistence"
+      ],
       "supersedes": []
     },
     {
@@ -96,7 +146,9 @@
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/task-mode.ts",
       "architecture_revision": "CB-ARCH-20260829-001",
-      "responsibilities": ["CREATE REVIEW DECIDE preflight"],
+      "responsibilities": [
+        "CREATE REVIEW DECIDE preflight"
+      ],
       "dependencies": [],
       "supersedes": []
     },
@@ -105,8 +157,15 @@
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/protocol.ts",
       "architecture_revision": "CB-ARCH-20260829-001",
-      "responsibilities": ["roles", "mandatory context", "synthesis schemas", "gate"],
-      "dependencies": ["council.task-mode"],
+      "responsibilities": [
+        "roles",
+        "mandatory context",
+        "synthesis schemas",
+        "gate"
+      ],
+      "dependencies": [
+        "council.task-mode"
+      ],
       "supersedes": []
     },
     {
@@ -114,15 +173,24 @@
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/orchestrate.ts",
       "architecture_revision": "CB-ARCH-20260908-001",
-      "responsibilities": ["protocol engine for CREATE REVIEW DECIDE: verified selected-model preflight, catalog fingerprint must match run provider/mode, request budget, member_id identity (role may repeat), DISPATCHED_MODEL_ID integrity, NanoGPT billing freeze, round1, round2, synthesis fallback or PARTIAL RESULT, packet"],
-      "dependencies": ["council.protocol", "council.providers", "council.manifest", "council.artifact", "council.packet", "context.evidence-ledger"],
+      "responsibilities": [
+        "protocol engine for CREATE REVIEW DECIDE: verified selected-model preflight, catalog fingerprint must match run provider/mode, request budget, member_id identity (role may repeat), DISPATCHED_MODEL_ID integrity, NanoGPT billing freeze, round1, round2, synthesis fallback or PARTIAL RESULT, packet"
+      ],
+      "dependencies": [
+        "council.protocol",
+        "council.providers",
+        "council.manifest",
+        "council.artifact",
+        "council.packet",
+        "context.evidence-ledger"
+      ],
       "supersedes": []
     },
     {
       "module_id": "council.durable-runner",
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/durable-engine.ts",
-      "architecture_revision": "CB-ARCH-20260908-001",
+      "architecture_revision": "CB-ARCH-20260908-002",
       "responsibilities": [
         "server-owned Council execution",
         "START persists run_id and frozen provider/members/context identity then returns",
@@ -130,22 +198,53 @@
         "one provider call per tick, resumable after interruption",
         "browser is reconnect-only",
         "STOP cancel flag, RESTART new run_id, one active run per task",
-        "discard late writes from old run_id/generation/lease epoch"
+        "discard late writes from old run_id/generation/lease epoch",
+        "independent Vercel Cron sweeper",
+        "reclaim expired or missing leases without a browser",
+        "last_wake_at and next_recovery_deadline"
       ],
-      "dependencies": ["council.orchestrator", "account.persistence", "persist.postgres"],
-      "supersedes": ["browser-owned runCouncil loop"]
+      "dependencies": [
+        "council.orchestrator",
+        "account.persistence",
+        "persist.postgres",
+        "council.durable-waker"
+      ],
+      "supersedes": [
+        "browser-owned runCouncil loop"
+      ]
+    },
+    {
+      "module_id": "council.durable-waker",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/council/durable-waker.server.ts",
+      "architecture_revision": "CB-ARCH-20260908-002",
+      "responsibilities": [
+        "platform-owned periodic sweeper independent of browser and self-tick",
+        "Vercel Cron GET /api/council/sweep every minute",
+        "preview process interval when not on Vercel",
+        "reclaim non-terminal runs with no lease or expired lease"
+      ],
+      "dependencies": [
+        "council.durable-runner",
+        "persist.postgres"
+      ],
+      "supersedes": []
     },
     {
       "module_id": "ui.task",
       "status": "ACTIVE",
       "implementation_path": "src/routes/t.$taskId.tsx",
-      "architecture_revision": "CB-ARCH-20260908-001",
+      "architecture_revision": "CB-ARCH-20260908-002",
       "responsibilities": [
         "START/STOP/RESTART server RPCs",
         "RUNNING IN BACKGROUND reconnect UI",
-        "poll persisted stage, member states, started_at, last_progress_at"
+        "poll persisted stage, member states, started_at, last_progress_at",
+        "last_wake_at / lease / next recovery deadline"
       ],
-      "dependencies": ["council.durable-runner", "council.orchestrator"],
+      "dependencies": [
+        "council.durable-runner",
+        "council.orchestrator"
+      ],
       "supersedes": []
     },
     {
@@ -153,8 +252,12 @@
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/manifest.ts",
       "architecture_revision": "CB-ARCH-20260829-001",
-      "responsibilities": ["context manifest snapshot and hash"],
-      "dependencies": ["history.ingest"],
+      "responsibilities": [
+        "context manifest snapshot and hash"
+      ],
+      "dependencies": [
+        "history.ingest"
+      ],
       "supersedes": []
     },
     {
@@ -162,7 +265,11 @@
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/artifact.ts",
       "architecture_revision": "CB-ARCH-20260829-001",
-      "responsibilities": ["CREATE artifact parse", "evidence labels", "REVIEW must not replace"],
+      "responsibilities": [
+        "CREATE artifact parse",
+        "evidence labels",
+        "REVIEW must not replace"
+      ],
       "dependencies": [],
       "supersedes": []
     },
@@ -179,7 +286,9 @@
         "dynamic Council membership",
         "key resolve from account"
       ],
-      "dependencies": ["account.persistence"],
+      "dependencies": [
+        "account.persistence"
+      ],
       "supersedes": []
     },
     {
@@ -203,7 +312,9 @@
         "Save CONNECTED only after persist, catalog, auth probe, VERIFIED_AVAILABLE, billing completion, reload",
         "sanitized persisted test log"
       ],
-      "dependencies": ["council.providers"],
+      "dependencies": [
+        "council.providers"
+      ],
       "supersedes": []
     },
     {
@@ -211,26 +322,54 @@
       "status": "ACTIVE",
       "implementation_path": "src/lib/evidence/pipeline.ts",
       "architecture_revision": "CB-ARCH-20260901-001",
-      "responsibilities": ["RAW sources to chunks to ledger to ranked packer"],
-      "dependencies": ["history.ingest", "files.ingest", "context.evidence-ledger", "council.manifest"],
-      "supersedes": ["boundContext first-N packer"]
+      "responsibilities": [
+        "RAW sources to chunks to ledger to ranked packer"
+      ],
+      "dependencies": [
+        "history.ingest",
+        "files.ingest",
+        "context.evidence-ledger",
+        "council.manifest"
+      ],
+      "supersedes": [
+        "boundContext first-N packer"
+      ]
     },
     {
       "module_id": "context.evidence-ledger",
       "status": "ACTIVE",
       "implementation_path": "src/lib/evidence/pipeline.ts",
       "architecture_revision": "CB-ARCH-20260901-001",
-      "responsibilities": ["deterministic chunks", "heuristic extractor", "coverage audit", "non-canonical evidence", "token-budget packer", "source diversity cap"],
-      "dependencies": ["history.ingest", "files.ingest"],
-      "supersedes": ["ADR-005 boundContext"]
+      "responsibilities": [
+        "deterministic chunks",
+        "heuristic extractor",
+        "coverage audit",
+        "non-canonical evidence",
+        "token-budget packer",
+        "source diversity cap"
+      ],
+      "dependencies": [
+        "history.ingest",
+        "files.ingest"
+      ],
+      "supersedes": [
+        "ADR-005 boundContext"
+      ]
     },
     {
       "module_id": "council.packet",
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/packet.ts",
       "architecture_revision": "CB-ARCH-20260901-002",
-      "responsibilities": ["implementation packet", "Build handoff JSON", "READY HANDED_OFF RESULT_RECORDED REVIEW_OPEN CLOSED"],
-      "dependencies": ["council.artifact", "account.persistence"],
+      "responsibilities": [
+        "implementation packet",
+        "Build handoff JSON",
+        "READY HANDED_OFF RESULT_RECORDED REVIEW_OPEN CLOSED"
+      ],
+      "dependencies": [
+        "council.artifact",
+        "account.persistence"
+      ],
       "supersedes": []
     },
     {
@@ -238,8 +377,13 @@
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/review.ts",
       "architecture_revision": "CB-ARCH-20260901-002",
-      "responsibilities": ["PASS PATCH BLOCKED mapping", "REVIEW artifact status"],
-      "dependencies": ["council.task-mode"],
+      "responsibilities": [
+        "PASS PATCH BLOCKED mapping",
+        "REVIEW artifact status"
+      ],
+      "dependencies": [
+        "council.task-mode"
+      ],
       "supersedes": []
     },
     {
@@ -247,8 +391,15 @@
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/evaluate.ts",
       "architecture_revision": "CB-ARCH-20260901-002",
-      "responsibilities": ["task quality row", "project quality summary", "later corrections"],
-      "dependencies": ["council.review", "council.packet"],
+      "responsibilities": [
+        "task quality row",
+        "project quality summary",
+        "later corrections"
+      ],
+      "dependencies": [
+        "council.review",
+        "council.packet"
+      ],
       "supersedes": []
     },
     {
@@ -256,8 +407,19 @@
       "status": "ACTIVE",
       "implementation_path": "src/routes/settings.tsx",
       "architecture_revision": "CB-ARCH-20260907-001",
-      "responsibilities": ["provider keys", "Save CONNECTED after persist/catalog/probe/verify/completion/reload", "VERIFIED_AVAILABLE model checkboxes with capabilities and recommended role", "Recommended Council", "current vs STALE catalog", "persisted test log", "system identity"],
-      "dependencies": ["council.providers", "architecture.lock"],
+      "responsibilities": [
+        "provider keys",
+        "Save CONNECTED after persist/catalog/probe/verify/completion/reload",
+        "VERIFIED_AVAILABLE model checkboxes with capabilities and recommended role",
+        "Recommended Council",
+        "current vs STALE catalog",
+        "persisted test log",
+        "system identity"
+      ],
+      "dependencies": [
+        "council.providers",
+        "architecture.lock"
+      ],
       "supersedes": []
     },
     {
@@ -265,7 +427,11 @@
       "status": "ACTIVE",
       "implementation_path": "docs/ARCHITECTURE_LOCK.json",
       "architecture_revision": "CB-ARCH-20260829-001",
-      "responsibilities": ["patch preflight", "module registry", "system identity"],
+      "responsibilities": [
+        "patch preflight",
+        "module registry",
+        "system identity"
+      ],
       "dependencies": [],
       "supersedes": []
     },
@@ -274,7 +440,9 @@
       "status": "SUPERSEDED",
       "implementation_path": "conversation-bot",
       "architecture_revision": "CB-ARCH-20260829-001",
-      "responsibilities": ["prototype only; not production; do not patch"],
+      "responsibilities": [
+        "prototype only; not production; do not patch"
+      ],
       "dependencies": [],
       "supersedes": []
     }

@@ -319,6 +319,9 @@ export type RunDiagnostics = {
   partial?: boolean;
   synthesisSkipped?: string | null;
   nanogptBilling?: NanoGptBillingMode;
+  lastWakeAt?: string | null;
+  leaseExpiresAt?: string | null;
+  nextRecoveryDeadline?: string | null;
 };
 
 export type Task = {

@@ -93,6 +93,7 @@ export function buildQueuedRow(input: StartDurableRunInput): DurableRunRow {
     catalog: input.frozen.catalog ?? null,
     startedAt,
     lastProgressAt: startedAt,
+    lastWakeAt: null,
     completedAt: null,
     error: null,
     createdAt: startedAt,
@@ -293,6 +294,48 @@ export async function driveDurableRun(
 export async function getDurableRun(store: DurableStore, runId: string): Promise<DurableRunPublic | null> {
   const row = await store.get(runId);
   return row ? toPublic(row) : null;
+}
+
+export type SweepDurableResult = {
+  wokenAt: string;
+  considered: number;
+  reclaimed: number;
+  skipped: number;
+  results: TickResult[];
+};
+
+export async function sweepDurableRuns(
+  store: DurableStore,
+  opts: {
+    runtime: CouncilRuntime;
+    owner?: string;
+    nowMs?: number;
+    now?: () => string;
+    leaseMs?: number;
+  },
+): Promise<SweepDurableResult> {
+  const nowMs = opts.nowMs ?? Date.now();
+  const wokenAt = opts.now?.() ?? new Date(nowMs).toISOString();
+  await store.touchWakes(wokenAt);
+  const reclaimable = await store.listReclaimable(nowMs);
+  const results: TickResult[] = [];
+  let reclaimed = 0;
+  let skipped = 0;
+  const owner = opts.owner ?? `sweep-${nowMs}`;
+  for (const row of reclaimable) {
+    const tick = await tickDurableRun(store, {
+      runId: row.runId,
+      owner,
+      runtime: opts.runtime,
+      nowMs,
+      now: opts.now,
+      leaseMs: opts.leaseMs,
+    });
+    results.push(tick);
+    if (tick.skipped) skipped += 1;
+    else reclaimed += 1;
+  }
+  return { wokenAt, considered: reclaimable.length, reclaimed, skipped, results };
 }
 
 export { cloneRow, toPublic };

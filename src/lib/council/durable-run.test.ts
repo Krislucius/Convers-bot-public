@@ -5,12 +5,18 @@ import type { Completion, ProviderCreds, Task } from "./types.ts";
 import type { CouncilCompleteChat, CouncilRuntime } from "./orchestrate.ts";
 import {
   DURABLE_LEASE_MS,
+  MAX_DORMANT_MS,
+  SWEEP_INTERVAL_MS,
+  SWEEP_PATH,
+  SWEEP_SCHEDULE,
   OneActiveRunError,
   canClaimLease,
   completedKey,
   createMemoryDurableStore,
   emptyCursor,
+  isReclaimable,
   isTerminalStatus,
+  nextRecoveryDeadlineMs,
   shouldAcceptDurableWrite,
 } from "./durable-run.ts";
 import {
@@ -20,8 +26,10 @@ import {
   restartDurableRun,
   startDurableRun,
   stopDurableRun,
+  sweepDurableRuns,
   tickDurableRun,
 } from "./durable-engine.ts";
+import { authorizeSweepRequest, shouldStartProcessWaker } from "./durable-waker.server.ts";
 
 const members: CouncilMember[] = ensureMembers([
   { role: "LEAD_REASONER", modelId: "openai/gpt-test", label: "GPT test", family: "openai" },
@@ -376,5 +384,193 @@ describe("durable server runner", () => {
       assert.ok(done.responses.some((row) => !row.error));
       assert.equal(done.snapshot.partial, true);
     }
+  });
+
+  it("bounds next recovery to scheduler interval plus lease expiry", () => {
+    assert.equal(MAX_DORMANT_MS, SWEEP_INTERVAL_MS + DURABLE_LEASE_MS);
+    assert.equal(SWEEP_PATH, "/api/council/sweep");
+    assert.equal(SWEEP_SCHEDULE, "* * * * *");
+    assert.equal(nextRecoveryDeadlineMs({ leaseExpiresAt: null }, 1_000), 1_000 + SWEEP_INTERVAL_MS);
+    assert.equal(nextRecoveryDeadlineMs({ leaseExpiresAt: 5_000 }, 1_000), 5_000 + SWEEP_INTERVAL_MS);
+    assert.equal(isReclaimable({ status: "COMPLETE" } as never, 1_000), false);
+  });
+
+  it("process waker is not a browser poll and is disabled on Vercel and in tests", () => {
+    assert.equal(shouldStartProcessWaker(), false);
+    const req = new Request("https://cb-gptgrokclaud.grok.me/api/council/sweep");
+    assert.equal(authorizeSweepRequest(req), false);
+    const cron = new Request("https://cb-gptgrokclaud.grok.me/api/council/sweep", {
+      headers: { authorization: "Bearer test-cron", "user-agent": "vercel-cron/1.0" },
+    });
+    process.env.CRON_SECRET = "test-cron";
+    assert.equal(authorizeSweepRequest(cron), true);
+    delete process.env.CRON_SECRET;
+  });
+
+  it("unattended recovery: close tabs, kill after checkpoint, sweeper resumes same run_id without repeating completed keys", async () => {
+    const store = createMemoryDurableStore();
+    const started = await startDurableRun(store, { userId: "u1", taskId: task.id, frozen: frozen() });
+    const models: string[] = [];
+    const rt = runtime(async (opts) => {
+      models.push(opts.model);
+      return { ok: true, completion: completion(opts.model, opts.responseFormat ? "SYNTH" : "") };
+    });
+    await tickDurableRun(store, { runId: started.runId, owner: "w1", runtime: rt, nowMs: 1_000 });
+    await tickDurableRun(store, { runId: started.runId, owner: "w1", runtime: rt, nowMs: 2_000 });
+    const checkpoint = await store.get(started.runId);
+    assert.ok(checkpoint);
+    const keys = checkpoint.cursor.completedKeys.slice();
+    assert.ok(keys.length >= 1);
+    assert.equal(isTerminalStatus(checkpoint.status), false);
+    const callsAtKill = models.slice();
+    const sweep = await sweepDurableRuns(store, { runtime: rt, owner: "cron-1", nowMs: 3_000 });
+    assert.equal(sweep.reclaimed, 1);
+    const after = await store.get(started.runId);
+    assert.equal(after?.runId, started.runId);
+    assert.ok(after?.lastWakeAt);
+    for (const key of keys) assert.ok(after?.cursor.completedKeys.includes(key));
+    let last = after!;
+    for (let i = 0; i < 20 && !isTerminalStatus(last.status); i += 1) {
+      await sweepDurableRuns(store, { runtime: rt, owner: `cron-${i + 2}`, nowMs: 4_000 + i });
+      last = (await store.get(started.runId))!;
+    }
+    assert.equal(last.status, "COMPLETE");
+    assert.equal(last.runId, started.runId);
+    assert.equal(models.slice(0, callsAtKill.length).join(","), callsAtKill.join(","));
+    const pub = await getDurableRun(store, started.runId);
+    assert.ok(pub?.lastProgressAt);
+    assert.ok(pub?.nextRecoveryDeadline);
+    assert.equal(pub?.leaseExpiresAt, null);
+  });
+
+  it("duplicate sweeper invocation skips while a lease is held", async () => {
+    const store = createMemoryDurableStore();
+    const started = await startDurableRun(store, { userId: "u1", taskId: task.id, frozen: frozen() });
+    await tickDurableRun(store, {
+      runId: started.runId,
+      owner: "prep",
+      runtime: runtime(async (opts) => ({ ok: true, completion: completion(opts.model) })),
+      nowMs: 5,
+    });
+    let release = () => undefined as void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const hanging: CouncilCompleteChat = async (opts) => {
+      if (!opts.responseFormat) await gate;
+      return { ok: true, completion: completion(opts.model, opts.responseFormat ? "SYNTH" : "") };
+    };
+    const first = sweepDurableRuns(store, {
+      runtime: runtime(hanging),
+      owner: "cron-a",
+      nowMs: 10,
+      leaseMs: DURABLE_LEASE_MS,
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    const second = await sweepDurableRuns(store, {
+      runtime: runtime(async (opts) => ({ ok: true, completion: completion(opts.model) })),
+      owner: "cron-b",
+      nowMs: 20,
+    });
+    assert.equal(second.reclaimed, 0);
+    release();
+    const done = await first;
+    assert.ok(done.reclaimed >= 1);
+  });
+
+  it("STOP while unattended stays cancelled through later sweeps", async () => {
+    const store = createMemoryDurableStore();
+    const started = await startDurableRun(store, { userId: "u1", taskId: task.id, frozen: frozen() });
+    const rt = runtime(async (opts) => ({ ok: true, completion: completion(opts.model) }));
+    await tickDurableRun(store, { runId: started.runId, owner: "w1", runtime: rt, nowMs: 1 });
+    const stopped = await stopDurableRun(store, { userId: "u1", taskId: task.id, runId: started.runId });
+    assert.equal(stopped?.status, "CANCELLED");
+    const sweep = await sweepDurableRuns(store, { runtime: rt, owner: "cron-1", nowMs: 50 });
+    assert.equal(sweep.reclaimed, 0);
+    const latest = await getDurableRun(store, started.runId);
+    assert.equal(latest?.status, "CANCELLED");
+  });
+
+  it("stale worker write is discarded after sweeper resumes a new generation", async () => {
+    const store = createMemoryDurableStore();
+    const first = await startDurableRun(store, { userId: "u1", taskId: task.id, frozen: frozen() });
+    const rt = runtime(async (opts) => ({ ok: true, completion: completion(opts.model) }));
+    await tickDurableRun(store, { runId: first.runId, owner: "w1", runtime: rt, nowMs: 1 });
+    const old = await store.get(first.runId);
+    assert.ok(old);
+    const restarted = await restartDurableRun(store, { userId: "u1", taskId: task.id, frozen: frozen() });
+    assert.notEqual(restarted.runId, first.runId);
+    const stale = await store.write(old, { generation: old.generation, leaseEpoch: old.leaseEpoch });
+    assert.equal(stale, false);
+    await sweepDurableRuns(store, { runtime: rt, owner: "cron-1", nowMs: 9 });
+    const live = await store.getActive("u1", task.id);
+    assert.equal(live?.runId, restarted.runId);
+    const dead = await store.get(first.runId);
+    assert.equal(dead?.status, "CANCELLED");
+  });
+
+  it("expired lease is reclaimed by the sweeper without repeating completed keys", async () => {
+    const store = createMemoryDurableStore();
+    const started = await startDurableRun(store, { userId: "u1", taskId: task.id, frozen: frozen() });
+    const models: string[] = [];
+    const rt = runtime(async (opts) => {
+      models.push(opts.model);
+      return { ok: true, completion: completion(opts.model, opts.responseFormat ? "SYNTH" : "") };
+    });
+    await tickDurableRun(store, { runId: started.runId, owner: "w1", runtime: rt, nowMs: 1_000 });
+    await tickDurableRun(store, { runId: started.runId, owner: "w1", runtime: rt, nowMs: 2_000 });
+    const checkpoint = await store.get(started.runId);
+    assert.ok(checkpoint);
+    const keys = checkpoint.cursor.completedKeys.slice();
+    assert.ok(keys.length >= 1);
+    const claimed = await store.claimLease(started.runId, "dead-worker", 10_000, DURABLE_LEASE_MS);
+    assert.ok(claimed);
+    assert.equal(claimed.leaseExpiresAt, 10_000 + DURABLE_LEASE_MS);
+    const held = await sweepDurableRuns(store, { runtime: rt, owner: "cron-early", nowMs: 10_001 });
+    assert.equal(held.reclaimed, 0);
+    const callsAtHold = models.slice();
+    const expiredAt = 10_000 + DURABLE_LEASE_MS;
+    const sweep = await sweepDurableRuns(store, { runtime: rt, owner: "cron-late", nowMs: expiredAt });
+    assert.equal(sweep.reclaimed, 1);
+    const after = await store.get(started.runId);
+    assert.equal(after?.runId, started.runId);
+    for (const key of keys) assert.ok(after?.cursor.completedKeys.includes(key));
+    assert.equal(models.slice(0, callsAtHold.length).join(","), callsAtHold.join(","));
+  });
+
+  it("stale worker write is discarded after the sweeper reclaims the same run_id", async () => {
+    const store = createMemoryDurableStore();
+    const started = await startDurableRun(store, { userId: "u1", taskId: task.id, frozen: frozen() });
+    const rt = runtime(async (opts) => ({ ok: true, completion: completion(opts.model) }));
+    await tickDurableRun(store, { runId: started.runId, owner: "w1", runtime: rt, nowMs: 1 });
+    const dead = await store.claimLease(started.runId, "dead-worker", 50, DURABLE_LEASE_MS);
+    assert.ok(dead);
+    const staleEpoch = dead.leaseEpoch;
+    const sweep = await sweepDurableRuns(store, {
+      runtime: rt,
+      owner: "cron-1",
+      nowMs: 50 + DURABLE_LEASE_MS,
+    });
+    assert.equal(sweep.reclaimed, 1);
+    const stale = await store.write(dead, { generation: dead.generation, leaseEpoch: staleEpoch });
+    assert.equal(stale, false);
+    const live = await store.get(started.runId);
+    assert.equal(live?.runId, started.runId);
+    assert.notEqual(live?.leaseEpoch, staleEpoch);
+  });
+
+  it("vercel-cron user-agent is authorized on Vercel without a shared secret", () => {
+    const prev = process.env.VERCEL;
+    process.env.VERCEL = "1";
+    delete process.env.CRON_SECRET;
+    delete process.env.COUNCIL_SWEEP_TOKEN;
+    const cron = new Request("https://cb-gptgrokclaud.grok.me/api/council/sweep", {
+      headers: { "user-agent": "vercel-cron/1.0", "x-vercel-cron": "1" },
+    });
+    assert.equal(authorizeSweepRequest(cron), true);
+    const stray = new Request("https://cb-gptgrokclaud.grok.me/api/council/sweep");
+    assert.equal(authorizeSweepRequest(stray), false);
+    if (prev === undefined) delete process.env.VERCEL;
+    else process.env.VERCEL = prev;
   });
 });
