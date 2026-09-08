@@ -12,6 +12,7 @@ export const NANOGPT_PAYG_MODELS_URL = `${NANOGPT_PAYG_BASE}/models`;
 export const NANOGPT_PAYG_COMPLETE_URL = `${NANOGPT_PAYG_BASE}/chat/completions`;
 export const NANOGPT_SUBSCRIPTION_MODELS_URL = `${NANOGPT_SUBSCRIPTION_BASE}/models?detailed=true`;
 export const NANOGPT_SUBSCRIPTION_COMPLETE_URL = `${NANOGPT_SUBSCRIPTION_BASE}/chat/completions`;
+export const NANOGPT_SUBSCRIPTION_USAGE_URL = `${NANOGPT_SUBSCRIPTION_BASE}/usage`;
 
 export type NanoGptErrorCode =
   | "PAYG_BALANCE_REQUIRED"
@@ -25,6 +26,7 @@ export type NanoGptEndpoints = {
   billing: NanoGptBillingMode;
   catalogUrl: string;
   completeUrl: string;
+  usageUrl: string | null;
 };
 
 export function isNanoGptBillingMode(value: unknown): value is NanoGptBillingMode {
@@ -57,12 +59,14 @@ export function nanogptEndpoints(mode: NanoGptBillingMode = DEFAULT_NANOGPT_BILL
       billing: "payg",
       catalogUrl: NANOGPT_PAYG_MODELS_URL,
       completeUrl: NANOGPT_PAYG_COMPLETE_URL,
+      usageUrl: null,
     };
   }
   return {
     billing: "subscription",
     catalogUrl: NANOGPT_SUBSCRIPTION_MODELS_URL,
     completeUrl: NANOGPT_SUBSCRIPTION_COMPLETE_URL,
+    usageUrl: NANOGPT_SUBSCRIPTION_USAGE_URL,
   };
 }
 

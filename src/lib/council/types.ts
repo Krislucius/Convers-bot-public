@@ -38,6 +38,9 @@ export type AgentProgress = {
   attempt: number;
   maxAttempts: number;
   error: string | null;
+  detail?: string | null;
+  latencyMs?: number | null;
+  httpStatus?: number | null;
 };
 
 export type CouncilStatus = "APPROVED" | "PATCH" | "BLOCKED" | "USER_DECISION_REQUIRED";
@@ -311,7 +314,14 @@ export type RunDiagnostics = {
   provider?: ProviderId;
   members?: CouncilMember[];
   synthesizerModel?: string;
-  requestBudget?: { used: number; limit: number; expected: number };
+  requestBudget?: {
+    used: number;
+    limit: number;
+    expected: number;
+    preflightCalls?: number;
+    councilCalls?: number;
+    retries?: number;
+  };
   costUsd?: number | null;
   inputTokens?: number | null;
   outputTokens?: number | null;
@@ -322,6 +332,32 @@ export type RunDiagnostics = {
   lastWakeAt?: string | null;
   leaseExpiresAt?: string | null;
   nextRecoveryDeadline?: string | null;
+  currentMemberId?: string | null;
+  currentModelId?: string | null;
+  currentStage?: string | null;
+  currentAttempt?: number | null;
+  currentRequestStartedAt?: string | null;
+  lastProviderResponseAt?: string | null;
+  lastProviderHttpStatus?: number | null;
+  lastProgressAt?: string | null;
+  internalStage?: string | null;
+  stallReason?: string | null;
+  preflight?: {
+    status: string;
+    steps: Array<{
+      id: string;
+      kind: string;
+      memberId?: string;
+      modelId?: string;
+      label: string;
+      status: string;
+      latencyMs: number | null;
+      error: string | null;
+      httpStatus: number | null;
+    }>;
+    callableMemberIds: string[];
+    blockedMemberIds: string[];
+  } | null;
 };
 
 export type Task = {

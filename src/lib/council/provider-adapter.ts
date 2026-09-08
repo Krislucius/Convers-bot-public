@@ -23,6 +23,7 @@ export type TransportProbe = {
   body: string;
   error?: string;
   latencyMs?: number;
+  headers?: Record<string, string>;
 };
 
 export type ProviderTransport = {

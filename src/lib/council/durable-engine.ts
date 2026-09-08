@@ -226,6 +226,7 @@ export async function tickDurableRun(
       runtime: opts.runtime,
       signal: controller.signal,
       now: opts.now,
+      nowMs,
     });
     stepped.row.leaseOwner = null;
     stepped.row.leaseExpiresAt = null;

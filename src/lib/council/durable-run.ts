@@ -20,6 +20,9 @@ import type { ChatSource, HistoryMessage } from "../history/types.ts";
 import type { DiscoveredModel } from "./discover.ts";
 import { emptyRequestBudget, type RequestBudget } from "./request-budget.ts";
 import { PROVIDER_ATTEMPTS } from "./provider-error.ts";
+import type { PreflightReport } from "./start-preflight.ts";
+import type { ModelHealth } from "./model-health.ts";
+import { diagnoseInternalStage, type StallStage } from "./pacing.ts";
 
 export const DURABLE_LEASE_MS = 90_000;
 export const DURABLE_TICK_BUDGET_MS = 25_000;
@@ -48,6 +51,9 @@ export type DurableCursor = {
   manifest: ContextManifest | null;
   contextHash: string | null;
   requestUsed: number;
+  preflightCalls: number;
+  councilCalls: number;
+  retries: number;
   completedKeys: string[];
   synthIndex: number;
   tokenIn: number;
@@ -56,6 +62,16 @@ export type DurableCursor = {
   spent: number | null;
   catalogOk: boolean;
   accessOk: boolean;
+  preflight: PreflightReport | null;
+  callableMemberIds: string[];
+  currentMemberId: string | null;
+  currentModelId: string | null;
+  currentRequestStartedAt: string | null;
+  lastProviderResponseAt: string | null;
+  lastProviderHttpStatus: number | null;
+  internalStage: StallStage | string;
+  stallReason: string | null;
+  modelHealth: Record<string, ModelHealth>;
 };
 
 export type DurableFrozenInput = {
@@ -132,6 +148,11 @@ export type DurableRunPublic = {
   output: RunCouncilOutput | null;
   background: true;
   cancelRequested: boolean;
+  currentMemberId?: string | null;
+  currentRequestStartedAt?: string | null;
+  lastProviderResponseAt?: string | null;
+  internalStage?: string | null;
+  stallReason?: string | null;
 };
 
 export const TERMINAL_STATUSES = new Set<DurableStatus>(["COMPLETE", "FAILED", "CANCELLED"]);
@@ -151,6 +172,9 @@ export function emptyCursor(): DurableCursor {
     manifest: null,
     contextHash: null,
     requestUsed: 0,
+    preflightCalls: 0,
+    councilCalls: 0,
+    retries: 0,
     completedKeys: [],
     synthIndex: 0,
     tokenIn: 0,
@@ -159,7 +183,21 @@ export function emptyCursor(): DurableCursor {
     spent: null,
     catalogOk: false,
     accessOk: false,
+    preflight: null,
+    callableMemberIds: [],
+    currentMemberId: null,
+    currentModelId: null,
+    currentRequestStartedAt: null,
+    lastProviderResponseAt: null,
+    lastProviderHttpStatus: null,
+    internalStage: "SCHEDULER_WAIT",
+    stallReason: null,
+    modelHealth: {},
   };
+}
+
+export function hydrateCursor(cursor?: Partial<DurableCursor> | null): DurableCursor {
+  return { ...emptyCursor(), ...(cursor ?? {}) };
 }
 
 export function waitingAgents(members: CouncilMember[]): Partial<Record<AgentKey, AgentProgress>> {
@@ -240,6 +278,43 @@ export function nextRecoveryDeadlineMs(
 export function toPublic(row: DurableRunRow, nowMs = Date.now()): DurableRunPublic {
   const responses = row.responses.length ? row.responses : (row.output?.responses ?? []);
   const deadline = nextRecoveryDeadlineMs(row, nowMs);
+  const leaseIsHeld = leaseHeld(row, nowMs);
+  const preflightDone = Boolean(row.cursor.accessOk && row.cursor.catalogOk);
+  const providerCallsStarted = (row.cursor.councilCalls ?? 0) > 0 || Boolean(row.cursor.lastProviderResponseAt);
+  const internalStage = leaseIsHeld
+    ? "LEASE_WAIT"
+    : row.cursor.internalStage ||
+      diagnoseInternalStage({
+        failed: row.status === "FAILED",
+        terminal: isTerminalStatus(row.status),
+        leaseHeld: leaseIsHeld,
+        preflightDone,
+        providerCallsStarted,
+        queued: row.status === "QUEUED" || row.cursor.phase === "QUEUED",
+      });
+  const snapshot: CouncilRunSnapshot = {
+    ...row.snapshot,
+    lastWakeAt: row.lastWakeAt,
+    leaseExpiresAt: leaseExpiresAtIso(row.leaseExpiresAt),
+    nextRecoveryDeadline: new Date(deadline).toISOString(),
+    currentMemberId: row.cursor.currentMemberId,
+    currentModelId: row.cursor.currentModelId,
+    currentRequestStartedAt: row.cursor.currentRequestStartedAt,
+    lastProviderResponseAt: row.cursor.lastProviderResponseAt,
+    lastProviderHttpStatus: row.cursor.lastProviderHttpStatus,
+    lastProgressAt: row.lastProgressAt,
+    internalStage,
+    stallReason: row.cursor.stallReason,
+    preflight: row.cursor.preflight ?? row.snapshot.preflight ?? null,
+    requestBudget: {
+      used: row.cursor.requestUsed,
+      limit: row.snapshot.requestBudget?.limit ?? emptyRequestBudget(row.members.length || 3).limit,
+      expected: row.snapshot.requestBudget?.expected ?? emptyRequestBudget(row.members.length || 3).expected,
+      preflightCalls: row.cursor.preflightCalls ?? row.snapshot.requestBudget?.preflightCalls ?? 0,
+      councilCalls: row.cursor.councilCalls ?? row.snapshot.requestBudget?.councilCalls ?? 0,
+      retries: row.cursor.retries ?? row.snapshot.requestBudget?.retries ?? 0,
+    },
+  };
   return {
     runId: row.runId,
     taskId: row.taskId,
@@ -256,19 +331,19 @@ export function toPublic(row: DurableRunRow, nowMs = Date.now()): DurableRunPubl
     provider: row.provider,
     members: row.members,
     agents: row.snapshot.agents ?? {},
-    requestBudget: row.snapshot.requestBudget,
+    requestBudget: snapshot.requestBudget,
     costUsd: row.snapshot.costUsd ?? null,
     nanogptBilling: row.nanogptBilling,
-    snapshot: {
-      ...row.snapshot,
-      lastWakeAt: row.lastWakeAt,
-      leaseExpiresAt: leaseExpiresAtIso(row.leaseExpiresAt),
-      nextRecoveryDeadline: new Date(deadline).toISOString(),
-    },
+    snapshot,
     responses,
     output: row.output,
     background: true,
     cancelRequested: row.cancelRequested,
+    currentMemberId: row.cursor.currentMemberId,
+    currentRequestStartedAt: row.cursor.currentRequestStartedAt,
+    lastProviderResponseAt: row.cursor.lastProviderResponseAt,
+    internalStage,
+    stallReason: row.cursor.stallReason,
   };
 }
 
@@ -298,6 +373,16 @@ export function initialSnapshot(row: {
     requestBudget: emptyRequestBudget(row.members.length || 3),
     costUsd: 0,
     nanogptBilling: row.nanogptBilling ?? undefined,
+    currentMemberId: null,
+    currentModelId: null,
+    currentStage: "PREPARING",
+    currentAttempt: 0,
+    currentRequestStartedAt: null,
+    lastProviderResponseAt: null,
+    lastProgressAt: row.startedAt,
+    internalStage: "SCHEDULER_WAIT",
+    stallReason: null,
+    preflight: null,
   };
 }
 

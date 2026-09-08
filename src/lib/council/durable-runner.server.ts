@@ -113,6 +113,7 @@ export async function providerRuntime(userId: string, provider: ProviderId, bill
   };
   return {
     completeChat,
+    pacing: undefined,
     catalogCheck: async (opts) => {
       if (!apiKey) {
         return {
@@ -142,6 +143,33 @@ export async function providerRuntime(userId: string, provider: ProviderId, bill
         models: opts.models,
         nanogptBilling: billingArg(provider, opts.nanogptBilling ?? billing),
       });
+    },
+    subscriptionCheck: async (opts) => {
+      if (provider !== "nanogpt") {
+        return { ok: true, skipped: true, status: 0, latencyMs: 0 };
+      }
+      if (!apiKey) {
+        return { ok: false, skipped: false, status: 401, latencyMs: 0, error: "The AI provider is not connected." };
+      }
+      const nano = mod as typeof import("./nanogpt.server.ts");
+      if (typeof nano.subscriptionUsage !== "function") {
+        return { ok: true, skipped: true, status: 0, latencyMs: 0 };
+      }
+      return nano.subscriptionUsage(apiKey, billingArg(provider, opts.nanogptBilling ?? billing));
+    },
+    probeModel: async (opts) => {
+      if (!apiKey) {
+        return { id: opts.model, status: 401, latencyMs: 0, error: "The AI provider is not connected." };
+      }
+      const probe = await mod.probeModel(apiKey, opts.model, billingArg(provider, opts.nanogptBilling ?? billing));
+      return {
+        id: probe.id,
+        status: probe.status,
+        latencyMs: probe.latencyMs ?? 0,
+        error: probe.error,
+        body: probe.body,
+        headers: probe.headers,
+      };
     },
   };
 }

@@ -45,12 +45,13 @@ export function clampMemberCount(n: number): number {
 }
 
 export function expectedSuccessfulCalls(memberCount: number): number {
-  return 2 * clampMemberCount(memberCount) + 1;
+  const n = clampMemberCount(memberCount);
+  return 3 * n + 1;
 }
 
 export function attemptLimit(memberCount: number): number {
   const n = clampMemberCount(memberCount);
-  return expectedSuccessfulCalls(n) + n + 2;
+  return expectedSuccessfulCalls(n) + n + 4;
 }
 
 export function assertCouncilSelection(ids: string[]): string | null {

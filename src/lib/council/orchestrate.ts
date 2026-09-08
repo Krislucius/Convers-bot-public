@@ -35,7 +35,6 @@ import {
   formatProviderFailure,
   isRetryableFailure,
   providerFailure,
-  retryDelayMs,
   toProviderFailure,
   type ProviderFailure,
 } from "./provider-error.ts";
@@ -50,10 +49,33 @@ import {
 import { providerName } from "./providers.ts";
 import { createRequestCounter, isEmptyCompletion, isRequestLimitError, type RequestBudget } from "./request-budget.ts";
 import { MODEL_UNAVAILABLE, type CatalogCheckResult } from "./catalog.ts";
-import { accessBlocksRun, isVerifiedAvailable, type DiscoveredModel, type DiscoverySnapshot } from "./discover.ts";
+import { type DiscoveredModel, type DiscoverySnapshot } from "./discover.ts";
 import { sameProviderScan } from "./provider-adapter.ts";
 import { assertCouncilSelection, ensureMembers, findMember, type CouncilMember } from "./members.ts";
 import { normalizeNanoGptBilling, type NanoGptBillingMode } from "./nano-billing.ts";
+import {
+  DEFAULT_PACING,
+  TEST_PACING,
+  createSerialGate,
+  interRequestDelayMs,
+  resolvePacing,
+  retryWaitMs,
+  sleep,
+  type PacingConfig,
+} from "./pacing.ts";
+import {
+  accessFromProbe,
+  evaluatePreflightGate,
+  interpretAccessForModel,
+  modelProbeCallable,
+  parseSubscriptionUsage,
+  patchPreflightStep,
+  seedPreflight,
+  subscriptionBlocksRun,
+  type PreflightReport,
+  type PreflightStep,
+} from "./start-preflight.ts";
+import { outcomeFromFailure, recordHealth, type ModelHealth } from "./model-health.ts";
 import type {
   AgentKey,
   AgentProgress,
@@ -118,8 +140,34 @@ export type CouncilRuntime = {
     models: string[];
     nanogptBilling?: NanoGptBillingMode;
   }) => Promise<{ ok: boolean; blocked: Array<{ id: string; access: string }>; error?: string }>;
+  subscriptionCheck?: (opts: {
+    provider: ProviderId;
+    apiKey: string;
+    nanogptBilling?: NanoGptBillingMode;
+  }) => Promise<{
+    ok: boolean;
+    skipped?: boolean;
+    status: number;
+    latencyMs: number;
+    error?: string;
+    body?: string;
+  }>;
+  probeModel?: (opts: {
+    provider: ProviderId;
+    apiKey: string;
+    model: string;
+    nanogptBilling?: NanoGptBillingMode;
+  }) => Promise<{
+    id: string;
+    status: number;
+    latencyMs: number;
+    error?: string;
+    body?: string;
+    headers?: Record<string, string>;
+  }>;
   now?: () => string;
   yieldFn?: () => Promise<void>;
+  pacing?: Partial<PacingConfig>;
 };
 
 const defaultYield = () =>
@@ -324,10 +372,27 @@ export async function runCouncil(input: {
   let manifest: ContextManifest | null = null;
   const responses: AgentResponse[] = [];
   const requests = createRequestCounter(members.length);
+  const pacing = resolvePacing(runtime.pacing ?? (input.runtime ? TEST_PACING : DEFAULT_PACING));
+  const gate = createSerialGate("provider");
   let spent: number | null = null;
   let tokenIn = 0;
   let tokenOut = 0;
   let latencyMs = 0;
+  let currentMemberId: string | null = null;
+  let currentModelId: string | null = null;
+  let currentRequestStartedAt: string | null = null;
+  let lastProviderResponseAt: string | null = null;
+  let lastProviderHttpStatus: number | null = null;
+  let currentStageLabel: CouncilRunSnapshot["currentStage"] = "PREPARING";
+  let internalStage: string = "PREFLIGHT";
+  const stallReason: string | null = null;
+  let preflight: PreflightReport = seedPreflight({
+    members,
+    provider: runProvider,
+    nanogptBilling: runBilling,
+  });
+  const modelHealth: Record<string, ModelHealth> = {};
+  let lastRequestAt = 0;
 
   const snapshot = (stage: CouncilStageName, status: TaskStatus, message: string): CouncilRunSnapshot => ({
     runId,
@@ -350,6 +415,18 @@ export async function runCouncil(input: {
     partial: false,
     synthesisSkipped: null,
     nanogptBilling: runBilling,
+    currentMemberId,
+    currentModelId,
+    currentStage: currentStageLabel,
+    currentAttempt: currentMemberId ? (agents[currentMemberId]?.attempt ?? null) : null,
+    currentRequestStartedAt,
+    lastProviderResponseAt,
+    lastProviderHttpStatus,
+    lastProgressAt: now(),
+    internalStage,
+    stallReason,
+    preflight,
+    modelHealth,
   });
 
   const emit = (status: TaskStatus, stage: CouncilStageName, message: string, extra?: Partial<CouncilProgress>) => {
@@ -408,19 +485,6 @@ export async function runCouncil(input: {
       return precheckOutput(boundTask, scanMix);
     }
 
-    if (input.catalog?.length) {
-      const blocked = members.filter((row) => {
-        const hit = input.catalog?.find((item) => item.id === row.modelId);
-        return !hit || accessBlocksRun(hit.access);
-      });
-      if (blocked.length) {
-        return precheckOutput(
-          boundTask,
-          `${MODEL_UNAVAILABLE}: ${blocked.map((row) => row.modelId).join(", ")} is not accessible on ${providerName(runProvider)}. Refresh models and pick a replacement.`,
-        );
-      }
-    }
-
     const pipelineInput = {
       project: input.project,
       task: boundTask,
@@ -459,17 +523,6 @@ export async function runCouncil(input: {
       (input.runtime
         ? async (): Promise<CatalogCheckResult> => ({ ok: true, missing: [], available: selectedIds })
         : defaultCatalogCheck);
-    const catalog = await catalogFn({
-      provider: runProvider,
-      apiKey: key,
-      models: selectedIds,
-      nanogptBilling: runBilling,
-    });
-    if (!catalog.ok) {
-      const error = catalog.error ?? MODEL_UNAVAILABLE;
-      return precheckOutput(boundTask, error);
-    }
-
     const accessFn =
       runtime.accessCheck ??
       (input.runtime
@@ -478,33 +531,242 @@ export async function runCouncil(input: {
             blocked: [],
           })
         : defaultAccessCheck);
-    const verifyIds = (() => {
-      const kept = new Set(resumeKept.map((row) => responseMemberId(row)));
-      const retry = members.filter((row) => !kept.has(row.memberId)).map((row) => row.modelId);
-      return retry.length ? retry : selectedIds;
-    })();
-    const access = await accessFn({
-      provider: runProvider,
-      apiKey: key,
-      models: verifyIds,
-      nanogptBilling: runBilling,
-    });
-    const accessError =
-      access.error ??
-      `${MODEL_UNAVAILABLE}: ${access.blocked
-        .filter((row) => !isVerifiedAvailable(row.access))
-        .map((row) => `${row.id} (${row.access})`)
-        .join(", ") || "selected model"} is not VERIFIED_AVAILABLE.`;
-    if (!access.ok || access.blocked.some((row) => !isVerifiedAvailable(row.access))) {
+    const kept = new Set(resumeKept.map((row) => responseMemberId(row)));
+    const pace = async () => {
+      const wait = lastRequestAt ? interRequestDelayMs(pacing) : 0;
+      if (wait > 0) await sleep(wait, signal);
+    };
+    const markStep = (step: PreflightStep, message: string) => {
+      preflight = patchPreflightStep(preflight, step);
+      if (step.memberId) {
+        currentMemberId = step.memberId;
+        currentModelId = step.modelId ?? null;
+        const probing = step.status === "RUNNING";
+        agents[step.memberId] = {
+          state: probing ? "RUNNING" : step.status === "FAILED" ? "FAILED" : "WAITING",
+          attempt: 0,
+          maxAttempts: PROVIDER_ATTEMPTS,
+          error: step.status === "FAILED" ? step.error : null,
+          detail: step.status === "PASS" ? "VERIFIED" : step.status === "RUNNING" ? "PROBING" : step.status,
+          latencyMs: step.latencyMs,
+          httpStatus: step.httpStatus,
+        };
+      }
+      emit("PREPARING", "PREPARING", message);
+    };
+
+    internalStage = "PREFLIGHT";
+    currentStageLabel = "PREFLIGHT_PROVIDER";
+    const providerStep = preflight.steps.find((step) => step.kind === "PROVIDER")!;
+    markStep({ ...providerStep, status: "RUNNING" }, "PRECHECK — PROVIDER CHECK");
+    markStep({ ...providerStep, status: "PASS", latencyMs: 0 }, "PRECHECK — PROVIDER PASS");
+
+    const subStep = preflight.steps.find((step) => step.kind === "SUBSCRIPTION");
+    if (subStep && subStep.status === "WAITING") {
+      currentStageLabel = "PREFLIGHT_SUBSCRIPTION";
+      markStep({ ...subStep, status: "RUNNING" }, "PRECHECK — SUBSCRIPTION");
+      await pace();
+      throwIfCancelled(runId, signal);
+      if (runtime.subscriptionCheck) {
+        requests.consume("preflight subscription", "PREFLIGHT");
+        currentRequestStartedAt = now();
+        const usage = await gate.run(() =>
+          runtime.subscriptionCheck!({ provider: runProvider, apiKey: key, nanogptBilling: runBilling }),
+        );
+        lastRequestAt = Date.now();
+        lastProviderResponseAt = now();
+        lastProviderHttpStatus = usage.status;
+        const parsed = parseSubscriptionUsage(null, usage.status);
+        const block = usage.skipped
+          ? null
+          : usage.ok
+            ? subscriptionBlocksRun(parsed, usage.status)
+            : usage.error || "SUBSCRIPTION check failed.";
+        markStep(
+          {
+            ...subStep,
+            status: usage.skipped ? "SKIPPED" : block ? "FAILED" : "PASS",
+            latencyMs: usage.latencyMs,
+            error: block,
+            httpStatus: usage.status,
+          },
+          block ? `PRECHECK — SUBSCRIPTION FAILED ${block}` : "PRECHECK — SUBSCRIPTION PASS",
+        );
+        if (block) return precheckOutput(boundTask, block);
+      } else {
+        markStep(
+          { ...subStep, status: "SKIPPED", error: "Subscription usage not required for this provider." },
+          "PRECHECK — SUBSCRIPTION SKIPPED",
+        );
+      }
+    }
+
+    currentStageLabel = "PREFLIGHT_CATALOG";
+    const catStep = preflight.steps.find((step) => step.kind === "CATALOG")!;
+    markStep({ ...catStep, status: "RUNNING" }, "PRECHECK — CATALOG");
+    await pace();
+    throwIfCancelled(runId, signal);
+    requests.consume("preflight catalog", "PREFLIGHT");
+    currentRequestStartedAt = now();
+    const catalog = await gate.run(() =>
+      catalogFn({
+        provider: runProvider,
+        apiKey: key,
+        models: selectedIds,
+        nanogptBilling: runBilling,
+      }),
+    );
+    lastRequestAt = Date.now();
+    lastProviderResponseAt = now();
+    if (!catalog.ok) {
+      const error = catalog.error ?? MODEL_UNAVAILABLE;
+      markStep({ ...catStep, status: "FAILED", error }, `PRECHECK — CATALOG FAILED ${error}`);
+      return precheckOutput(boundTask, error);
+    }
+    const missing = new Set(catalog.missing ?? []);
+    markStep({ ...catStep, status: "PASS", latencyMs: 0, httpStatus: 200 }, "PRECHECK — CATALOG PASS");
+
+    currentStageLabel = "PREFLIGHT_MODEL_PROBE";
+    for (const member of members) {
+      throwIfCancelled(runId, signal);
+      const step = preflight.steps.find((item) => item.memberId === member.memberId);
+      if (!step) continue;
+      if (kept.has(member.memberId)) {
+        markStep(
+          { ...step, status: "PASS", access: "VERIFIED_AVAILABLE", latencyMs: 0, httpStatus: 200 },
+          `PRECHECK — ${member.label} VERIFIED (resume)`,
+        );
+        continue;
+      }
+      if (missing.has(member.modelId)) {
+        markStep(
+          {
+            ...step,
+            status: "FAILED",
+            access: "UNAVAILABLE",
+            error: `${MODEL_UNAVAILABLE}: ${member.modelId} is not in the live catalog.`,
+            httpStatus: 404,
+          },
+          `PRECHECK — ${member.label} FAILED not in catalog`,
+        );
+        continue;
+      }
+      markStep({ ...step, status: "RUNNING" }, `PRECHECK — ${member.label} PROBING`);
+      await pace();
+      throwIfCancelled(runId, signal);
+      requests.consume(`preflight probe ${member.modelId}`, "PREFLIGHT");
+      currentMemberId = member.memberId;
+      currentModelId = member.modelId;
+      currentRequestStartedAt = now();
+      const started = Date.now();
+      if (runtime.probeModel) {
+        const probe = await gate.run(() =>
+          runtime.probeModel!({
+            provider: runProvider,
+            apiKey: key,
+            model: member.modelId,
+            nanogptBilling: runBilling,
+          }),
+        );
+        lastRequestAt = Date.now();
+        lastProviderResponseAt = now();
+        lastProviderHttpStatus = probe.status;
+        const access = accessFromProbe({
+          status: probe.status,
+          error: probe.error,
+          body: probe.body,
+          inCatalog: true,
+        });
+        const callable = modelProbeCallable(access);
+        modelHealth[member.modelId] = recordHealth(modelHealth[member.modelId], {
+          modelId: member.modelId,
+          at: now(),
+          kind: "probe",
+          outcome: callable ? "success" : probe.status === 429 ? "rate_limited" : probe.status === 0 ? "timeout" : "failure",
+          latencyMs: probe.latencyMs,
+          httpStatus: probe.status,
+        });
+        markStep(
+          {
+            ...step,
+            status: callable ? "PASS" : "FAILED",
+            access,
+            latencyMs: probe.latencyMs,
+            error: callable ? null : probe.error || `${member.modelId} ${access}`,
+            httpStatus: probe.status,
+            requestId: probe.headers?.["x-request-id"] ?? null,
+          },
+          callable
+            ? `PRECHECK — ${member.label} VERIFIED ${probe.latencyMs}ms`
+            : `PRECHECK — ${member.label} FAILED ${access}`,
+        );
+      } else {
+        const access = await gate.run(() =>
+          accessFn({
+            provider: runProvider,
+            apiKey: key,
+            models: [member.modelId],
+            nanogptBilling: runBilling,
+          }),
+        );
+        const interpreted = interpretAccessForModel(member.modelId, access);
+        const status = interpreted.access === "VERIFIED_AVAILABLE" ? 200 : 403;
+        const latency = Date.now() - started;
+        lastRequestAt = Date.now();
+        lastProviderResponseAt = now();
+        lastProviderHttpStatus = status;
+        const callable = modelProbeCallable(interpreted.access);
+        modelHealth[member.modelId] = recordHealth(modelHealth[member.modelId], {
+          modelId: member.modelId,
+          at: now(),
+          kind: "probe",
+          outcome: callable ? "success" : "failure",
+          latencyMs: latency,
+          httpStatus: status,
+        });
+        markStep(
+          {
+            ...step,
+            status: callable ? "PASS" : "FAILED",
+            access: interpreted.access,
+            latencyMs: latency,
+            error: callable ? null : interpreted.error || `${member.modelId} ${interpreted.access}`,
+            httpStatus: status,
+          },
+          callable
+            ? `PRECHECK — ${member.label} VERIFIED ${latency}ms`
+            : `PRECHECK — ${member.label} FAILED ${interpreted.access}`,
+        );
+      }
+    }
+
+    const gateResult = evaluatePreflightGate(preflight);
+    if (!gateResult.ok) {
       if (resumeKept.length) {
         responses.push(...resumeKept);
-        emit("FAILED", "PREPARING", accessError, { responses: [...responses] });
-        return fail(accessError, "PREPARING", { partial: true });
+        emit("FAILED", "PREPARING", gateResult.error ?? "PREFLIGHT failed", { responses: [...responses] });
+        return fail(gateResult.error ?? "PREFLIGHT failed", "PREPARING", { partial: true });
       }
-      return precheckOutput(boundTask, accessError);
+      return precheckOutput(boundTask, gateResult.error ?? "PREFLIGHT failed");
+    }
+    for (const member of members) {
+      if (!gateResult.callable.includes(member.memberId) && !kept.has(member.memberId)) {
+        const current = agents[member.memberId];
+        agents[member.memberId] = {
+          state: "FAILED",
+          attempt: current?.attempt ?? 0,
+          maxAttempts: current?.maxAttempts ?? PROVIDER_ATTEMPTS,
+          error: current?.error ?? "Not callable after preflight.",
+          detail: "FAILED",
+        };
+      } else if (agents[member.memberId]?.state === "RUNNING") {
+        agents[member.memberId] = { ...agents[member.memberId]!, state: "WAITING", detail: "VERIFIED" };
+      }
     }
 
     throwIfCancelled(runId, signal);
+    internalStage = "DISPATCH_PENDING";
+    currentStageLabel = "ROUND_1";
 
     const ask = async (
       member: CouncilMember,
@@ -574,7 +836,7 @@ export async function runCouncil(input: {
           return errRow("Council run stopped.", attempt);
         }
         try {
-          requests.consume(stage);
+          requests.consume(stage, attempt === 1 ? "COUNCIL" : "RETRY");
         } catch (err) {
           const message =
             err instanceof Error ? err.message : "Council stopped because the request limit was reached.";
@@ -588,7 +850,12 @@ export async function runCouncil(input: {
           emit(taskStatus, emitStage, message, { responses: [row] });
           return row;
         }
-        agents[agent] = { state: "RUNNING", attempt, maxAttempts: attempts, error: null };
+        agents[agent] = { state: "RUNNING", attempt, maxAttempts: attempts, error: null, detail: "RUNNING" };
+        currentMemberId = agent;
+        currentModelId = dispatchedModelId;
+        currentRequestStartedAt = now();
+        currentStageLabel = emitStage === "SYNTHESIS" ? "SYNTHESIS" : emitStage === "ROUND_2" ? "ROUND_2" : "ROUND_1";
+        internalStage = "DISPATCH_PENDING";
         emit(
           taskStatus,
           emitStage,
@@ -597,17 +864,23 @@ export async function runCouncil(input: {
             : `${member.label} is running (${attempt}/${attempts}).`,
         );
         try {
-          const out = await runtime.completeChat({
-            provider: runProvider,
-            apiKey: key,
-            model: dispatchedModelId,
-            messages: chat(system, user),
-            maxTokens,
-            temperature,
-            responseFormat,
-            signal,
-            nanogptBilling: runBilling,
-          });
+          if (attempt === 1) await pace();
+          const out = await gate.run(() =>
+            runtime.completeChat({
+              provider: runProvider,
+              apiKey: key,
+              model: dispatchedModelId,
+              messages: chat(system, user),
+              maxTokens,
+              temperature,
+              responseFormat,
+              signal,
+              nanogptBilling: runBilling,
+            }),
+          );
+          lastRequestAt = Date.now();
+          lastProviderResponseAt = now();
+          lastProviderHttpStatus = out.ok ? 200 : (out.failure?.httpStatus ?? null);
           if (isCancelledSignal(signal) || (!out.ok && out.error === "Council run stopped.")) {
             agents[agent] = { state: "FAILED", attempt, maxAttempts: attempts, error: "Council run stopped." };
             return errRow("Council run stopped.", attempt);
@@ -629,7 +902,15 @@ export async function runCouncil(input: {
             if (out.completion.outputTokens != null) tokenOut += out.completion.outputTokens;
             if (out.completion.latencyMs != null) latencyMs += out.completion.latencyMs;
             if (out.completion.cost != null) spent = (spent ?? 0) + out.completion.cost;
-            agents[agent] = { state: "DONE", attempt, maxAttempts: attempts, error: null };
+            agents[agent] = { state: "DONE", attempt, maxAttempts: attempts, error: null, detail: "DONE" };
+            modelHealth[dispatchedModelId] = recordHealth(modelHealth[dispatchedModelId], {
+              modelId: dispatchedModelId,
+              at: now(),
+              kind: "runtime",
+              outcome: "success",
+              latencyMs: out.completion.latencyMs ?? null,
+              httpStatus: 200,
+            });
             const row = tagRun(
               responseFromCompletion(
                 input.task.id,
@@ -684,7 +965,17 @@ export async function runCouncil(input: {
             agents[agent] = { state: "FAILED", attempt, maxAttempts: attempts, error: "Council run stopped." };
             return errRow("Council run stopped.", attempt);
           }
-          await new Promise((r) => setTimeout(r, retryDelayMs(attempt)));
+          await sleep(
+            retryWaitMs({
+              attempt,
+              errorClass: lastFailure?.errorClass,
+              httpClass: lastFailure?.httpClass,
+              retryAfterHeader: lastFailure?.retryAfter,
+              retryAfterMs: lastFailure?.retryAfterMs,
+              pacing,
+            }),
+            signal,
+          );
           continue;
         }
         const failure = lastFailure
@@ -709,6 +1000,14 @@ export async function runCouncil(input: {
             });
         failure.message = formatProviderFailure(failure);
         agents[agent] = { state: "FAILED", attempt, maxAttempts: attempts, error: failure.message };
+        modelHealth[dispatchedModelId] = recordHealth(modelHealth[dispatchedModelId], {
+          modelId: dispatchedModelId,
+          at: now(),
+          kind: "runtime",
+          outcome: outcomeFromFailure(failure.errorClass, failure.httpClass),
+          latencyMs: null,
+          httpStatus: failure.httpStatus,
+        });
         const row = errRow(failure.message, attempt);
         emit(taskStatus, emitStage, failure.message, { responses: [row] });
         return row;
@@ -734,28 +1033,47 @@ export async function runCouncil(input: {
     };
 
     stageStartedAt = now();
-    for (const member of members) {
-      const kept = resumeKept.some((row) => responseMemberId(row) === member.memberId);
-      agents[member.memberId] = kept
-        ? { state: "DONE", attempt: 1, maxAttempts: PROVIDER_ATTEMPTS, error: null }
-        : { state: "RUNNING", attempt: 1, maxAttempts: PROVIDER_ATTEMPTS, error: null };
-    }
+    const callableIds = new Set(preflight.callableMemberIds.length ? preflight.callableMemberIds : members.map((row) => row.memberId));
     const priorByAgent = new Map(resumeKept.map((row) => [responseMemberId(row), row]));
-    emit("COUNCIL_ROUND_1", "ROUND_1", `Round 1 — ${members.length} Council models.`, { manifest });
+    for (const member of members) {
+      if (priorByAgent.has(member.memberId)) {
+        agents[member.memberId] = { state: "DONE", attempt: 1, maxAttempts: PROVIDER_ATTEMPTS, error: null, detail: "DONE" };
+      } else if (!callableIds.has(member.memberId)) {
+        agents[member.memberId] = {
+          state: "FAILED",
+          attempt: agents[member.memberId]?.attempt ?? 0,
+          maxAttempts: PROVIDER_ATTEMPTS,
+          error: agents[member.memberId]?.error ?? "Not callable after preflight.",
+          detail: "FAILED",
+        };
+      } else {
+        agents[member.memberId] = {
+          state: "WAITING",
+          attempt: 0,
+          maxAttempts: PROVIDER_ATTEMPTS,
+          error: null,
+          detail: "WAITING",
+        };
+      }
+    }
+    emit("COUNCIL_ROUND_1", "ROUND_1", `Round 1 — sequential, ${[...callableIds].length} callable models.`, { manifest });
     await yieldFn();
     throwIfCancelled(runId, signal);
 
-    const round1 = await Promise.all(
-      members.map(async (member) => {
-        const kept = priorByAgent.get(member.memberId);
-        if (kept) {
-          agents[member.memberId] = { state: "DONE", attempt: 1, maxAttempts: PROVIDER_ATTEMPTS, error: null };
-          return kept;
-        }
-        return ask(member, "ROUND_1", roles[member.memberId], ctx, AGENT_MAX, 0.2);
-      }),
-    );
-    responses.push(...round1);
+    const round1: AgentResponse[] = [];
+    for (const member of members) {
+      throwIfCancelled(runId, signal);
+      const keptRow = priorByAgent.get(member.memberId);
+      if (keptRow) {
+        round1.push(keptRow);
+        responses.push(keptRow);
+        continue;
+      }
+      if (!callableIds.has(member.memberId)) continue;
+      const row = await ask(member, "ROUND_1", roles[member.memberId], ctx, AGENT_MAX, 0.2);
+      round1.push(row);
+      responses.push(row);
+    }
     if (isCancelledSignal(signal)) return finishCancelled();
     emit("COUNCIL_ROUND_1", "ROUND_1", "Round 1 complete.", { responses: [...responses] });
     const fail1 = councilPartial(round1);
@@ -769,6 +1087,7 @@ export async function runCouncil(input: {
 
     throwIfCancelled(runId, signal);
     stageStartedAt = now();
+    currentStageLabel = "ROUND_2";
     emit(
       "COUNCIL_ROUND_2",
       "ROUND_2",
@@ -776,24 +1095,24 @@ export async function runCouncil(input: {
         ? "Round 2 — cross-examination of the reconstructed architecture."
         : "Round 2 — the surviving reviewers are reading each other.",
     );
-    const round2 = await Promise.all(
-      aliveMembers.map((member) => {
-        const system = `${roles[member.memberId]}\n${ROUND2}`;
-        const others = members
-          .map((row) => {
-            const prior = round1.find((item) => responseMemberId(item) === row.memberId);
-            return `${row.memberId} ${row.role} (${row.label}) ROUND 1\n${prior?.responseText ?? "(failed)"}`;
-          })
-          .join("\n\n");
-        const user = [
-          ctx,
-          `YOUR ROUND 1 POSITION\n${round1.find((row) => responseMemberId(row) === member.memberId)?.responseText ?? ""}`,
-          others,
-        ].join("\n\n");
-        return ask(member, "ROUND_2", system, user, AGENT_MAX, 0.2);
-      }),
-    );
-    responses.push(...round2);
+    const round2: AgentResponse[] = [];
+    for (const member of aliveMembers) {
+      throwIfCancelled(runId, signal);
+      const system = `${roles[member.memberId]}\n${ROUND2}`;
+      const others = members
+        .map((row) => {
+          const prior = round1.find((item) => responseMemberId(item) === row.memberId);
+          return `${row.memberId} ${row.role} (${row.label}) ROUND 1\n${prior?.responseText ?? "(failed)"}`;
+        })
+        .join("\n\n");
+      const user = [
+        ctx,
+        `YOUR ROUND 1 POSITION\n${round1.find((row) => responseMemberId(row) === member.memberId)?.responseText ?? ""}`,
+        others,
+      ].join("\n\n");
+      round2.push(await ask(member, "ROUND_2", system, user, AGENT_MAX, 0.2));
+      responses.push(round2.at(-1)!);
+    }
     if (isCancelledSignal(signal)) return finishCancelled();
     emit("COUNCIL_ROUND_2", "ROUND_2", "Round 2 complete.", { responses: [...responses] });
     const fail2 = councilPartial([...survivingResponses(round1), ...round2]);

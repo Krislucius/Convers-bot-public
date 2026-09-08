@@ -6,6 +6,7 @@ import {
   NANOGPT_PAYG_MODELS_URL,
   NANOGPT_SUBSCRIPTION_COMPLETE_URL,
   NANOGPT_SUBSCRIPTION_MODELS_URL,
+  NANOGPT_SUBSCRIPTION_USAGE_URL,
   NANOGPT_SUBSCRIPTION_BASE,
   assertSingleBilling,
   billingLabel,
@@ -49,6 +50,8 @@ describe("NanoGPT billing endpoints", () => {
     const payg = nanogptEndpoints("payg");
     assert.equal(sub.catalogUrl, NANOGPT_SUBSCRIPTION_MODELS_URL);
     assert.equal(sub.completeUrl, NANOGPT_SUBSCRIPTION_COMPLETE_URL);
+    assert.equal(sub.usageUrl, NANOGPT_SUBSCRIPTION_USAGE_URL);
+    assert.equal(payg.usageUrl, null);
     assert.equal(payg.catalogUrl, NANOGPT_PAYG_MODELS_URL);
     assert.equal(payg.completeUrl, NANOGPT_PAYG_COMPLETE_URL);
     assert.notEqual(sub.catalogUrl, payg.catalogUrl);

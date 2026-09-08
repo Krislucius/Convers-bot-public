@@ -1,5 +1,6 @@
 import { COUNCIL_ROLES, type CouncilRole } from "./roles.ts";
 import type { NanoGptBillingMode } from "./nano-billing.ts";
+import { healthScoreBoost, type ModelHealth } from "./model-health.ts";
 
 export type ModelAccess = "VERIFIED_AVAILABLE" | "AVAILABLE" | "UNAVAILABLE" | "NOT_INCLUDED" | "UNKNOWN";
 
@@ -17,6 +18,8 @@ export type ModelProbe = {
   status: number;
   error?: string;
   body?: string;
+  latencyMs?: number;
+  headers?: Record<string, string>;
 };
 
 export type ModelCapabilities = {
@@ -136,11 +139,12 @@ export function scoreCapabilities(caps: ModelCapabilities): number {
   return score;
 }
 
-export function scoreModel(entry: CatalogEntry): number {
+export function scoreModel(entry: CatalogEntry, health?: ModelHealth | null): number {
   const caps = capabilitiesOf(entry);
   const text = `${entry.id} ${entry.name}`.toLowerCase();
   let score = scoreCapabilities(caps);
   if (/\b(haiku|mini|nano|lite|fast|tiny|instant)\b/.test(text)) score -= 18;
+  score += healthScoreBoost(health);
   return score;
 }
 

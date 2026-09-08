@@ -2,11 +2,27 @@ import type { CouncilMember } from "./members.ts";
 import type { AgentKey, AgentProgress, AgentResponse, ProviderId, TaskStatus } from "./types.ts";
 import type { RequestBudget } from "./request-budget.ts";
 import type { NanoGptBillingMode } from "./nano-billing.ts";
+import type { PreflightReport } from "./start-preflight.ts";
+import type { ModelHealth } from "./model-health.ts";
+import type { StallStage } from "./pacing.ts";
 
 export const RUN_ID_FIELD = "__runId";
 export const MAX_AUDITED_RUNS = 8;
 
 export type CouncilStageName = "PREPARING" | "ROUND_1" | "ROUND_2" | "SYNTHESIS" | "COMPLETE" | "CANCELLED";
+
+export type CouncilCurrentStage =
+  | "PREFLIGHT_PROVIDER"
+  | "PREFLIGHT_SUBSCRIPTION"
+  | "PREFLIGHT_CATALOG"
+  | "PREFLIGHT_MODEL_PROBE"
+  | "ROUND_1"
+  | "ROUND_2"
+  | "SYNTHESIS"
+  | "PREPARING"
+  | "COMPLETE"
+  | "CANCELLED"
+  | "FAILED";
 
 export type CouncilRunSnapshot = {
   runId: string;
@@ -32,6 +48,18 @@ export type CouncilRunSnapshot = {
   lastWakeAt?: string | null;
   leaseExpiresAt?: string | null;
   nextRecoveryDeadline?: string | null;
+  currentMemberId?: string | null;
+  currentModelId?: string | null;
+  currentStage?: CouncilCurrentStage | null;
+  currentAttempt?: number | null;
+  currentRequestStartedAt?: string | null;
+  lastProviderResponseAt?: string | null;
+  lastProviderHttpStatus?: number | null;
+  lastProgressAt?: string | null;
+  internalStage?: StallStage | string | null;
+  stallReason?: string | null;
+  preflight?: PreflightReport | null;
+  modelHealth?: Record<string, ModelHealth>;
 };
 
 export class CouncilCancelled extends Error {
@@ -128,10 +156,10 @@ export function ownedResponses(rows: AgentResponse[], currentRunId: string | nul
   return rows.filter((row) => !row.runId || row.runId === want);
 }
 
-export function archiveRuns(
-  previous: CouncilRunSnapshot[] | undefined,
-  snap: CouncilRunSnapshot,
-): CouncilRunSnapshot[] {
+export function archiveRuns<T extends { runId: string }>(
+  previous: T[] | undefined,
+  snap: T,
+): T[] {
   const rest = (previous ?? []).filter((row) => row.runId !== snap.runId);
   return [snap, ...rest].slice(0, MAX_AUDITED_RUNS);
 }

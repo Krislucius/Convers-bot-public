@@ -155,6 +155,8 @@ export async function probeModelWith(
     status: ping.status,
     error: ping.error,
     body: ping.body,
+    latencyMs: "latencyMs" in ping ? ping.latencyMs : undefined,
+    headers: ping.headers,
   };
 }
 

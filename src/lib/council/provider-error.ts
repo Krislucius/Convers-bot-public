@@ -49,6 +49,8 @@ export type ProviderFailure = {
   detail?: string;
   code?: string;
   requestId?: string | null;
+  retryAfter?: string | null;
+  retryAfterMs?: number | null;
 };
 
 export class ProviderError extends Error {
@@ -144,8 +146,12 @@ export function isRetryableFailure(
   );
 }
 
-export function retryDelayMs(attempt: number): number {
-  return 500 * 2 ** Math.max(0, attempt - 1);
+export function retryDelayMs(attempt: number, retryAfterMs?: number | null): number {
+  if (retryAfterMs != null && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+    return Math.min(20_000, Math.max(0, retryAfterMs));
+  }
+  const exp = 2 ** Math.max(0, attempt - 1);
+  return Math.min(12_000, 2_000 * exp);
 }
 
 function classLabel(failure: ProviderFailure): string {
@@ -228,6 +234,8 @@ export function providerFailure(input: {
   detail?: string;
   code?: string;
   requestId?: string | null;
+  retryAfter?: string | null;
+  retryAfterMs?: number | null;
 }): ProviderFailure {
   const httpStatus = input.httpStatus ?? null;
   const classified = classifyErrorClass(httpStatus, input.raw ?? "", input.code);
@@ -263,6 +271,8 @@ export function providerFailure(input: {
     detail: input.detail,
     code: input.code,
     requestId: input.requestId ?? null,
+    retryAfter: input.retryAfter ?? null,
+    retryAfterMs: input.retryAfterMs ?? null,
   };
   failure.message = formatProviderFailure(failure);
   return failure;

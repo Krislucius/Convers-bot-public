@@ -11,20 +11,23 @@ import {
 import { catalogFromIds, MODEL_UNAVAILABLE_ON_PROVIDER } from "./catalog.ts";
 
 describe("request budget", () => {
-  it("starts empty at the hard ceiling of 12", () => {
+  it("starts empty at the hard ceiling of 17 for 3 members", () => {
     const snap = emptyRequestBudget();
     assert.equal(snap.used, 0);
-    assert.equal(snap.limit, 12);
-    assert.equal(snap.expected, 7);
-    assert.equal(MAX_PROVIDER_ATTEMPTS, 12);
+    assert.equal(snap.limit, 17);
+    assert.equal(snap.expected, 10);
+    assert.equal(MAX_PROVIDER_ATTEMPTS, 17);
+    assert.equal(snap.preflightCalls, 0);
+    assert.equal(snap.councilCalls, 0);
+    assert.equal(snap.retries, 0);
   });
 
   it("counts every attempt including retries", () => {
     const counter = createRequestCounter();
-    for (let i = 0; i < 11; i += 1) counter.consume("GPT round 1");
-    assert.equal(counter.used(), 11);
+    for (let i = 0; i < 16; i += 1) counter.consume("GPT round 1");
+    assert.equal(counter.used(), 16);
     counter.consume("GPT round 1");
-    assert.equal(counter.used(), 12);
+    assert.equal(counter.used(), 17);
     assert.throws(() => counter.consume("GPT round 2"), (err: unknown) => {
       assert.ok(err instanceof Error);
       assert.equal(isRequestLimitError(err.message), true);
@@ -42,13 +45,26 @@ describe("request budget", () => {
   });
 
   it("scales the ceiling with 2 and 5 members", () => {
-    assert.equal(emptyRequestBudget(2).expected, 5);
-    assert.equal(emptyRequestBudget(2).limit, 9);
-    assert.equal(emptyRequestBudget(5).expected, 11);
-    assert.equal(emptyRequestBudget(5).limit, 18);
+    assert.equal(emptyRequestBudget(2).expected, 7);
+    assert.equal(emptyRequestBudget(2).limit, 13);
+    assert.equal(emptyRequestBudget(5).expected, 16);
+    assert.equal(emptyRequestBudget(5).limit, 25);
     const counter = createRequestCounter(2);
-    for (let i = 0; i < 9; i += 1) counter.consume("LEAD_REASONER round 1");
+    for (let i = 0; i < 13; i += 1) counter.consume("LEAD_REASONER round 1");
     assert.throws(() => counter.consume("LEAD_REASONER round 2"), /request limit/);
+  });
+
+  it("tracks preflight, council, and retry buckets separately", () => {
+    const counter = createRequestCounter(3);
+    counter.consume("catalog", "PREFLIGHT");
+    counter.consume("probe", "PREFLIGHT");
+    counter.consume("r1", "COUNCIL");
+    counter.consume("r1 retry", "RETRY");
+    const snap = counter.snapshot();
+    assert.equal(snap.preflightCalls, 2);
+    assert.equal(snap.councilCalls, 1);
+    assert.equal(snap.retries, 1);
+    assert.equal(snap.used, 4);
   });
 });
 

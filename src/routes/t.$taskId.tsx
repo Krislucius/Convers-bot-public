@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { AgentCard } from "@/components/agent-card";
+import { PreflightPanel } from "@/components/preflight-panel";
 import { ArtifactPanel, ContextManifestPanel } from "@/components/context-manifest-panel";
 import { CouncilFold } from "@/components/council-fold";
 import { CouncilRunPanel, CouncilRunMeter } from "@/components/council-run-panel";
@@ -409,6 +410,19 @@ function TaskPage() {
           <p className="mb-1 text-xs font-semibold tracking-widest text-muted uppercase">Running in background</p>
           <h2 className="font-display mb-2 text-xl">Council is running on the server</h2>
           <p className="text-muted">{msg || task.diagnostics?.run?.message || "Queued…"}</p>
+          {task.diagnostics?.run?.stallReason ? (
+            <p className="mt-2 mb-0 text-sm text-warn">
+              STALL {task.diagnostics.run.stallReason}
+              {task.diagnostics.run.currentMemberId ? ` · member ${task.diagnostics.run.currentMemberId}` : ""}
+              {task.diagnostics.run.currentModelId ? ` · ${task.diagnostics.run.currentModelId}` : ""}
+            </p>
+          ) : task.diagnostics?.run?.internalStage ? (
+            <p className="mt-2 mb-0 text-sm text-muted">
+              stage {task.diagnostics.run.internalStage}
+              {task.diagnostics.run.currentMemberId ? ` · member ${task.diagnostics.run.currentMemberId}` : ""}
+              {task.diagnostics.run.currentModelId ? ` · ${task.diagnostics.run.currentModelId}` : ""}
+            </p>
+          ) : null}
           <p className="mt-2 mb-0 text-sm text-muted">
             You can close this page, reload, or sign out. This run keeps going until it finishes or you Stop it.
           </p>
@@ -436,7 +450,15 @@ function TaskPage() {
                   : null
               }
             />
+            {task.diagnostics?.run?.requestBudget ? (
+              <p className="mt-1 mb-0 font-mono text-xs tabular-nums text-faint">
+                preflight {task.diagnostics.run.requestBudget.preflightCalls ?? 0}
+                {" · "}council {task.diagnostics.run.requestBudget.councilCalls ?? 0}
+                {" · "}retries {task.diagnostics.run.requestBudget.retries ?? 0}
+              </p>
+            ) : null}
           </div>
+          <PreflightPanel report={task.diagnostics?.run?.preflight} />
           <p className="mt-3 mb-1 text-xs font-semibold tracking-widest text-muted uppercase">{persistedStage}</p>
           <p className="m-0 mb-3 text-xs text-faint">
             Stage started {task.diagnostics?.run?.stageStartedAt ?? "just now"}

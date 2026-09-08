@@ -5,7 +5,7 @@ Branch: `main`
 Editable source: `/workspace` (Grok Build project `01a048b8-c1f7-7382-9dfd-fb30bff7137d`)  
 Production host: https://cb-gptgrokclaud.grok.me  
 Architecture: `CB-ARCH-20260908-002`  
-Current release: `CB-BUILD-20260908-005`  
+Current release: `CB-BUILD-20260908-006`  
 Freeze tag: `CB-BUILD-20260830-003` → `b5dc720e2a99c97b8b003df3e02e6d6b83f358db`
 
 Deployed identity is `BUILD_ID` (the git release tag). `SOURCE_COMMIT` is optional diagnostic metadata; `UNKNOWN` does not degrade health. `PROD_SYNC` is production `BUILD_ID` matching the git release tag.

@@ -34,19 +34,43 @@ import {
   formatProviderFailure,
   isRetryableFailure,
   providerFailure,
-  retryDelayMs,
   toProviderFailure,
   type ProviderFailure,
 } from "./provider-error.ts";
 import { CouncilCancelled, isCancelledSignal, type CouncilStageName } from "./run-control.ts";
-import { providerName } from "./providers.ts";
-import { createRequestCounter, isEmptyCompletion } from "./request-budget.ts";
+import { createRequestCounter, emptyRequestBudget, isEmptyCompletion } from "./request-budget.ts";
 import { MODEL_UNAVAILABLE } from "./catalog.ts";
-import { accessBlocksRun, isVerifiedAvailable } from "./discover.ts";
 import { sameProviderScan } from "./provider-adapter.ts";
 import { ensureMembers, findMember, type CouncilMember } from "./members.ts";
 import { assertRunCredentials, type CouncilRuntime } from "./orchestrate.ts";
-import { emptyCursor, isTerminalStatus, taskStatusFor, waitingAgents, completedKey, type DurableRunRow, type DurableStage, type DurableStatus } from "./durable-run.ts";
+import {
+  hydrateCursor,
+  isTerminalStatus,
+  taskStatusFor,
+  waitingAgents,
+  completedKey,
+  type DurableRunRow,
+  type DurableStage,
+  type DurableStatus,
+} from "./durable-run.ts";
+import {
+  TEST_PACING,
+  retryWaitMs,
+  sleep,
+  stallAfterIdle,
+} from "./pacing.ts";
+import {
+  accessFromProbe,
+  evaluatePreflightGate,
+  interpretAccessForModel,
+  modelProbeCallable,
+  nextPreflightStep,
+  parseSubscriptionUsage,
+  patchPreflightStep,
+  seedPreflight,
+  subscriptionBlocksRun,
+} from "./start-preflight.ts";
+import { outcomeFromFailure, recordHealth } from "./model-health.ts";
 import type {
   AgentKey,
   AgentProgress,
@@ -99,6 +123,7 @@ function patchSnapshot(
   row.lastProgressAt = extras.now;
   row.error = extras.status === "FAILED" || extras.status === "CANCELLED" ? extras.message : null;
   if (extras.agents) row.snapshot.agents = extras.agents;
+  const budget = emptyRequestBudget(row.members.length || 3);
   row.snapshot = {
     ...row.snapshot,
     generation: row.generation,
@@ -109,13 +134,27 @@ function patchSnapshot(
     message: extras.message,
     agents: extras.agents ?? row.snapshot.agents,
     requestBudget: {
-      ...(row.snapshot.requestBudget ?? { used: 0, limit: 12, expected: 7 }),
+      ...budget,
+      ...(row.snapshot.requestBudget ?? {}),
       used: extras.requestUsed ?? row.cursor.requestUsed,
+      preflightCalls: row.cursor.preflightCalls,
+      councilCalls: row.cursor.councilCalls,
+      retries: row.cursor.retries,
     },
     costUsd: row.cursor.spent,
     inputTokens: row.cursor.tokenIn || null,
     outputTokens: row.cursor.tokenOut || null,
     latencyMs: row.cursor.latencyMs || null,
+    currentMemberId: row.cursor.currentMemberId,
+    currentModelId: row.cursor.currentModelId,
+    currentRequestStartedAt: row.cursor.currentRequestStartedAt,
+    lastProviderResponseAt: row.cursor.lastProviderResponseAt,
+    lastProviderHttpStatus: row.cursor.lastProviderHttpStatus,
+    lastProgressAt: extras.now,
+    internalStage: row.cursor.internalStage,
+    stallReason: row.cursor.stallReason,
+    preflight: row.cursor.preflight,
+    modelHealth: row.cursor.modelHealth,
   };
 }
 
@@ -177,9 +216,22 @@ async function askMember(opts: {
   const mapped = models[member.memberId];
   const maxAttempts = Math.max(1, opts.maxAttempts ?? PROVIDER_ATTEMPTS);
   const agents: Partial<Record<AgentKey, AgentProgress>> = { ...(row.snapshot.agents ?? waitingAgents(row.members)) };
-  const requests = createRequestCounter(row.members.length, row.cursor.requestUsed);
+  const requests = createRequestCounter(row.members.length, {
+    used: row.cursor.requestUsed,
+    preflightCalls: row.cursor.preflightCalls,
+    councilCalls: row.cursor.councilCalls,
+    retries: row.cursor.retries,
+  });
+  const flushUsed = () => {
+    const snap = requests.snapshot();
+    row.cursor.requestUsed = snap.used;
+    row.cursor.preflightCalls = snap.preflightCalls;
+    row.cursor.councilCalls = snap.councilCalls;
+    row.cursor.retries = snap.retries;
+  };
   const emit = (message: string, agentState: AgentProgress) => {
     agents[member.memberId] = agentState;
+    flushUsed();
     patchSnapshot(row, {
       status: callStage === "SYNTHESIS" ? "SYNTHESIS" : callStage === "ROUND_2" ? "ROUND_2" : "ROUND_1",
       stage: snapshotStage(callStage),
@@ -221,7 +273,7 @@ async function askMember(opts: {
       return errRow("Council run stopped.", attempt);
     }
     try {
-      requests.consume(`${member.memberId} ${member.role} ${callStage} ${dispatchedModelId}`);
+      requests.consume(`${member.memberId} ${member.role} ${callStage} ${dispatchedModelId}`, attempt === 1 ? "COUNCIL" : "RETRY");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Council stopped because the request limit was reached.";
       emit(message, { state: "FAILED", attempt: Math.max(0, attempt - 1), maxAttempts, error: message });
@@ -232,8 +284,12 @@ async function askMember(opts: {
       attempt > 1
         ? `${member.label} retry ${attempt}/${maxAttempts} after ${lastFailure?.errorClass ?? lastFailure?.httpClass ?? "error"}.`
         : `${member.label} is running (${attempt}/${maxAttempts}).`,
-      { state: "RUNNING", attempt, maxAttempts, error: null },
+      { state: "RUNNING", attempt, maxAttempts, error: null, detail: "RUNNING" },
     );
+    row.cursor.currentMemberId = member.memberId;
+    row.cursor.currentModelId = dispatchedModelId;
+    row.cursor.currentRequestStartedAt = opts.now();
+    row.cursor.internalStage = "DISPATCH_PENDING";
     try {
       const out = await runtime.completeChat({
         provider: runProvider,
@@ -268,7 +324,17 @@ async function askMember(opts: {
         if (out.completion.outputTokens != null) row.cursor.tokenOut += out.completion.outputTokens;
         if (out.completion.latencyMs != null) row.cursor.latencyMs += out.completion.latencyMs;
         if (out.completion.cost != null) row.cursor.spent = (row.cursor.spent ?? 0) + out.completion.cost;
-        emit(`${member.label} finished.`, { state: "DONE", attempt, maxAttempts, error: null });
+        row.cursor.lastProviderResponseAt = opts.now();
+        row.cursor.lastProviderHttpStatus = 200;
+        row.cursor.modelHealth[dispatchedModelId] = recordHealth(row.cursor.modelHealth[dispatchedModelId], {
+          modelId: dispatchedModelId,
+          at: opts.now(),
+          kind: "runtime",
+          outcome: "success",
+          latencyMs: out.completion.latencyMs ?? null,
+          httpStatus: 200,
+        });
+        emit(`${member.label} finished.`, { state: "DONE", attempt, maxAttempts, error: null, detail: "DONE" });
         row.cursor.requestUsed = requests.used();
         return tagRun(
           responseFromCompletion(
@@ -320,7 +386,17 @@ async function askMember(opts: {
         row.cursor.requestUsed = requests.used();
         return errRow("Council run stopped.", attempt);
       }
-      await new Promise((r) => setTimeout(r, retryDelayMs(attempt)));
+      await sleep(
+        retryWaitMs({
+          attempt,
+          errorClass: lastFailure?.errorClass,
+          httpClass: lastFailure?.httpClass,
+          retryAfterHeader: lastFailure?.retryAfter,
+          retryAfterMs: lastFailure?.retryAfterMs,
+          pacing: runtime.pacing ?? TEST_PACING,
+        }),
+        signal,
+      );
       continue;
     }
     const failure = lastFailure
@@ -335,8 +411,22 @@ async function askMember(opts: {
           errorClass: "PROVIDER_ERROR",
         });
     failure.message = formatProviderFailure(failure);
-    emit(failure.message, { state: "FAILED", attempt, maxAttempts, error: failure.message });
+    emit(failure.message, { state: "FAILED", attempt, maxAttempts, error: failure.message, detail: "FAILED" });
     row.cursor.requestUsed = requests.used();
+    const snap = requests.snapshot();
+    row.cursor.preflightCalls = snap.preflightCalls;
+    row.cursor.councilCalls = snap.councilCalls;
+    row.cursor.retries = snap.retries;
+    row.cursor.lastProviderResponseAt = opts.now();
+    row.cursor.lastProviderHttpStatus = failure.httpStatus;
+    row.cursor.modelHealth[dispatchedModelId] = recordHealth(row.cursor.modelHealth[dispatchedModelId], {
+      modelId: dispatchedModelId,
+      at: opts.now(),
+      kind: "runtime",
+      outcome: outcomeFromFailure(failure.errorClass, failure.httpClass),
+      latencyMs: null,
+      httpStatus: failure.httpStatus,
+    });
     return errRow(failure.message, attempt);
   }
   row.cursor.requestUsed = requests.used();
@@ -349,7 +439,16 @@ function roundRows(row: DurableRunRow, stage: CouncilCallStage): AgentResponse[]
 
 function nextRound1Member(row: DurableRunRow): CouncilMember | null {
   const done = new Set(row.cursor.completedKeys);
-  return row.members.find((member) => !done.has(completedKey("ROUND_1", member.memberId))) ?? null;
+  const callable = new Set(
+    row.cursor.callableMemberIds.length
+      ? row.cursor.callableMemberIds
+      : row.members.map((member) => member.memberId),
+  );
+  return (
+    row.members.find(
+      (member) => callable.has(member.memberId) && !done.has(completedKey("ROUND_1", member.memberId)),
+    ) ?? null
+  );
 }
 
 function nextRound2Member(row: DurableRunRow): CouncilMember | null {
@@ -392,17 +491,6 @@ async function prepare(row: DurableRunRow, runtime: CouncilRuntime, now: () => s
     row.output = precheckOutput(boundTask, scanMix);
     return failRow(row, scanMix, "PREPARING", now(), false);
   }
-  if (frozen.catalog?.length) {
-    const blocked = members.filter((item) => {
-      const hit = frozen.catalog?.find((model) => model.id === item.modelId);
-      return !hit || accessBlocksRun(hit.access);
-    });
-    if (blocked.length) {
-      const message = `${MODEL_UNAVAILABLE}: ${blocked.map((item) => item.modelId).join(", ")} is not accessible on ${providerName(row.provider)}. Refresh models and pick a replacement.`;
-      row.output = precheckOutput(boundTask, message);
-      return failRow(row, message, "PREPARING", now(), false);
-    }
-  }
   const candidate = boundTask.candidateArtifactId
     ? frozen.artifacts.find((item) => item.id === boundTask.candidateArtifactId) ?? null
     : null;
@@ -439,23 +527,6 @@ async function prepare(row: DurableRunRow, runtime: CouncilRuntime, now: () => s
   row.cursor.contextHash = row.cursor.manifest.hash;
   row.contextHash = row.cursor.manifest.hash;
 
-  const selectedIds = members.map((item) => item.modelId);
-  const catalogFn =
-    runtime.catalogCheck ??
-    (async () => ({ ok: true as const, missing: [] as string[], available: selectedIds }));
-  const catalog = await catalogFn({
-    provider: row.provider,
-    apiKey: "",
-    models: selectedIds,
-    nanogptBilling: row.nanogptBilling ?? undefined,
-  });
-  if (!catalog.ok) {
-    const error = catalog.error ?? MODEL_UNAVAILABLE;
-    row.output = precheckOutput(boundTask, error);
-    return failRow(row, error, "PREPARING", now(), false);
-  }
-  row.cursor.catalogOk = true;
-
   const resumeKept = (frozen.resumeResponses ?? [])
     .filter((item) => item.round === 1 && !item.error)
     .map((item) => {
@@ -476,43 +547,393 @@ async function prepare(row: DurableRunRow, runtime: CouncilRuntime, now: () => s
     });
   const agents = waitingAgents(members);
   for (const item of resumeKept) {
-    agents[responseMemberId(item)] = { state: "DONE", attempt: 1, maxAttempts: PROVIDER_ATTEMPTS, error: null };
+    agents[responseMemberId(item)] = { state: "DONE", attempt: 1, maxAttempts: PROVIDER_ATTEMPTS, error: null, detail: "DONE" };
     row.cursor.completedKeys.push(completedKey("ROUND_1", responseMemberId(item)));
   }
   row.responses.push(...resumeKept);
   row.snapshot.agents = agents;
-
-  const accessFn =
-    runtime.accessCheck ??
-    (async () => ({ ok: true, blocked: [] as Array<{ id: string; access: string }> }));
-  const kept = new Set(resumeKept.map((item) => responseMemberId(item)));
-  const verifyIds = members.filter((item) => !kept.has(item.memberId)).map((item) => item.modelId);
-  const access = await accessFn({
+  row.cursor.preflight = seedPreflight({
+    members,
     provider: row.provider,
-    apiKey: "",
-    models: verifyIds.length ? verifyIds : selectedIds,
-    nanogptBilling: row.nanogptBilling ?? undefined,
+    nanogptBilling: row.nanogptBilling,
   });
-  const accessError =
-    ("error" in access ? access.error : undefined) ??
-    `${MODEL_UNAVAILABLE}: ${access.blocked
-      .filter((item) => !isVerifiedAvailable(item.access))
-      .map((item) => `${item.id} (${item.access})`)
-      .join(", ") || "selected model"} is not VERIFIED_AVAILABLE.`;
-  if (!access.ok || access.blocked.some((item) => !isVerifiedAvailable(item.access))) {
-    if (resumeKept.length) return failRow(row, accessError, "PREPARING", now(), true);
-    row.output = precheckOutput(boundTask, accessError);
-    return failRow(row, accessError, "PREPARING", now(), false);
-  }
-  row.cursor.accessOk = true;
-  row.cursor.phase = "ROUND_1";
+  row.cursor.catalogOk = false;
+  row.cursor.accessOk = false;
+  row.cursor.internalStage = "PREFLIGHT";
+  row.cursor.phase = "PREPARING";
   patchSnapshot(row, {
-    status: "ROUND_1",
-    stage: "ROUND_1",
-    message: `Round 1 — ${members.length} Council models.`,
+    status: "PREPARING",
+    stage: "PREPARING",
+    message: "PRECHECK — starting live provider preflight.",
     now: now(),
     agents,
   });
+  return row;
+}
+
+function consumePreflight(row: DurableRunRow, stage: string): string | null {
+  const requests = createRequestCounter(row.members.length, {
+    used: row.cursor.requestUsed,
+    preflightCalls: row.cursor.preflightCalls,
+    councilCalls: row.cursor.councilCalls,
+    retries: row.cursor.retries,
+  });
+  try {
+    requests.consume(stage, "PREFLIGHT");
+  } catch (err) {
+    return err instanceof Error ? err.message : "Council stopped because the request limit was reached.";
+  }
+  const snap = requests.snapshot();
+  row.cursor.requestUsed = snap.used;
+  row.cursor.preflightCalls = snap.preflightCalls;
+  row.cursor.councilCalls = snap.councilCalls;
+  row.cursor.retries = snap.retries;
+  return null;
+}
+
+async function advancePreflight(
+  row: DurableRunRow,
+  runtime: CouncilRuntime,
+  now: () => string,
+  signal?: AbortSignal,
+): Promise<DurableRunRow> {
+  const members = ensureMembers(row.members);
+  const boundTask: Task = {
+    ...row.frozenInput.task,
+    provider: row.provider,
+    selectedModels: members,
+    nanogptBilling: row.nanogptBilling,
+  };
+  if (!row.cursor.preflight) {
+    row.cursor.preflight = seedPreflight({
+      members,
+      provider: row.provider,
+      nanogptBilling: row.nanogptBilling,
+    });
+  }
+  const selectedIds = members.map((item) => item.modelId);
+  const catalogFn =
+    runtime.catalogCheck ??
+    (async () => ({ ok: true as const, missing: [] as string[], available: selectedIds }));
+  const accessFn =
+    runtime.accessCheck ??
+    (async () => ({ ok: true, blocked: [] as Array<{ id: string; access: string }> }));
+  const agents = { ...(row.snapshot.agents ?? waitingAgents(members)) };
+  const pending = nextPreflightStep(row.cursor.preflight);
+  if (!pending) {
+    const gateResult = evaluatePreflightGate(row.cursor.preflight);
+    if (!gateResult.ok) {
+      row.cursor.internalStage = "FAILED";
+      if (row.responses.length) return failRow(row, gateResult.error ?? "PREFLIGHT failed", "PREPARING", now(), true);
+      row.output = precheckOutput(boundTask, gateResult.error ?? "PREFLIGHT failed");
+      return failRow(row, gateResult.error ?? "PREFLIGHT failed", "PREPARING", now(), false);
+    }
+    row.cursor.catalogOk = true;
+    row.cursor.accessOk = true;
+    row.cursor.callableMemberIds = gateResult.callable;
+    row.cursor.phase = "ROUND_1";
+    row.cursor.internalStage = "DISPATCH_PENDING";
+    row.cursor.currentMemberId = members.find((item) => gateResult.callable.includes(item.memberId))?.memberId ?? null;
+    row.cursor.currentModelId =
+      members.find((item) => item.memberId === row.cursor.currentMemberId)?.modelId ?? null;
+    for (const member of members) {
+      if (gateResult.callable.includes(member.memberId) || agents[member.memberId]?.state === "DONE") {
+        if (agents[member.memberId]?.state !== "DONE") {
+          agents[member.memberId] = {
+            state: "WAITING",
+            attempt: 0,
+            maxAttempts: PROVIDER_ATTEMPTS,
+            error: null,
+            detail: "VERIFIED",
+          };
+        }
+      } else {
+        agents[member.memberId] = {
+          state: "FAILED",
+          attempt: agents[member.memberId]?.attempt ?? 0,
+          maxAttempts: PROVIDER_ATTEMPTS,
+          error: agents[member.memberId]?.error ?? "Not callable after preflight.",
+          detail: "FAILED",
+        };
+        const key = completedKey("ROUND_1", member.memberId);
+        if (!row.cursor.completedKeys.includes(key)) row.cursor.completedKeys.push(key);
+      }
+    }
+    patchSnapshot(row, {
+      status: "ROUND_1",
+      stage: "ROUND_1",
+      message: `PRECHECK PASS — ${gateResult.callable.length} models callable. Dispatching sequentially.`,
+      now: now(),
+      agents,
+    });
+    return row;
+  }
+
+  row.cursor.internalStage = "PREFLIGHT";
+  row.cursor.preflight = patchPreflightStep(row.cursor.preflight, { ...pending, status: "RUNNING" });
+  if (pending.memberId) {
+    row.cursor.currentMemberId = pending.memberId;
+    row.cursor.currentModelId = pending.modelId ?? null;
+    agents[pending.memberId] = {
+      state: "RUNNING",
+      attempt: 0,
+      maxAttempts: PROVIDER_ATTEMPTS,
+      error: null,
+      detail: "PROBING",
+    };
+  }
+  patchSnapshot(row, {
+    status: "PREPARING",
+    stage: "PREPARING",
+    message: `PRECHECK — ${pending.label}`,
+    now: now(),
+    agents,
+  });
+
+  if (pending.kind === "PROVIDER") {
+    row.cursor.preflight = patchPreflightStep(row.cursor.preflight, {
+      ...pending,
+      status: "PASS",
+      latencyMs: 0,
+      error: null,
+      httpStatus: null,
+    });
+    patchSnapshot(row, {
+      status: "PREPARING",
+      stage: "PREPARING",
+      message: "PRECHECK — PROVIDER PASS",
+      now: now(),
+      agents,
+    });
+    return row;
+  }
+
+  if (pending.kind === "SUBSCRIPTION") {
+    if (!runtime.subscriptionCheck) {
+      row.cursor.preflight = patchPreflightStep(row.cursor.preflight, {
+        ...pending,
+        status: "SKIPPED",
+        error: "Subscription usage not required for this provider.",
+      });
+      patchSnapshot(row, {
+        status: "PREPARING",
+        stage: "PREPARING",
+        message: "PRECHECK — SUBSCRIPTION SKIPPED",
+        now: now(),
+        agents,
+      });
+      return row;
+    }
+    const limit = consumePreflight(row, "preflight subscription");
+    if (limit) return failRow(row, limit, "PREPARING", now(), false);
+    row.cursor.currentRequestStartedAt = now();
+    const usage = await runtime.subscriptionCheck({
+      provider: row.provider,
+      apiKey: "",
+      nanogptBilling: row.nanogptBilling ?? undefined,
+    });
+    row.cursor.lastProviderResponseAt = now();
+    row.cursor.lastProviderHttpStatus = usage.status;
+    const parsed = parseSubscriptionUsage(null, usage.status);
+    const block = usage.skipped
+      ? null
+      : usage.ok
+        ? subscriptionBlocksRun(parsed, usage.status)
+        : usage.error || "SUBSCRIPTION check failed.";
+    row.cursor.preflight = patchPreflightStep(row.cursor.preflight, {
+      ...pending,
+      status: usage.skipped ? "SKIPPED" : block ? "FAILED" : "PASS",
+      latencyMs: usage.latencyMs,
+      error: block,
+      httpStatus: usage.status,
+    });
+    if (block) {
+      row.output = precheckOutput(boundTask, block);
+      return failRow(row, block, "PREPARING", now(), false);
+    }
+    patchSnapshot(row, {
+      status: "PREPARING",
+      stage: "PREPARING",
+      message: usage.skipped ? "PRECHECK — SUBSCRIPTION SKIPPED" : "PRECHECK — SUBSCRIPTION PASS",
+      now: now(),
+      agents,
+    });
+    return row;
+  }
+
+  if (pending.kind === "CATALOG") {
+    const limit = consumePreflight(row, "preflight catalog");
+    if (limit) return failRow(row, limit, "PREPARING", now(), false);
+    row.cursor.currentRequestStartedAt = now();
+    const catalog = await catalogFn({
+      provider: row.provider,
+      apiKey: "",
+      models: selectedIds,
+      nanogptBilling: row.nanogptBilling ?? undefined,
+    });
+    row.cursor.lastProviderResponseAt = now();
+    if (!catalog.ok) {
+      const error = catalog.error ?? MODEL_UNAVAILABLE;
+      row.cursor.preflight = patchPreflightStep(row.cursor.preflight, {
+        ...pending,
+        status: "FAILED",
+        error,
+      });
+      row.output = precheckOutput(boundTask, error);
+      return failRow(row, error, "PREPARING", now(), false);
+    }
+    row.cursor.catalogOk = true;
+    row.cursor.preflight = patchPreflightStep(row.cursor.preflight, {
+      ...pending,
+      status: "PASS",
+      latencyMs: 0,
+      httpStatus: 200,
+    });
+    for (const id of catalog.missing ?? []) {
+      const member = members.find((item) => item.modelId === id);
+      if (!member) continue;
+      const modelStep = row.cursor.preflight.steps.find((step) => step.memberId === member.memberId);
+      if (!modelStep || modelStep.status !== "WAITING") continue;
+      row.cursor.preflight = patchPreflightStep(row.cursor.preflight, {
+        ...modelStep,
+        status: "FAILED",
+        access: "UNAVAILABLE",
+        error: `${MODEL_UNAVAILABLE}: ${id} is not in the live catalog.`,
+        httpStatus: 404,
+      });
+    }
+    patchSnapshot(row, {
+      status: "PREPARING",
+      stage: "PREPARING",
+      message: "PRECHECK — CATALOG PASS",
+      now: now(),
+      agents,
+    });
+    return row;
+  }
+
+  const member = members.find((item) => item.memberId === pending.memberId);
+  if (!member) {
+    row.cursor.preflight = patchPreflightStep(row.cursor.preflight, {
+      ...pending,
+      status: "FAILED",
+      error: "Unknown member.",
+    });
+    return row;
+  }
+  const limit = consumePreflight(row, `preflight probe ${member.modelId}`);
+  if (limit) return failRow(row, limit, "PREPARING", now(), false);
+  row.cursor.currentMemberId = member.memberId;
+  row.cursor.currentModelId = member.modelId;
+  row.cursor.currentRequestStartedAt = now();
+  const started = Date.now();
+  let status = 200;
+  let error: string | null = null;
+  let body = "";
+  let latency = 0;
+  let requestId: string | null = null;
+  if (runtime.probeModel) {
+    const probe = await runtime.probeModel({
+      provider: row.provider,
+      apiKey: "",
+      model: member.modelId,
+      nanogptBilling: row.nanogptBilling ?? undefined,
+    });
+    status = probe.status;
+    error = probe.error ?? null;
+    body = probe.body ?? "";
+    latency = probe.latencyMs;
+    requestId = probe.headers?.["x-request-id"] ?? null;
+  } else {
+    const access = await accessFn({
+      provider: row.provider,
+      apiKey: "",
+      models: [member.modelId],
+      nanogptBilling: row.nanogptBilling ?? undefined,
+    });
+    const interpreted = interpretAccessForModel(member.modelId, access);
+    status = interpreted.access === "VERIFIED_AVAILABLE" ? 200 : 403;
+    error = interpreted.error;
+    latency = Date.now() - started;
+    const callable = modelProbeCallable(interpreted.access);
+    row.cursor.lastProviderResponseAt = now();
+    row.cursor.lastProviderHttpStatus = status;
+    row.cursor.modelHealth[member.modelId] = recordHealth(row.cursor.modelHealth[member.modelId], {
+      modelId: member.modelId,
+      at: now(),
+      kind: "probe",
+      outcome: callable ? "success" : "failure",
+      latencyMs: latency,
+      httpStatus: status,
+    });
+    agents[member.memberId] = {
+      state: callable ? "WAITING" : "FAILED",
+      attempt: 0,
+      maxAttempts: PROVIDER_ATTEMPTS,
+      error: callable ? null : error,
+      detail: callable ? "VERIFIED" : "FAILED",
+      latencyMs: latency,
+      httpStatus: status,
+    };
+    row.cursor.preflight = patchPreflightStep(row.cursor.preflight, {
+      ...pending,
+      status: callable ? "PASS" : "FAILED",
+      access: interpreted.access,
+      latencyMs: latency,
+      error: callable ? null : error || `${member.modelId} ${interpreted.access}`,
+      httpStatus: status,
+    });
+    patchSnapshot(row, {
+      status: "PREPARING",
+      stage: "PREPARING",
+      message: callable
+        ? `PRECHECK — ${member.label} VERIFIED ${latency}ms`
+        : `PRECHECK — ${member.label} FAILED ${interpreted.access}`,
+      now: now(),
+      agents,
+    });
+    return row;
+  }
+  row.cursor.lastProviderResponseAt = now();
+  row.cursor.lastProviderHttpStatus = status;
+  const access = accessFromProbe({ status, error, body, inCatalog: true });
+  const callable = modelProbeCallable(access);
+  row.cursor.modelHealth[member.modelId] = recordHealth(row.cursor.modelHealth[member.modelId], {
+    modelId: member.modelId,
+    at: now(),
+    kind: "probe",
+    outcome: callable ? "success" : status === 429 ? "rate_limited" : status === 0 ? "timeout" : "failure",
+    latencyMs: latency,
+    httpStatus: status,
+  });
+  agents[member.memberId] = {
+    state: callable ? "WAITING" : "FAILED",
+    attempt: 0,
+    maxAttempts: PROVIDER_ATTEMPTS,
+    error: callable ? null : error,
+    detail: callable ? "VERIFIED" : "FAILED",
+    latencyMs: latency,
+    httpStatus: status,
+  };
+  row.cursor.preflight = patchPreflightStep(row.cursor.preflight, {
+    ...pending,
+    status: callable ? "PASS" : "FAILED",
+    access,
+    latencyMs: latency,
+    error: callable ? null : error || `${member.modelId} ${access}`,
+    httpStatus: status,
+    requestId,
+  });
+  patchSnapshot(row, {
+    status: "PREPARING",
+    stage: "PREPARING",
+    message: callable
+      ? `PRECHECK — ${member.label} VERIFIED ${latency}ms`
+      : `PRECHECK — ${member.label} FAILED ${access}`,
+    now: now(),
+    agents,
+  });
+  void signal;
   return row;
 }
 
@@ -603,20 +1024,32 @@ export async function advanceDurableStep(input: {
   runtime: CouncilRuntime;
   signal?: AbortSignal;
   now?: () => string;
+  nowMs?: number;
 }): Promise<DurableStepResult> {
   const now = () => nowIso(input.now);
+  const nowMs = input.nowMs ?? Date.now();
   let row = input.row;
+  row.cursor = hydrateCursor(row.cursor);
+  if (stallAfterIdle({ lastActivityAt: row.cursor.lastProviderResponseAt ?? row.lastProgressAt, nowMs })) {
+    row.cursor.stallReason = String(row.cursor.internalStage || "SCHEDULER_WAIT");
+  } else {
+    row.cursor.stallReason = null;
+  }
   if (row.cursor.phase === "QUEUED" || !row.cursor.packedText) {
-    row.cursor = { ...emptyCursor(), ...row.cursor, phase: "PREPARING" };
+    row.cursor = hydrateCursor({ ...row.cursor, phase: "PREPARING", internalStage: "PREFLIGHT" });
     patchSnapshot(row, { status: "PREPARING", stage: "PREPARING", message: "Preparing the evidence packet…", now: now() });
     row = await prepare(row, input.runtime, now);
-    return { row, didProviderCall: true, terminal: isTerminalStatus(row.status) };
+    return { row, didProviderCall: false, terminal: isTerminalStatus(row.status) };
   }
   if (row.cancelRequested || isCancelledSignal(input.signal)) {
     return { row: cancelRow(row, now()), didProviderCall: false, terminal: true };
   }
   if (isTerminalStatus(row.status)) {
     return { row, didProviderCall: false, terminal: true };
+  }
+  if (!row.cursor.accessOk || (row.cursor.preflight && nextPreflightStep(row.cursor.preflight))) {
+    row = await advancePreflight(row, input.runtime, now, input.signal);
+    return { row, didProviderCall: true, terminal: isTerminalStatus(row.status) };
   }
 
   const members = ensureMembers(row.members);

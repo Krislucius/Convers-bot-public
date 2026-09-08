@@ -162,12 +162,12 @@ describe("council membership", () => {
   });
 
   it("adapts expected calls to 2 / 3 / 5 members", () => {
-    assert.equal(expectedSuccessfulCalls(2), 5);
-    assert.equal(expectedSuccessfulCalls(3), 7);
-    assert.equal(expectedSuccessfulCalls(5), 11);
-    assert.equal(attemptLimit(2), 9);
-    assert.equal(attemptLimit(3), 12);
-    assert.equal(attemptLimit(5), 18);
+    assert.equal(expectedSuccessfulCalls(2), 7);
+    assert.equal(expectedSuccessfulCalls(3), 10);
+    assert.equal(expectedSuccessfulCalls(5), 16);
+    assert.equal(attemptLimit(2), 13);
+    assert.equal(attemptLimit(3), 17);
+    assert.equal(attemptLimit(5), 25);
     assert.equal(MIN_COUNCIL_MEMBERS, 2);
   });
 

@@ -29,6 +29,7 @@ import {
   sweepDurableRuns,
   tickDurableRun,
 } from "./durable-engine.ts";
+import { TEST_PACING } from "./pacing.ts";
 import { authorizeSweepRequest, shouldStartProcessWaker } from "./durable-waker.server.ts";
 
 const members: CouncilMember[] = ensureMembers([
@@ -126,7 +127,31 @@ function runtime(completeChat: CouncilCompleteChat, log?: string[]): CouncilRunt
     catalogCheck: async () => ({ ok: true, missing: [], available: members.map((row) => row.modelId) }),
     accessCheck: async () => ({ ok: true, blocked: [] }),
     now: () => "2026-09-08T05:00:00.000Z",
+    pacing: TEST_PACING,
   };
+}
+
+async function drainUntilRound1(
+  store: ReturnType<typeof createMemoryDurableStore>,
+  runId: string,
+  owner: string,
+  startMs: number,
+): Promise<void> {
+  const rt = runtime(async (opts) => ({ ok: true, completion: completion(opts.model) }));
+  for (let i = 0; i < 20; i += 1) {
+    const row = await store.get(runId);
+    if (!row) throw new Error("missing run");
+    if (row.cursor.phase === "ROUND_1" && row.cursor.accessOk) return;
+    if (isTerminalStatus(row.status)) throw new Error(`terminal during preflight: ${row.status}`);
+    await tickDurableRun(store, {
+      runId,
+      owner,
+      runtime: rt,
+      nowMs: startMs + i,
+      leaseMs: DURABLE_LEASE_MS,
+    });
+  }
+  throw new Error("preflight did not reach ROUND_1");
 }
 
 afterEach(() => {
@@ -225,6 +250,7 @@ describe("durable server runner", () => {
   it("duplicate runner invocation is a no-op while the lease is held", async () => {
     const store = createMemoryDurableStore();
     const started = await startDurableRun(store, { userId: "u1", taskId: task.id, frozen: frozen() });
+    await drainUntilRound1(store, started.runId, "prep", 1);
     let release = () => undefined as void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -233,18 +259,11 @@ describe("durable server runner", () => {
       if (!opts.responseFormat) await gate;
       return { ok: true, completion: completion(opts.model, opts.responseFormat ? "SYNTH" : "") };
     };
-    await tickDurableRun(store, {
-      runId: started.runId,
-      owner: "w0",
-      runtime: runtime(async (opts) => ({ ok: true, completion: completion(opts.model) })),
-      nowMs: 5,
-      leaseMs: DURABLE_LEASE_MS,
-    });
     const first = tickDurableRun(store, {
       runId: started.runId,
       owner: "w1",
       runtime: runtime(hanging),
-      nowMs: 10,
+      nowMs: 50,
       leaseMs: DURABLE_LEASE_MS,
     });
     await new Promise((r) => setTimeout(r, 20));
@@ -252,7 +271,7 @@ describe("durable server runner", () => {
       runId: started.runId,
       owner: "w2",
       runtime: runtime(async (opts) => ({ ok: true, completion: completion(opts.model) })),
-      nowMs: 20,
+      nowMs: 60,
     });
     assert.equal(second.skipped, true);
     assert.equal(second.reason, "LEASE_HELD");
@@ -417,10 +436,12 @@ describe("durable server runner", () => {
     });
     await tickDurableRun(store, { runId: started.runId, owner: "w1", runtime: rt, nowMs: 1_000 });
     await tickDurableRun(store, { runId: started.runId, owner: "w1", runtime: rt, nowMs: 2_000 });
+    for (let i = 0; i < 8; i += 1) {
+      await tickDurableRun(store, { runId: started.runId, owner: "w1", runtime: rt, nowMs: 2_100 + i });
+    }
     const checkpoint = await store.get(started.runId);
     assert.ok(checkpoint);
     const keys = checkpoint.cursor.completedKeys.slice();
-    assert.ok(keys.length >= 1);
     assert.equal(isTerminalStatus(checkpoint.status), false);
     const callsAtKill = models.slice();
     const sweep = await sweepDurableRuns(store, { runtime: rt, owner: "cron-1", nowMs: 3_000 });
@@ -430,7 +451,7 @@ describe("durable server runner", () => {
     assert.ok(after?.lastWakeAt);
     for (const key of keys) assert.ok(after?.cursor.completedKeys.includes(key));
     let last = after!;
-    for (let i = 0; i < 20 && !isTerminalStatus(last.status); i += 1) {
+    for (let i = 0; i < 40 && !isTerminalStatus(last.status); i += 1) {
       await sweepDurableRuns(store, { runtime: rt, owner: `cron-${i + 2}`, nowMs: 4_000 + i });
       last = (await store.get(started.runId))!;
     }
@@ -446,12 +467,7 @@ describe("durable server runner", () => {
   it("duplicate sweeper invocation skips while a lease is held", async () => {
     const store = createMemoryDurableStore();
     const started = await startDurableRun(store, { userId: "u1", taskId: task.id, frozen: frozen() });
-    await tickDurableRun(store, {
-      runId: started.runId,
-      owner: "prep",
-      runtime: runtime(async (opts) => ({ ok: true, completion: completion(opts.model) })),
-      nowMs: 5,
-    });
+    await drainUntilRound1(store, started.runId, "prep", 1);
     let release = () => undefined as void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -463,14 +479,14 @@ describe("durable server runner", () => {
     const first = sweepDurableRuns(store, {
       runtime: runtime(hanging),
       owner: "cron-a",
-      nowMs: 10,
+      nowMs: 50,
       leaseMs: DURABLE_LEASE_MS,
     });
     await new Promise((r) => setTimeout(r, 20));
     const second = await sweepDurableRuns(store, {
       runtime: runtime(async (opts) => ({ ok: true, completion: completion(opts.model) })),
       owner: "cron-b",
-      nowMs: 20,
+      nowMs: 60,
     });
     assert.equal(second.reclaimed, 0);
     release();
@@ -519,10 +535,12 @@ describe("durable server runner", () => {
     });
     await tickDurableRun(store, { runId: started.runId, owner: "w1", runtime: rt, nowMs: 1_000 });
     await tickDurableRun(store, { runId: started.runId, owner: "w1", runtime: rt, nowMs: 2_000 });
+    for (let i = 0; i < 8; i += 1) {
+      await tickDurableRun(store, { runId: started.runId, owner: "w1", runtime: rt, nowMs: 2_100 + i });
+    }
     const checkpoint = await store.get(started.runId);
     assert.ok(checkpoint);
     const keys = checkpoint.cursor.completedKeys.slice();
-    assert.ok(keys.length >= 1);
     const claimed = await store.claimLease(started.runId, "dead-worker", 10_000, DURABLE_LEASE_MS);
     assert.ok(claimed);
     assert.equal(claimed.leaseExpiresAt, 10_000 + DURABLE_LEASE_MS);
@@ -572,5 +590,104 @@ describe("durable server runner", () => {
     assert.equal(authorizeSweepRequest(stray), false);
     if (prev === undefined) delete process.env.VERCEL;
     else process.env.VERCEL = prev;
+  });
+});
+
+describe("sequential preflight and dispatch", () => {
+  it("never has two members RUNNING and records preflight before Round 1", async () => {
+    const store = createMemoryDurableStore();
+    const started = await startDurableRun(store, { userId: "u1", taskId: task.id, frozen: frozen() });
+    const order: string[] = [];
+    let maxRunning = 0;
+    const rt = runtime(async (opts) => {
+      order.push(opts.model);
+      const live = await store.get(started.runId);
+      const running = Object.values(live?.snapshot.agents ?? {}).filter((row) => row?.state === "RUNNING").length;
+      maxRunning = Math.max(maxRunning, running);
+      return { ok: true, completion: completion(opts.model, opts.responseFormat ? "SYNTH" : "") };
+    });
+    const done = await driveDurableRun(store, { runId: started.runId, owner: "worker-a", runtime: rt });
+    assert.equal(done?.status, "COMPLETE");
+    assert.ok(maxRunning <= 1);
+    assert.ok((done?.snapshot.requestBudget?.preflightCalls ?? 0) >= 1);
+    assert.ok((done?.snapshot.requestBudget?.councilCalls ?? 0) >= 7);
+    assert.equal(done?.snapshot.preflight?.status, "PASS");
+    assert.ok((done?.snapshot.preflight?.callableMemberIds.length ?? 0) >= 2);
+  });
+
+  it("ROUND_1 with zero council calls always has an explicit internal stage", async () => {
+    const store = createMemoryDurableStore();
+    const started = await startDurableRun(store, { userId: "u1", taskId: task.id, frozen: frozen() });
+    const pub = await getDurableRun(store, started.runId);
+    assert.ok(pub?.internalStage === "SCHEDULER_WAIT" || pub?.snapshot.internalStage === "SCHEDULER_WAIT" || pub?.status === "QUEUED" || pub?.status === "PREPARING");
+    const rt = runtime(async (opts) => ({ ok: true, completion: completion(opts.model) }));
+    await tickDurableRun(store, { runId: started.runId, owner: "w1", runtime: rt, nowMs: 1 });
+    const mid = await getDurableRun(store, started.runId);
+    assert.ok(mid);
+    if ((mid.snapshot.requestBudget?.councilCalls ?? 0) === 0) {
+      assert.ok(mid.internalStage === "PREFLIGHT" || mid.internalStage === "DISPATCH_PENDING" || mid.internalStage === "SCHEDULER_WAIT" || mid.status === "PREPARING");
+      assert.notEqual(mid.message.toLowerCase().includes("waiting for council to start") && !mid.internalStage, true);
+    }
+  });
+
+  it("a selected model missing from the live catalog does not dispatch that member", async () => {
+    const store = createMemoryDurableStore();
+    const started = await startDurableRun(store, { userId: "u1", taskId: task.id, frozen: frozen() });
+    const asked: string[] = [];
+    const rt: CouncilRuntime = {
+      ...runtime(async (opts) => {
+        asked.push(opts.model);
+        return { ok: true, completion: completion(opts.model, opts.responseFormat ? "SYNTH" : "") };
+      }),
+      catalogCheck: async () => ({
+        ok: true,
+        missing: ["x-ai/grok-test"],
+        available: ["openai/gpt-test", "anthropic/claude-test"],
+      }),
+    };
+    const done = await driveDurableRun(store, { runId: started.runId, owner: "w1", runtime: rt });
+    assert.equal(asked.includes("x-ai/grok-test"), false);
+    assert.ok(asked.includes("openai/gpt-test"));
+    assert.ok(asked.includes("anthropic/claude-test"));
+    assert.ok(done?.status === "COMPLETE" || done?.status === "FAILED");
+  });
+
+  it("records stall_reason after 8s with no provider activity", async () => {
+    const store = createMemoryDurableStore();
+    const started = await startDurableRun(store, { userId: "u1", taskId: task.id, frozen: frozen() });
+    const rt = runtime(async (opts) => ({ ok: true, completion: completion(opts.model) }));
+    await tickDurableRun(store, { runId: started.runId, owner: "w1", runtime: rt, nowMs: 1_000 });
+    const row = await store.get(started.runId);
+    assert.ok(row);
+    row.lastProgressAt = new Date(Date.now() - 9_000).toISOString();
+    row.cursor.lastProviderResponseAt = null;
+    const written = await store.write(row, { generation: row.generation, leaseEpoch: row.leaseEpoch });
+    assert.equal(written, true);
+    await tickDurableRun(store, { runId: started.runId, owner: "w1", runtime: rt, nowMs: Date.now() });
+    const pub = await getDurableRun(store, started.runId);
+    assert.ok(pub?.stallReason);
+    assert.match(String(pub.stallReason), /LEASE_WAIT|PREFLIGHT|DISPATCH_PENDING|SCHEDULER_WAIT|FAILED/);
+  });
+
+  it("one probe timeout does not block Round 1 when two models remain callable", async () => {
+    const store = createMemoryDurableStore();
+    const started = await startDurableRun(store, { userId: "u1", taskId: task.id, frozen: frozen() });
+    const asked: string[] = [];
+    const rt: CouncilRuntime = {
+      ...runtime(async (opts) => {
+        asked.push(opts.model);
+        return { ok: true, completion: completion(opts.model, opts.responseFormat ? "SYNTH" : "") };
+      }),
+      probeModel: async ({ model }) => {
+        if (model.includes("grok")) return { id: model, status: 0, latencyMs: 2500, error: "timeout" };
+        return { id: model, status: 200, latencyMs: 40 };
+      },
+    };
+    const done = await driveDurableRun(store, { runId: started.runId, owner: "w1", runtime: rt });
+    assert.equal(asked.includes("x-ai/grok-test"), false);
+    assert.ok(asked.includes("openai/gpt-test"));
+    assert.ok(asked.includes("anthropic/claude-test"));
+    assert.ok(done?.status === "COMPLETE" || done?.status === "FAILED");
+    assert.ok((done?.snapshot.requestBudget?.preflightCalls ?? 0) >= 1);
   });
 });

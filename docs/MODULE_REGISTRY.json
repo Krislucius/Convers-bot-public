@@ -176,7 +176,7 @@
       "implementation_path": "src/lib/council/orchestrate.ts",
       "architecture_revision": "CB-ARCH-20260908-001",
       "responsibilities": [
-        "protocol engine for CREATE REVIEW DECIDE: verified selected-model preflight, catalog fingerprint must match run provider/mode, request budget, member_id identity (role may repeat), DISPATCHED_MODEL_ID integrity, NanoGPT billing freeze, round1, round2, synthesis fallback or PARTIAL RESULT, packet"
+        "protocol engine for CREATE REVIEW DECIDE: live START PREFLIGHT (provider/subscription/catalog/model probes), sequential dispatch concurrency 1, catalog fingerprint must match run provider/mode, request budget 3N+1 / 4N+5, member_id identity (role may repeat), DISPATCHED_MODEL_ID integrity, NanoGPT billing freeze, round1, round2, synthesis fallback or PARTIAL RESULT, packet, stall diagnosis, recommendation health"
       ],
       "dependencies": [
         "council.protocol",
@@ -197,13 +197,15 @@
         "server-owned Council execution",
         "START persists run_id and frozen provider/members/context identity then returns",
         "DB-backed leases and checkpoints",
-        "one provider call per tick, resumable after interruption",
+        "one provider call per tick, sequential START PREFLIGHT then round members",
+        "resumable after interruption",
         "browser is reconnect-only",
         "STOP cancel flag, RESTART new run_id, one active run per task",
         "discard late writes from old run_id/generation/lease epoch",
         "independent Vercel Cron sweeper",
         "reclaim expired or missing leases without a browser",
-        "last_wake_at and next_recovery_deadline"
+        "last_wake_at and next_recovery_deadline",
+        "persist preflight, current_member_id, stall_reason, PREFLIGHT/COUNCIL/RETRY accounting"
       ],
       "dependencies": [
         "council.orchestrator",
@@ -241,6 +243,8 @@
         "START/STOP/RESTART server RPCs",
         "RUNNING IN BACKGROUND reconnect UI",
         "poll persisted stage, member states, started_at, last_progress_at",
+        "PRECHECK panel PROVIDER/SUBSCRIPTION/CATALOG/MODEL PASS|FAILED",
+        "stall_reason / internal_stage, preflight/council/retry counts",
         "last_wake_at / lease / next recovery deadline"
       ],
       "dependencies": [

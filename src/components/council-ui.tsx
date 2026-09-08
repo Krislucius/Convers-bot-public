@@ -110,7 +110,8 @@ export function StatusPill({ status }: { status: TaskStatus | CouncilStatus | st
     status === "ACCESSIBLE" ||
     status === "IMPORTED" ||
     status === "CACHE_HIT" ||
-    status === "DONE"
+    status === "DONE" ||
+    status === "VERIFIED"
       ? "text-ok"
       : status === "FAILED" ||
           status === "BLOCKED" ||

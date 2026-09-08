@@ -26,11 +26,13 @@ import {
 } from "./provider-error.ts";
 import {
   DEFAULT_NANOGPT_BILLING,
+  NANOGPT_SUBSCRIPTION_USAGE_URL,
   classifyNanoGptError,
   nanogptEndpoints,
   normalizeNanoGptBilling,
   type NanoGptBillingMode,
 } from "./nano-billing.ts";
+import { parseRetryAfter } from "./pacing.ts";
 
 const PROVIDER = "nanogpt" as const;
 const API_LABEL = "NanoGPT";
@@ -155,6 +157,17 @@ export function transport(mode: NanoGptBillingMode = DEFAULT_NANOGPT_BILLING) {
         },
         15000,
       ),
+    usageCheck: (apiKey: string) =>
+      billing === "subscription"
+        ? probeGet(NANOGPT_SUBSCRIPTION_USAGE_URL, apiKey, 15000)
+        : Promise.resolve({
+            path: "",
+            status: 0,
+            latencyMs: 0,
+            body: "",
+            headers: {},
+            error: "skipped",
+          }),
   };
 }
 
@@ -218,6 +231,30 @@ export async function accessCheck(opts: {
   return accessCheckWith(adapter(normalizeNanoGptBilling(opts.nanogptBilling)), opts.apiKey, opts.models);
 }
 
+export async function subscriptionUsage(apiKey: string, billing: NanoGptBillingMode = DEFAULT_NANOGPT_BILLING) {
+  const mode = normalizeNanoGptBilling(billing);
+  if (mode !== "subscription") {
+    return { ok: true, skipped: true as const, status: 0, latencyMs: 0, body: "" };
+  }
+  const key = sanitizeApiKey(apiKey, PROVIDER);
+  if (!key) {
+    return { ok: false, skipped: false as const, status: 401, latencyMs: 0, body: "", error: `${API_LABEL} is not connected.` };
+  }
+  const probe = await probeGet(NANOGPT_SUBSCRIPTION_USAGE_URL, key, 15000);
+  if (probe.status === 404) {
+    return { ok: true, skipped: true as const, status: 404, latencyMs: probe.latencyMs, body: probe.body };
+  }
+  const ok = probe.status >= 200 && probe.status < 300;
+  return {
+    ok,
+    skipped: false as const,
+    status: probe.status,
+    latencyMs: probe.latencyMs,
+    body: probe.body,
+    error: ok ? undefined : probe.error || `HTTP ${probe.status}`,
+  };
+}
+
 export async function complete(opts: {
   apiKey: string;
   model: string;
@@ -260,6 +297,8 @@ export async function complete(opts: {
     payload = null;
   }
   const providerMessage = extractErrorMessage(payload, res.status);
+  const retryAfter = res.headers.get("retry-after");
+  const retryAfterMs = parseRetryAfter(retryAfter);
   if (res.status === 401 || res.status === 403) {
     const code = classifyNanoGptError({ billing, status: res.status, raw: providerMessage });
     if (code === "MODEL_NOT_INCLUDED" || code === "MODEL_UNAVAILABLE") {
@@ -273,6 +312,8 @@ export async function complete(opts: {
           raw: providerMessage,
           detail: providerMessage,
           code,
+          retryAfter,
+          retryAfterMs,
         }),
       );
     }
@@ -290,6 +331,8 @@ export async function complete(opts: {
         raw: providerMessage,
         detail: providerMessage,
         code,
+        retryAfter,
+        retryAfterMs,
       }),
     );
   }
