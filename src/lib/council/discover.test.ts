@@ -598,6 +598,21 @@ describe("current connection view", () => {
     assert.equal(view.stale?.models.length, 616);
     assert.equal(availableModels(view.stale?.models ?? []).length, 6);
   });
+
+  it("never reports CONNECTED without a stored credential", () => {
+    const catalog = buildDiscovery(
+      "nanogpt",
+      parseCatalogBody(nanoCatalog),
+      [
+        { id: "openai/gpt-5", status: 200, body: "{}" },
+        { id: "anthropic/claude-sonnet-4", status: 200, body: "{}" },
+      ],
+    );
+    const view = currentConnectionView(true, catalog, false);
+    assert.equal(view.status, "NOT CONNECTED");
+    assert.equal(view.catalog, null);
+    assert.equal(view.discovered, 0);
+  });
 });
 
 describe("discoverAccountWith catalog parse and auth", () => {

@@ -180,6 +180,22 @@ describe("Save connection acceptance", () => {
     assert.equal(saveMayConnect(out.stages), false);
   });
 
+  it("reload CONNECTED without a stored credential is FAILED", async () => {
+    const h = harness({
+      reload: () =>
+        publicSettings({
+          nanogpt: { saved: false, masked: "" },
+          credentialPresent: false,
+          lastTestOk: true,
+          lastTestLog: passLog("save-1"),
+        }),
+    });
+    const out = await h.run();
+    assert.equal(out.result.status, "FAILED");
+    assert.match(out.result.error ?? "", /^RELOAD:/);
+    assert.equal(saveMayConnect(out.stages), false);
+  });
+
   it("FAILED catalog never reports CONNECTED", async () => {
     const h = harness({
       report: {

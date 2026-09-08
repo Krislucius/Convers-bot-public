@@ -200,7 +200,13 @@ export function reloadStage(
   if (!sameIdSet(loaded.selectedModelIds, expected.selectedIds)) {
     return { stage: "RELOAD", ok: false, error: "Selected models were not preserved." };
   }
-  const view = currentConnectionView(loaded.lastTestOk, loaded.catalog);
+  if (!slotFor(loaded, expected.provider).saved) {
+    return { stage: "RELOAD", ok: false, error: "Reloaded account has no stored credential." };
+  }
+  if (loaded.credentialPresent === false) {
+    return { stage: "RELOAD", ok: false, error: "Reloaded account has no stored credential." };
+  }
+  const view = currentConnectionView(loaded.lastTestOk, loaded.catalog, true);
   const meta = logMeta(loaded.lastTestLog);
   if (loaded.lastTestOk !== true || view.status !== "CONNECTED") {
     return { stage: "RELOAD", ok: false, error: "Connection status is not CONNECTED after reload." };

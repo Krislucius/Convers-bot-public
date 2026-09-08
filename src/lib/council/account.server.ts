@@ -1,7 +1,7 @@
 import { getSql } from "@/lib/db";
 import { runSerialQueries } from "./hydrate";
 import { maskKey, mergeStoredApiKeys, sanitizeApiKey } from "./api-key";
-import { DEFAULT_MAX_COST_USD, DEFAULT_PROVIDER, isProviderId, normalizeProviderId } from "./providers";
+import { DEFAULT_MAX_COST_USD, DEFAULT_PROVIDER, emptyKeySlot, isProviderId, normalizeProviderId, type KeySlot } from "./providers";
 import { membersFromIds, ensureMembers } from "./members";
 import { pruneToAvailable } from "./discover";
 import { isCouncilRole, normalizeAgentKey } from "./roles";
@@ -12,6 +12,14 @@ import type { ProviderId } from "./types";
 import type { ChatSource, HistoryMessage } from "@/lib/history/types";
 import type { FileKind } from "./files";
 import { normalizeNanoGptBilling, type NanoGptBillingMode } from "./nano-billing";
+import {
+  parseCredentialBag,
+  stampSelectedValidation,
+  upsertCredentialMeta,
+  type ProviderCredentialBag,
+} from "./credential";
+import { isEncryptedSecret, openSecret, sealSecret } from "./credential-crypto";
+import { credentialEncryptionSecret } from "./credential-secret.server";
 
 type SettingsRow = {
   user_id: string;
@@ -30,6 +38,7 @@ type SettingsRow = {
   last_test_at?: string | null;
   last_test_ok?: boolean | null;
   nanogpt_billing_mode?: string | null;
+  provider_credentials?: unknown;
 };
 
 function asString(value: unknown, fallback = ""): string {
@@ -97,6 +106,78 @@ function asMembers(value: unknown): CouncilMember[] | null {
   return rows.length ? ensureMembers(rows) : null;
 }
 
+function wrappingSecret(): string {
+  return credentialEncryptionSecret();
+}
+
+function nextSealed(mergedPlain: string, currentBlob: string | undefined, clearingThis: boolean, wrap: string): string {
+  if (clearingThis) return "";
+  if (mergedPlain) return sealSecret(mergedPlain, wrap);
+  const blob = (currentBlob ?? "").trim();
+  if (!blob) return "";
+  if (isEncryptedSecret(blob)) return blob;
+  return sealSecret(blob, wrap);
+}
+
+function plaintextKey(stored: string | undefined, provider: ProviderId): string {
+  const opened = openSecret(stored ?? "", wrappingSecret());
+  return sanitizeApiKey(opened, provider);
+}
+
+function publicSlot(
+  stored: string | undefined,
+  provider: ProviderId,
+  bag: ProviderCredentialBag,
+  selected: boolean,
+  lastTestOk: boolean | null,
+  lastTestAt: string | null,
+): KeySlot {
+  const blob = (stored ?? "").trim();
+  const present = Boolean(blob);
+  if (!present) return emptyKeySlot();
+  const meta = bag[provider];
+  const lastValidation = selected
+    ? lastTestOk === true
+      ? "CONNECTED"
+      : lastTestOk === false
+        ? "FAILED"
+        : (meta?.lastValidation ?? "NOT_TESTED")
+    : (meta?.lastValidation ?? "NOT_TESTED");
+  const lastValidatedAt = selected ? lastTestAt ?? meta?.lastValidatedAt ?? null : meta?.lastValidatedAt ?? null;
+  if (meta?.masked) {
+    return {
+      saved: true,
+      present: true,
+      masked: meta.masked,
+      last4: meta.last4,
+      fingerprint: meta.fingerprint,
+      lastValidatedAt,
+      lastValidation,
+    };
+  }
+  const plain = plaintextKey(blob, provider);
+  if (plain) {
+    return {
+      saved: true,
+      present: true,
+      masked: maskKey(plain, provider),
+      last4: plain.slice(-4),
+      fingerprint: "",
+      lastValidatedAt,
+      lastValidation,
+    };
+  }
+  return {
+    saved: true,
+    present: true,
+    masked: isEncryptedSecret(blob) ? "•••• saved" : "",
+    last4: "",
+    fingerprint: "",
+    lastValidatedAt,
+    lastValidation,
+  };
+}
+
 function selectedIdsFromRow(row: SettingsRow | null): string[] {
   const stored = asStringIds(row?.selected_model_ids);
   const catalog = asJson<DiscoverySnapshot | null>(row?.model_catalog, null);
@@ -108,6 +189,20 @@ function publicSettings(row: SettingsRow | null): AccountSettingsPublic {
   const provider = normalizeProviderId(row?.provider);
   const catalog = asJson<DiscoverySnapshot | null>(row?.model_catalog, null);
   const selectedModelIds = selectedIdsFromRow(row);
+  const bag = parseCredentialBag(row?.provider_credentials);
+  const lastTestOk = row?.last_test_ok ?? null;
+  const lastTestAt = row?.last_test_at ?? null;
+  const nanogpt = publicSlot(row?.nanogpt_key, "nanogpt", bag, provider === "nanogpt", lastTestOk, lastTestAt);
+  const openrouter = publicSlot(row?.openrouter_key, "openrouter", bag, provider === "openrouter", lastTestOk, lastTestAt);
+  const openrusrouter = publicSlot(
+    row?.openrusrouter_key,
+    "openrusrouter",
+    bag,
+    provider === "openrusrouter",
+    lastTestOk,
+    lastTestAt,
+  );
+  const selectedSlot = provider === "openrouter" ? openrouter : provider === "openrusrouter" ? openrusrouter : nanogpt;
   return {
     provider,
     selectedModelIds,
@@ -118,21 +213,13 @@ function publicSettings(row: SettingsRow | null): AccountSettingsPublic {
     claudeModel: row?.claude_model?.trim() || "",
     maxCostUsd: Number(row?.max_cost_usd) > 0 ? Number(row?.max_cost_usd) : DEFAULT_MAX_COST_USD,
     lastTestLog: row?.last_test_log ?? "",
-    lastTestAt: row?.last_test_at ?? null,
-    lastTestOk: row?.last_test_ok ?? null,
+    lastTestAt,
+    lastTestOk,
     nanogptBilling: normalizeNanoGptBilling(row?.nanogpt_billing_mode),
-    nanogpt: {
-      saved: Boolean(sanitizeApiKey(row?.nanogpt_key ?? "", "nanogpt")),
-      masked: row?.nanogpt_key ? maskKey(row.nanogpt_key, "nanogpt") : "",
-    },
-    openrouter: {
-      saved: Boolean(sanitizeApiKey(row?.openrouter_key ?? "", "openrouter")),
-      masked: row?.openrouter_key ? maskKey(row.openrouter_key, "openrouter") : "",
-    },
-    openrusrouter: {
-      saved: Boolean(sanitizeApiKey(row?.openrusrouter_key ?? "", "openrusrouter")),
-      masked: row?.openrusrouter_key ? maskKey(row.openrusrouter_key, "openrusrouter") : "",
-    },
+    credentialPresent: selectedSlot.saved,
+    nanogpt,
+    openrouter,
+    openrusrouter,
   };
 }
 
@@ -151,16 +238,16 @@ export async function resolveStoredKey(
   provider: ProviderId,
   override = "",
 ): Promise<string> {
-  const sanitized = sanitizeApiKey(override, provider);
-  if (sanitized) return sanitized;
   const row = await settingsRow(userId);
-  const stored =
+  const storedBlob =
     provider === "openrouter"
       ? row?.openrouter_key
       : provider === "openrusrouter"
         ? row?.openrusrouter_key
         : row?.nanogpt_key;
-  return sanitizeApiKey(stored ?? "", provider);
+  const stored = plaintextKey(storedBlob, provider);
+  if (stored) return stored;
+  return sanitizeApiKey(override, provider);
 }
 
 export async function saveSettings(
@@ -185,22 +272,39 @@ export async function saveSettings(
   const sql = await getSql();
   const current = await settingsRow(userId);
   const provider: ProviderId = isProviderId(input.provider) ? input.provider : DEFAULT_PROVIDER;
+  const clearing = Boolean(input.clearKey);
   const merged = mergeStoredApiKeys(
     {
-      nanogptKey: current?.nanogpt_key ?? "",
-      openrouterKey: current?.openrouter_key ?? "",
-      openrusrouterKey: current?.openrusrouter_key ?? "",
+      nanogptKey: plaintextKey(current?.nanogpt_key, "nanogpt"),
+      openrouterKey: plaintextKey(current?.openrouter_key, "openrouter"),
+      openrusrouterKey: plaintextKey(current?.openrusrouter_key, "openrusrouter"),
     },
     { provider, apiKey: input.apiKey, clearKey: input.clearKey },
   );
-  const nanogptKey = merged.nanogptKey;
-  const openrouterKey = merged.openrouterKey;
-  const openrusrouterKey = merged.openrusrouterKey;
-  const catalog =
-    input.catalog === undefined ? asJson<DiscoverySnapshot | null>(current?.model_catalog, null) : input.catalog;
-  const rawSelected = Array.isArray(input.selectedModelIds)
-    ? [...new Set(input.selectedModelIds.map((id) => id.trim()).filter(Boolean))]
-    : selectedIdsFromRow(current);
+  const wrap = wrappingSecret();
+  const nanogptKey = nextSealed(merged.nanogptKey, current?.nanogpt_key, clearing && provider === "nanogpt", wrap);
+  const openrouterKey = nextSealed(
+    merged.openrouterKey,
+    current?.openrouter_key,
+    clearing && provider === "openrouter",
+    wrap,
+  );
+  const openrusrouterKey = nextSealed(
+    merged.openrusrouterKey,
+    current?.openrusrouter_key,
+    clearing && provider === "openrusrouter",
+    wrap,
+  );
+  const catalog = clearing
+    ? null
+    : input.catalog === undefined
+      ? asJson<DiscoverySnapshot | null>(current?.model_catalog, null)
+      : input.catalog;
+  const rawSelected = clearing
+    ? []
+    : Array.isArray(input.selectedModelIds)
+      ? [...new Set(input.selectedModelIds.map((id) => id.trim()).filter(Boolean))]
+      : selectedIdsFromRow(current);
   const selectedModelIds = catalog?.models?.length ? pruneToAvailable(rawSelected, catalog.models) : rawSelected;
   const members = membersFromIds(selectedModelIds, catalog?.models ?? []);
   const gptModel = members[0]?.modelId || "";
@@ -211,19 +315,43 @@ export async function saveSettings(
     : "";
   const maxCostUsd = input.maxCostUsd > 0 ? input.maxCostUsd : DEFAULT_MAX_COST_USD;
   const updatedAt = new Date().toISOString();
-  const lastTestLog = input.lastTestLog !== undefined ? input.lastTestLog : (current?.last_test_log ?? "");
-  const lastTestAt = input.lastTestAt !== undefined ? input.lastTestAt : (current?.last_test_at ?? null);
-  const lastTestOk = input.lastTestOk !== undefined ? input.lastTestOk : (current?.last_test_ok ?? null);
+  const lastTestLog = clearing ? "" : input.lastTestLog !== undefined ? input.lastTestLog : (current?.last_test_log ?? "");
+  const lastTestAt = clearing ? null : input.lastTestAt !== undefined ? input.lastTestAt : (current?.last_test_at ?? null);
+  const lastTestOk = clearing ? null : input.lastTestOk !== undefined ? input.lastTestOk : (current?.last_test_ok ?? null);
   const nanogptBilling = normalizeNanoGptBilling(
     input.nanogptBilling !== undefined ? input.nanogptBilling : current?.nanogpt_billing_mode,
   );
+  let bag = parseCredentialBag(current?.provider_credentials);
+  const applyPlain = (id: ProviderId, plain: string) => {
+    if (clearing && id === provider) {
+      const next = { ...bag };
+      delete next[id];
+      bag = next;
+      return;
+    }
+    if (plain) {
+      bag = upsertCredentialMeta(bag, id, plain, updatedAt, "NOT_TESTED", bag[id]?.lastValidatedAt ?? null);
+    }
+  };
+  applyPlain("nanogpt", merged.nanogptKey);
+  applyPlain("openrouter", merged.openrouterKey);
+  applyPlain("openrusrouter", merged.openrusrouterKey);
+  bag = stampSelectedValidation(bag, provider, lastTestOk, lastTestAt);
+  if (clearing) {
+    const next = { ...bag };
+    delete next[provider];
+    bag = next;
+  }
+  const credentialsJson = jsonParam(bag);
   await sql`
     insert into account_settings (
       user_id, provider, nanogpt_key, openrouter_key, openrusrouter_key, gpt_model, grok_model, claude_model, max_cost_usd,
-      selected_model_ids, synthesizer_model, model_catalog, last_test_log, last_test_at, last_test_ok, nanogpt_billing_mode, updated_at
+      selected_model_ids, synthesizer_model, model_catalog, last_test_log, last_test_at, last_test_ok, nanogpt_billing_mode,
+      provider_credentials, updated_at
     ) values (
       ${userId}, ${provider}, ${nanogptKey}, ${openrouterKey}, ${openrusrouterKey}, ${gptModel}, ${grokModel}, ${claudeModel}, ${maxCostUsd},
-      ${jsonParam(selectedModelIds)}::jsonb, ${synthesizerModel}, ${jsonParam(catalog)}::jsonb, ${lastTestLog}, ${lastTestAt}, ${lastTestOk}, ${nanogptBilling}, ${updatedAt}
+      ${jsonParam(selectedModelIds)}::jsonb, ${synthesizerModel}, ${jsonParam(catalog)}::jsonb, ${lastTestLog}, ${lastTestAt}, ${lastTestOk}, ${nanogptBilling},
+      ${credentialsJson}::jsonb, ${updatedAt}
     )
     on conflict (user_id) do update set
       provider = excluded.provider,
@@ -241,6 +369,7 @@ export async function saveSettings(
       last_test_at = excluded.last_test_at,
       last_test_ok = excluded.last_test_ok,
       nanogpt_billing_mode = excluded.nanogpt_billing_mode,
+      provider_credentials = excluded.provider_credentials,
       updated_at = excluded.updated_at
   `;
   await durable();
@@ -262,6 +391,7 @@ export async function saveSettings(
     last_test_at: lastTestAt,
     last_test_ok: lastTestOk,
     nanogpt_billing_mode: nanogptBilling,
+    provider_credentials: bag,
   });
 }
 

@@ -497,7 +497,7 @@ export function accessBlocksRun(access: ModelAccess): boolean {
 }
 
 export type ConnectionView = {
-  status: "CONNECTED" | "FAILED" | "NOT TESTED";
+  status: "CONNECTED" | "FAILED" | "NOT TESTED" | "NOT CONNECTED";
   discovered: number;
   available: number;
   catalog: DiscoverySnapshot | null;
@@ -508,7 +508,17 @@ export type ConnectionView = {
 export function currentConnectionView(
   lastTestOk: boolean | null,
   catalog: DiscoverySnapshot | null,
+  credentialPresent = true,
 ): ConnectionView {
+  if (!credentialPresent) {
+    return {
+      status: "NOT CONNECTED",
+      discovered: 0,
+      available: 0,
+      catalog: null,
+      stale: lastTestOk === true ? null : catalog,
+    };
+  }
   if (lastTestOk === true && catalog) {
     return {
       status: "CONNECTED",

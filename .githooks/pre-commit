@@ -25,7 +25,7 @@ fi
 # Live-looking provider secrets outside known placeholder/docs files.
 secret_hits=$(git diff --cached --diff-filter=ACMR --unified=0 \
   -- . \
-  ':(exclude)src/lib/council/api-key.test.ts' \
+  ':(exclude)src/lib/council/credential-crypto.test.ts' \
   ':(exclude)src/lib/council/api-key.ts' \
   ':(exclude)src/lib/council/provider-error.test.ts' \
   ':(exclude)src/lib/council/providers.ts' \

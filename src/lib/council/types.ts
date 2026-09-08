@@ -395,9 +395,10 @@ export type AccountSettingsPublic = {
   lastTestAt: string | null;
   lastTestOk: boolean | null;
   nanogptBilling: NanoGptBillingMode;
-  nanogpt: { saved: boolean; masked: string };
-  openrouter: { saved: boolean; masked: string };
-  openrusrouter: { saved: boolean; masked: string };
+  credentialPresent?: boolean;
+  nanogpt: { saved: boolean; masked: string; present?: boolean; last4?: string; fingerprint?: string; lastValidatedAt?: string | null; lastValidation?: "CONNECTED" | "FAILED" | "NOT_TESTED" };
+  openrouter: { saved: boolean; masked: string; present?: boolean; last4?: string; fingerprint?: string; lastValidatedAt?: string | null; lastValidation?: "CONNECTED" | "FAILED" | "NOT_TESTED" };
+  openrusrouter: { saved: boolean; masked: string; present?: boolean; last4?: string; fingerprint?: string; lastValidatedAt?: string | null; lastValidation?: "CONNECTED" | "FAILED" | "NOT_TESTED" };
 };
 
 export type PreflightClientReport = {

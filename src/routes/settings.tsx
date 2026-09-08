@@ -56,7 +56,7 @@ function SettingsPage() {
   const attemptRef = useRef(scan.attemptId);
   const keyHint = useMemo(() => describeKey(apiKey, provider), [apiKey, provider]);
   const savedSlot = slotFor(config, provider);
-  const view = currentConnectionView(scan.lastTestOk, scan.catalog);
+  const view = currentConnectionView(scan.lastTestOk, scan.catalog, savedSlot.saved);
   const statusLabel = scan.status === "TESTING" ? "TESTING" : view.status;
   const liveCatalog = view.catalog;
   const members = membersFromIds(scan.selectedIds, liveCatalog?.models ?? scan.catalog?.models ?? []);
@@ -191,8 +191,19 @@ function SettingsPage() {
       selectedModelIds: previous.selectedIds,
       nanogptBilling: config.nanogptBilling,
     };
+    const storedCreds = {
+      ...persistBase,
+      apiKey: "",
+    };
     let persisted: AccountSettingsPublic | null = null;
     try {
+      if (mode === "refresh" && sanitized) {
+        persisted = await save({
+          ...persistBase,
+          lastTestOk: null,
+          lastTestLog: "",
+        });
+      }
       const out = await runCanonicalScan({
         mode,
         previous,
@@ -207,7 +218,7 @@ function SettingsPage() {
               }
             : undefined,
         discover: async () => {
-          const report = await testProvider(persistBase);
+          const report = await testProvider(storedCreds);
           return {
             ok: report.ok,
             error: report.error,
@@ -223,7 +234,7 @@ function SettingsPage() {
       if (!shouldApplyAttempt(attemptRef.current, out.attemptId)) return;
       if (mode === "refresh") {
         setScan(out.result);
-        const live = currentConnectionView(out.result.lastTestOk, out.result.catalog);
+        const live = currentConnectionView(out.result.lastTestOk, out.result.catalog, Boolean(persisted?.credentialPresent ?? savedSlot.saved));
         setMsg(
           out.result.status === "CONNECTED"
             ? `CONNECTED. ${live.available} VERIFIED_AVAILABLE · ${out.result.catalog?.recommendedIds.length ?? 0} recommended.`
@@ -251,7 +262,7 @@ function SettingsPage() {
         verifySelected: async (ids) => {
           const checked = await checkAccess({
             provider,
-            apiKey: sanitized,
+            apiKey: "",
             models: ids,
             nanogptBilling: config.nanogptBilling,
           });
@@ -260,7 +271,7 @@ function SettingsPage() {
         completionProbe: async (args) => {
           const ping = await completeChat({
             provider: args.provider,
-            apiKey: sanitized,
+            apiKey: "",
             model: args.model,
             messages: [{ role: "user", content: "ping" }],
             maxTokens: 1,
@@ -443,10 +454,15 @@ function SettingsPage() {
           {keyHint.text ? <p className={keyHint.ok ? "text-ok" : "text-danger"}>{keyHint.text}</p> : null}
           {savedSlot.saved ? (
             <p className="text-ok">
-              Saved on this account: {savedSlot.masked || meta.keyPrefix}. Paste a new key only if you want to replace
-              it.
+              Saved credential: {savedSlot.masked || meta.keyPrefix}
+              {savedSlot.last4 ? ` · last4 ${savedSlot.last4}` : ""}
+              <span className="block text-fg">
+                {statusLabel === "TESTING" ? "TESTING" : savedSlot.lastValidation || statusLabel}
+              </span>
             </p>
-          ) : null}
+          ) : (
+            <p className="text-muted">Saved credential: none · NOT CONNECTED</p>
+          )}
           <p className="max-w-measure text-muted">
             Create a key at{" "}
             <a href={meta.keysUrl} className="text-fg underline" target="_blank" rel="noreferrer">

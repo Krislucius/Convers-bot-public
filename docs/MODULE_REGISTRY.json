@@ -89,7 +89,9 @@
         "tasks",
         "artifacts",
         "packets",
-        "settings scoped by user_id"
+        "settings scoped by user_id",
+        "encrypted provider credentials",
+        "credential fingerprint last4 last validation"
       ],
       "dependencies": [
         "persist.postgres",

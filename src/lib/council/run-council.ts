@@ -59,7 +59,7 @@ export const testProvider = createServerFn({ method: "POST" })
   })
   .handler(async ({ context, data }): Promise<PreflightClientReport> => {
     const { resolveStoredKey } = await import("./account.server");
-    const apiKey = await resolveStoredKey(context.userId, data.provider, data.apiKey);
+    const apiKey = await resolveStoredKey(context.userId, data.provider, "");
     if (!apiKey) {
       throw new Error("The AI provider is not connected. Save an API key on this account first.");
     }
@@ -98,7 +98,7 @@ export const discoverModels = createServerFn({ method: "POST" })
     }> => {
       const provider = normalizeProviderId(data.provider);
       const { resolveStoredKey } = await import("./account.server");
-      const apiKey = await resolveStoredKey(context.userId, provider, data.apiKey ?? "");
+      const apiKey = await resolveStoredKey(context.userId, provider, "");
       if (!apiKey) {
         return {
           ok: false,
@@ -141,7 +141,7 @@ export const checkCatalog = createServerFn({ method: "POST" })
     const provider = normalizeProviderId(data.provider);
     const models = requestedModels(data);
     const { resolveStoredKey } = await import("./account.server");
-    const apiKey = await resolveStoredKey(context.userId, provider, data.apiKey ?? "");
+    const apiKey = await resolveStoredKey(context.userId, provider, "");
     if (!apiKey) {
       return {
         ok: false,
@@ -175,7 +175,7 @@ export const checkAccess = createServerFn({ method: "POST" })
     }): Promise<{ ok: boolean; blocked: Array<{ id: string; access: string }>; error?: string }> => {
       const provider = normalizeProviderId(data.provider);
       const { resolveStoredKey } = await import("./account.server");
-      const apiKey = await resolveStoredKey(context.userId, provider, data.apiKey ?? "");
+      const apiKey = await resolveStoredKey(context.userId, provider, "");
       if (!apiKey) {
         return {
           ok: false,
@@ -218,7 +218,7 @@ export const completeChat = createServerFn({ method: "POST" })
     }): Promise<{ ok: true; completion: Completion } | { ok: false; error: string; failure?: ProviderFailure }> => {
       const provider: ProviderId = isProviderId(data.provider) ? data.provider : "nanogpt";
       const { resolveStoredKey } = await import("./account.server");
-      const apiKey = await resolveStoredKey(context.userId, provider, data.apiKey ?? "");
+      const apiKey = await resolveStoredKey(context.userId, provider, "");
       const mod = await loadProvider(provider);
       if (!apiKey) {
         return { ok: false, error: "The AI provider is not connected. Save an API key on this account first." };

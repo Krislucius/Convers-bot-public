@@ -62,10 +62,26 @@ export function normalizeProviderId(value: unknown): ProviderId {
   return isProviderId(value) ? value : DEFAULT_PROVIDER;
 }
 
-export type KeySlot = { saved: boolean; masked: string };
+export type KeySlot = {
+  saved: boolean;
+  masked: string;
+  present?: boolean;
+  last4?: string;
+  fingerprint?: string;
+  lastValidatedAt?: string | null;
+  lastValidation?: "CONNECTED" | "FAILED" | "NOT_TESTED";
+};
 
 export function emptyKeySlot(): KeySlot {
-  return { saved: false, masked: "" };
+  return {
+    saved: false,
+    masked: "",
+    present: false,
+    last4: "",
+    fingerprint: "",
+    lastValidatedAt: null,
+    lastValidation: "NOT_TESTED",
+  };
 }
 
 export function slotFor<T extends { nanogpt: KeySlot; openrouter: KeySlot; openrusrouter: KeySlot }>(
