@@ -10,7 +10,6 @@ import {
   emptyCursor,
   isReclaimable,
   isTerminalStatus,
-  shouldAcceptDurableWrite,
   type DurableCursor,
   type DurableFrozenInput,
   type DurableRunRow,
@@ -18,6 +17,7 @@ import {
   type DurableStatus,
   type DurableStore,
 } from "./durable-run.ts";
+import { decideDurableWrite, hasPersistedSynthesis } from "./terminal.ts";
 import type { CouncilRunSnapshot } from "./run-control.ts";
 import type { AgentResponse, RunCouncilOutput } from "./types.ts";
 
@@ -255,8 +255,36 @@ export function createSqlDurableStore(): DurableStore {
     async write(row, expected) {
       const current = await this.get(row.runId);
       if (!current) return false;
-      if (!shouldAcceptDurableWrite(current, { runId: row.runId, ...expected })) return false;
-      const ok = await updateRow(row, expected);
+      const decision = decideDurableWrite({
+        currentRunId: current.runId,
+        incomingRunId: row.runId,
+        currentGeneration: current.generation,
+        currentLeaseEpoch: current.leaseEpoch,
+        expectedGeneration: expected.generation,
+        expectedLeaseEpoch: expected.leaseEpoch,
+        currentStatus: current.status,
+        incomingStatus: row.status,
+        currentHasSynthesis: hasPersistedSynthesis({
+          status: current.status,
+          output: current.output,
+          responses: current.responses,
+          mode: current.frozenInput.task.mode,
+        }),
+        incomingHasSynthesis: hasPersistedSynthesis({
+          status: row.status,
+          output: row.output,
+          responses: row.responses,
+          mode: row.frozenInput.task.mode,
+        }),
+      });
+      if (decision !== "ACCEPT") return false;
+      const expectedGen = current.generation;
+      const expectedLease = current.leaseEpoch;
+      if (row.status === "COMPLETE") {
+        row.generation = Math.max(row.generation, current.generation);
+        row.leaseEpoch = Math.max(row.leaseEpoch, current.leaseEpoch);
+      }
+      const ok = await updateRow(row, { generation: expectedGen, leaseEpoch: expectedLease });
       if (ok) await durable();
       return ok;
     },

@@ -166,7 +166,40 @@
         "gate"
       ],
       "dependencies": [
+        "council.task-mode",
+        "council.issues"
+      ],
+      "supersedes": []
+    },
+    {
+      "module_id": "council.issues",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/council/issues.ts",
+      "architecture_revision": "CB-ARCH-20260908-002",
+      "responsibilities": [
+        "stable issue_id normalization",
+        "final dispositions UNRESOLVED RESOLVED REJECTED ACCEPTED_AS_PATCH USER_DECISION_REQUIRED",
+        "safety gate on FINAL unresolved issues only",
+        "verdict reconciliation proposed vs reconciled"
+      ],
+      "dependencies": [
         "council.task-mode"
+      ],
+      "supersedes": []
+    },
+    {
+      "module_id": "council.terminal",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/council/terminal.ts",
+      "architecture_revision": "CB-ARCH-20260908-002",
+      "responsibilities": [
+        "exclusive terminal COMPLETE FAILED CANCELLED",
+        "synthesis COMPLETE cannot be overwritten to CANCELLED",
+        "artifact requires COMPLETE",
+        "packet requires COMPLETE plus APPROVED"
+      ],
+      "dependencies": [
+        "council.protocol"
       ],
       "supersedes": []
     },
@@ -180,6 +213,8 @@
       ],
       "dependencies": [
         "council.protocol",
+        "council.issues",
+        "council.terminal",
         "council.providers",
         "council.manifest",
         "council.artifact",
@@ -201,6 +236,7 @@
         "resumable after interruption",
         "browser is reconnect-only",
         "STOP cancel flag, RESTART new run_id, one active run per task",
+        "COMPLETE FAILED CANCELLED mutually exclusive; COMPLETE synthesis wins over later cancel",
         "discard late writes from old run_id/generation/lease epoch",
         "independent Vercel Cron sweeper",
         "reclaim expired or missing leases without a browser",
@@ -209,6 +245,7 @@
       ],
       "dependencies": [
         "council.orchestrator",
+        "council.terminal",
         "account.persistence",
         "persist.postgres",
         "council.durable-waker"
@@ -245,7 +282,9 @@
         "poll persisted stage, member states, started_at, last_progress_at",
         "PRECHECK panel PROVIDER/SUBSCRIPTION/CATALOG/MODEL PASS|FAILED",
         "stall_reason / internal_stage, preflight/council/retry counts",
-        "last_wake_at / lease / next recovery deadline"
+        "last_wake_at / lease / next recovery deadline",
+        "run state COMPLETE FAILED CANCELLED separate from semantic verdict",
+        "issue ledger unresolved/resolved/rejected/accepted as patch"
       ],
       "dependencies": [
         "council.durable-runner",

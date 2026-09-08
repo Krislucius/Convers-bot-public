@@ -1,7 +1,7 @@
 import type { CouncilRuntime } from "./orchestrate.ts";
 import { ensureMembers } from "./members.ts";
 import { normalizeNanoGptBilling } from "./nano-billing.ts";
-import { advanceDurableStep } from "./durable-step.ts";
+import { advanceDurableStep, applyStopToRow } from "./durable-step.ts";
 import {
   DURABLE_LEASE_MS,
   OneActiveRunError,
@@ -108,23 +108,29 @@ export async function startDurableRun(store: DurableStore, input: StartDurableRu
   if (existing && input.force) {
     abortInflight(existing.runId);
     const now = iso(input.now);
-    existing.cancelRequested = true;
-    existing.generation += 1;
-    existing.leaseOwner = null;
-    existing.leaseExpiresAt = null;
-    existing.status = "CANCELLED";
-    existing.stage = "CANCELLED";
-    existing.completedAt = now;
-    existing.error = "Council run stopped.";
-    existing.snapshot = {
-      ...existing.snapshot,
-      generation: existing.generation,
-      stage: "CANCELLED",
-      status: "CANCELLED",
-      updatedAt: now,
-      message: "Council run stopped.",
-    };
-    await store.write(existing, { generation: existing.generation - 1, leaseEpoch: existing.leaseEpoch });
+    const expected = { generation: existing.generation, leaseEpoch: existing.leaseEpoch };
+    const sealed = applyStopToRow(existing, now);
+    if (sealed.status === "COMPLETE" || sealed.status === "FAILED") {
+      await store.write(sealed, expected);
+    } else {
+      existing.cancelRequested = true;
+      existing.generation += 1;
+      existing.leaseOwner = null;
+      existing.leaseExpiresAt = null;
+      existing.status = "CANCELLED";
+      existing.stage = "CANCELLED";
+      existing.completedAt = now;
+      existing.error = "Council run stopped.";
+      existing.snapshot = {
+        ...existing.snapshot,
+        generation: existing.generation,
+        stage: "CANCELLED",
+        status: "CANCELLED",
+        updatedAt: now,
+        message: "Council run stopped.",
+      };
+      await store.write(existing, { generation: existing.generation - 1, leaseEpoch: existing.leaseEpoch });
+    }
   }
   const row = buildQueuedRow(input);
   try {
@@ -149,6 +155,15 @@ export async function stopDurableRun(
   abortInflight(row.runId);
   const now = iso(opts.now);
   const expected = { generation: row.generation, leaseEpoch: row.leaseEpoch };
+  const sealed = applyStopToRow(row, now);
+  if (sealed.status === "COMPLETE" || sealed.status === "FAILED") {
+    const ok = await store.write(sealed, expected);
+    if (!ok) {
+      const latest = await store.get(row.runId);
+      return latest ? toPublic(latest) : null;
+    }
+    return toPublic(sealed);
+  }
   row.cancelRequested = true;
   row.generation += 1;
   row.leaseOwner = null;

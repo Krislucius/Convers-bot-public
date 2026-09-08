@@ -18,7 +18,7 @@ import type {
   Task,
   TaskMode,
 } from "./types.ts";
-import { filterCreateBlockers, isTaskMode, normalizeTaskMode } from "./task-mode.ts";
+import { isTaskMode, normalizeTaskMode } from "./task-mode.ts";
 import { parseSynthesizedArtifact, parseEvidenceLabels } from "./artifact.ts";
 import { asReviewVerdict, reviewVerdictFromStatus } from "./review.ts";
 import { buildMandatoryContext } from "../evidence/pack.ts";
@@ -28,6 +28,7 @@ import { DEFAULT_ROLES, isCouncilRole, normalizeAgentKey, rolePrompt, type Counc
 import type { CouncilMember } from "./members.ts";
 import { expectedSuccessfulCalls } from "./members.ts";
 import { isSynthesisResponse, roundOfStage } from "./agents.ts";
+import { buildIssueLedger, reconcileVerdict, type GateResult, type IssueLedger } from "./issues.ts";
 
 export const AGENTS: CouncilRole[] = [...DEFAULT_ROLES];
 
@@ -435,7 +436,19 @@ export type ParsedSynth = {
 
 function asStringList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
-  return value.map((row) => String(row)).map((row) => row.trim()).filter(Boolean);
+  return value
+    .map((row) => String(row))
+    .map((row) => row.trim())
+    .filter((row) => row && !isEmptyFindingLine(row));
+}
+
+function isEmptyFindingLine(text: string): boolean {
+  const line = text
+    .replace(/^[-*•]\s+/, "")
+    .replace(/^\d+[.)]\s+/, "")
+    .trim()
+    .toLowerCase();
+  return !line || EMPTY.has(line);
 }
 
 function asCouncilStatus(value: unknown): CouncilStatus | null {
@@ -513,72 +526,28 @@ export function applyGate(
   parsed: ParsedSynth,
   round2: AgentResponse[],
   mode: TaskMode | string = "REVIEW",
-): { status: CouncilStatus; blockers: string[]; reason: string | null } {
+): GateResult {
   const resolvedMode = isTaskMode(mode) ? mode : parsed.artifact ? "CREATE" : normalizeTaskMode(mode);
-  const p0: string[] = [];
-  const p1: string[] = [];
-  let p4Only = true;
-  let parsedHeadings = false;
-  for (const row of round2) {
-    const structured = row.structured ?? {};
-    if (!structured.UNPARSED && (structured.POSITION || structured.REVISED_POSITION || structured.P4_IMPROVEMENTS)) {
-      parsedHeadings = true;
-    }
-    const remainingP0 = structured.REMAINING_P0 ?? "";
-    const blockersP0 = structured.P0_BLOCKERS ?? "";
-    const remainingP1 = structured.REMAINING_P1 ?? "";
-    const archP1 = structured.P1_ARCHITECTURE ?? "";
-    if (hasItems(remainingP0) || hasItems(blockersP0)) {
-      p0.push(`${row.agent}: ${[remainingP0, blockersP0].filter((part) => hasItems(part)).join("\n").trim()}`);
-      p4Only = false;
-    }
-    // CREATE P1_ARCHITECTURE is the reconstruction, not an unresolved defect list.
-    // Residual P1 uncertainty must not veto synthesizer APPROVED.
-    if (resolvedMode === "CREATE") {
-      if (hasItems(remainingP1) || hasItems(archP1)) p4Only = false;
-    } else if (hasItems(remainingP1) || hasItems(archP1)) {
-      p1.push(`${row.agent}: ${[remainingP1, archP1].filter((part) => hasItems(part)).join("\n").trim()}`);
-      p4Only = false;
-    }
-    if (hasItems(structured.P2_CORRECTNESS ?? "") || hasItems(structured.P3_ROBUSTNESS ?? "")) p4Only = false;
-  }
-
-  const gatedP0 = resolvedMode === "CREATE" ? filterCreateBlockers(p0) : p0;
-  const gatedP1 = resolvedMode === "CREATE" ? [] : p1;
-  const parsedBlockers = resolvedMode === "CREATE" ? filterCreateBlockers(parsed.blockers) : parsed.blockers;
-
-  const proposed = parsed.status;
-  let status: CouncilStatus = proposed;
-  let blockers = parsedBlockers;
-  let reason: string | null = null;
-  if (gatedP0.length) {
-    status = "BLOCKED";
-    blockers = [...gatedP0, ...blockers.filter((item) => !gatedP0.includes(item))];
-    if (proposed !== "BLOCKED") reason = "Safety gate: unresolved P0 findings require BLOCKED.";
-  } else if (gatedP1.length) {
-    status = "BLOCKED";
-    blockers = [...gatedP1, ...blockers.filter((item) => !gatedP1.includes(item))];
-    if (proposed !== "BLOCKED") reason = "Safety gate: unresolved P1 findings require BLOCKED.";
-  } else if (p4Only && parsedHeadings && status === "BLOCKED") {
-    status = "APPROVED";
-    blockers = [];
-    reason = "P4-only criticism cannot cause BLOCKED.";
-  } else if (resolvedMode === "CREATE" && status === "BLOCKED" && !gatedP0.length && !gatedP1.length) {
-    status = proposed === "USER_DECISION_REQUIRED" ? "USER_DECISION_REQUIRED" : "APPROVED";
-    blockers = [];
-    reason =
-      "CREATE safety gate: missing candidate or repository evidence cannot block artifact creation.";
-  } else if (resolvedMode === "REVIEW" && proposed === "PATCH" && !gatedP0.length && !gatedP1.length) {
-    status = "PATCH";
-  } else if (
-    resolvedMode === "DECIDE" &&
-    proposed === "APPROVED" &&
-    (parsed.disagreements.length > 0 || parsed.evidence.some((row) => row.status === "CONFLICTED"))
-  ) {
-    status = "USER_DECISION_REQUIRED";
-    reason = "Safety gate: DECIDE disagreements or CONFLICTED evidence require USER_DECISION_REQUIRED.";
-  }
-  return { status, blockers, reason };
+  const nonSynth = round2.filter((row) => !isSynthesisResponse(row));
+  const round1 = nonSynth.filter((row) => row.round === 1 || row.stage === "ROUND_1");
+  const roundTwo = nonSynth.filter((row) => !(row.round === 1 || row.stage === "ROUND_1"));
+  const ledger = buildIssueLedger({
+    round1,
+    round2: roundTwo.length ? roundTwo : nonSynth,
+    parsed,
+    mode: resolvedMode,
+  });
+  const gated = reconcileVerdict({
+    proposed: parsed.status,
+    ledger,
+    mode: resolvedMode,
+    disagreements: parsed.disagreements,
+    conflictedEvidence: parsed.evidence.some((row) => row.status === "CONFLICTED"),
+  });
+  return {
+    ...gated,
+    blockers: gated.status === "BLOCKED" ? gated.blockers : [],
+  };
 }
 
 export function attachManifest(
@@ -767,7 +736,7 @@ export function completeOutput(
   task: Task,
   responses: AgentResponse[],
   parsed: ParsedSynth,
-  gated: { status: CouncilStatus; blockers: string[]; reason: string | null },
+  gated: GateResult,
   extras?: {
     artifact?: Artifact | null;
     manifest?: ContextManifest | null;
@@ -783,9 +752,17 @@ export function completeOutput(
       ? parsed.reviewVerdict ?? reviewVerdictFromStatus(gated.status)
       : null;
   const citations = [...new Set([...(extras?.packedCitations ?? []), ...parsed.citations])];
+  const ledger: IssueLedger = gated.ledger;
+  const unresolvedTexts = ledger.unresolved.map((row) => row.text);
+  const resolvedTexts = [...ledger.resolved, ...ledger.rejected].map((row) => row.text);
+  const reconciled = gated.reconciledStatus ?? gated.status;
+  const packet =
+    extras?.packet && reconciled === "APPROVED"
+      ? { ...extras.packet, blockers: [...gated.blockers] }
+      : null;
   const result: CouncilResult = {
     taskId: task.id,
-    status: gated.status,
+    status: reconciled,
     consensus: parsed.consensus,
     disagreements: parsed.disagreements,
     blockers: gated.blockers,
@@ -793,9 +770,13 @@ export function completeOutput(
     agentPositions: parsed.agent_positions,
     synthesisRaw: synth?.responseText ?? null,
     synthesizerProposedStatus: parsed.status,
-    finalEnforcedStatus: gated.status,
+    finalEnforcedStatus: reconciled,
+    proposedStatus: gated.proposedStatus ?? parsed.status,
+    reconciledStatus: reconciled,
     verdictOverride: gated.reason !== null,
     overrideReason: gated.reason,
+    gateReason: gated.reason,
+    issueLedger: ledger,
     decision: parsed.decision,
     rationale: parsed.rationale,
     dissent: parsed.dissent,
@@ -805,8 +786,8 @@ export function completeOutput(
     risks: parsed.risks,
     issues: parsed.issues,
     proposedCorrections: parsed.proposedCorrections,
-    resolvedIssues: parsed.resolvedIssues,
-    unresolvedIssues: parsed.unresolvedIssues,
+    resolvedIssues: resolvedTexts.length ? resolvedTexts : parsed.resolvedIssues,
+    unresolvedIssues: unresolvedTexts,
     citations,
     failedAgents: extras?.failedAgents ?? [],
   };
@@ -832,7 +813,7 @@ export function completeOutput(
     result,
     artifact: extras?.artifact ?? null,
     manifest: extras?.manifest ?? null,
-    packet: extras?.packet ?? null,
+    packet,
   };
 }
 
@@ -868,3 +849,4 @@ export function synthesisForMode(
 }
 
 export type { CouncilMember, CouncilRole };
+export type { GateResult, IssueLedger } from "./issues.ts";

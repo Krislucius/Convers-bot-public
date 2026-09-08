@@ -524,6 +524,15 @@ function mapResult(row: Record<string, unknown>): CouncilResult {
     unresolvedIssues: asJson(asJson(row.structured, {} as Record<string, unknown>).unresolvedIssues, []),
     citations: asJson(asJson(row.structured, {} as Record<string, unknown>).citations, []),
     failedAgents: asJson(asJson(row.structured, {} as Record<string, unknown>).failedAgents, []),
+    proposedStatus: (asJson(row.structured, {} as Record<string, unknown>).proposedStatus as CouncilResult["status"]) ?? null,
+    reconciledStatus: (asJson(row.structured, {} as Record<string, unknown>).reconciledStatus as CouncilResult["status"]) ?? null,
+    gateReason:
+      typeof asJson(row.structured, {} as Record<string, unknown>).gateReason === "string"
+        ? (asJson(row.structured, {} as Record<string, unknown>).gateReason as string)
+        : row.override_reason == null
+          ? null
+          : asString(row.override_reason),
+    issueLedger: asJson(asJson(row.structured, {} as Record<string, unknown>).issueLedger, null),
   };
 }
 
@@ -852,6 +861,10 @@ async function insertResultRow(userId: string, result: CouncilResult) {
         citations: result.citations,
         failedAgents: result.failedAgents,
         reviewVerdict: result.reviewVerdict,
+        proposedStatus: result.proposedStatus ?? result.synthesizerProposedStatus,
+        reconciledStatus: result.reconciledStatus ?? result.finalEnforcedStatus,
+        gateReason: result.gateReason ?? result.overrideReason,
+        issueLedger: result.issueLedger ?? null,
       }) ?? "{}"}::jsonb
     )
     on conflict (task_id) do update set

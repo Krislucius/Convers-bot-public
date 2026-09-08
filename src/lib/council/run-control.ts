@@ -1,5 +1,5 @@
 import type { CouncilMember } from "./members.ts";
-import type { AgentKey, AgentProgress, AgentResponse, ProviderId, TaskStatus } from "./types.ts";
+import type { AgentKey, AgentProgress, AgentResponse, CouncilStatus, ProviderId, TaskStatus } from "./types.ts";
 import type { RequestBudget } from "./request-budget.ts";
 import type { NanoGptBillingMode } from "./nano-billing.ts";
 import type { PreflightReport } from "./start-preflight.ts";
@@ -60,6 +60,10 @@ export type CouncilRunSnapshot = {
   stallReason?: string | null;
   preflight?: PreflightReport | null;
   modelHealth?: Record<string, ModelHealth>;
+  proposedStatus?: CouncilStatus | null;
+  reconciledStatus?: CouncilStatus | null;
+  gateReason?: string | null;
+  unresolvedIssues?: string[];
 };
 
 export class CouncilCancelled extends Error {

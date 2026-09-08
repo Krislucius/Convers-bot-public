@@ -30,6 +30,7 @@ import { getCouncilRun, restartCouncilRunFn, startCouncilRun, stopCouncilRunFn, 
 import type { DurableRunPublic } from "@/lib/council/durable-run";
 import { type CouncilRunSnapshot } from "@/lib/council/run-control";
 import { councilPreflight } from "@/lib/council/task-mode";
+import { exclusiveRunState } from "@/lib/council/terminal";
 import { useSession } from "@/lib/council/session";
 import type { AgentKey, AgentProgress } from "@/lib/council/types";
 import type { EvidencePipelineResult } from "@/lib/evidence/pipeline-cache";
@@ -142,10 +143,19 @@ function TaskPage() {
 
   const currentTask = task;
   const projectArtifacts = store.artifacts.filter((row) => row.projectId === project.id);
-  const isRunning = busy || RUNNING.has(task.status);
   const currentRunId = task.diagnostics?.run?.runId ?? activeRunId;
   const responses = currentRunId ? allResponses.filter((row) => !row.runId || row.runId === currentRunId) : allResponses;
   const priorResponses = currentRunId ? allResponses.filter((row) => row.runId && row.runId !== currentRunId) : [];
+  const synth = responses.find((r) => isSynthesisResponse(r) && !r.error);
+  const terminal = exclusiveRunState({
+    status: task.status,
+    snapshotStatus: task.diagnostics?.run?.status,
+    taskStatus: task.status,
+    result,
+    hasSynthesis: Boolean(result),
+    hasArtifact: Boolean(result && artifact),
+  });
+  const isRunning = !terminal && (busy || RUNNING.has(task.status));
   const persistedStage = task.diagnostics?.run?.stage ?? stage;
   const persistedAgents = task.diagnostics?.run?.agents ?? agentState;
   const members = task.selectedModels?.length ? task.selectedModels : config.members;
@@ -190,7 +200,15 @@ function TaskPage() {
     });
     setActiveRunId(run.runId);
     runGen.current = run.generation;
-    if (run.output && (run.status === "COMPLETE" || run.status === "FAILED" || run.status === "CANCELLED")) {
+    const runTerminal = exclusiveRunState({
+      status: run.status,
+      snapshotStatus: run.snapshot?.status,
+      taskStatus: run.taskStatus,
+      result: run.output?.result ?? null,
+      hasSynthesis: Boolean(run.output?.result),
+      hasArtifact: Boolean(run.output?.artifact),
+    });
+    if (run.output && runTerminal) {
       applyCouncilOutput(currentTask.id, run.output);
       setLog(
         formatCouncilOpLog({
@@ -200,6 +218,8 @@ function TaskPage() {
           result: run.output.result,
         }),
       );
+      setBusy(false);
+    } else if (runTerminal) {
       setBusy(false);
     } else {
       setBusy(true);
@@ -337,8 +357,7 @@ function TaskPage() {
     void onRun(undefined, { force: true, resume: { responses: keep } });
   }
 
-  const synth = responses.find((r) => isSynthesisResponse(r) && !r.error);
-  const canRun = STARTABLE.has(task.status);
+  const canRun = STARTABLE.has(task.status) && terminal !== "COMPLETE";
   const hashMatch = responses.length === 0 || responses.every((row) => row.contextHash === responses[0]?.contextHash);
   const round1Rows = responses.filter((row) => row.stage === "ROUND_1" || row.round === 1);
   const workRows = responses.filter((row) => !isSynthesisResponse(row));
@@ -369,7 +388,10 @@ function TaskPage() {
             <CollapsibleText text={task.prompt} />
           </PageHeader>
         </div>
-        <StatusPill status={task.status} />
+        <div className="flex flex-col items-end gap-1">
+          <p className="m-0 text-[10px] font-semibold tracking-widest text-muted uppercase">Run</p>
+          <StatusPill status={terminal ?? task.status} />
+        </div>
       </header>
 
       {canRun && !isRunning ? (
@@ -571,8 +593,21 @@ function TaskPage() {
         <Panel>
           <p className="mb-1 text-xs font-semibold tracking-widest text-muted uppercase">Council synthesis</p>
           <h2 className="font-display mb-3 text-2xl">
-            <StatusPill status={displayVerdict(result.reviewVerdict, result.finalEnforcedStatus ?? result.status)} />
+            <StatusPill
+              status={
+                task.mode === "REVIEW"
+                  ? displayVerdict(result.reviewVerdict, result.reconciledStatus ?? result.finalEnforcedStatus ?? result.status)
+                  : (result.reconciledStatus ?? result.finalEnforcedStatus ?? result.status)
+              }
+            />
           </h2>
+          <p className="m-0 mb-3 text-sm text-muted">
+            Run state <span className="text-fg">{terminal ?? "COMPLETE"}</span>
+            {" · "}
+            Proposed <span className="text-fg">{result.proposedStatus ?? result.synthesizerProposedStatus ?? result.status}</span>
+            {" · "}
+            Reconciled <span className="text-fg">{result.reconciledStatus ?? result.finalEnforcedStatus ?? result.status}</span>
+          </p>
           {result.reviewVerdict ? (
             <p className="m-0 mb-3 text-sm text-muted">
               Review verdict <span className="text-fg">{result.reviewVerdict}</span>
@@ -583,7 +618,13 @@ function TaskPage() {
               Surviving reviewers continued after {result.failedAgents.join(", ")} failed.
             </p>
           ) : null}
-          {result.verdictOverride ? (
+          {(result.gateReason ?? result.overrideReason) ? (
+            <p className="rounded-md bg-subtle p-3 text-danger">
+              Final status is the reconciled verdict from unresolved issues, not the synthesizer word.
+              Proposed: {result.proposedStatus ?? result.synthesizerProposedStatus}.{" "}
+              {result.gateReason ?? result.overrideReason}
+            </p>
+          ) : result.verdictOverride ? (
             <p className="rounded-md bg-subtle p-3 text-danger">
               Final status was adjusted by the safety gate. Proposed: {result.synthesizerProposedStatus}.{" "}
               {result.overrideReason}
@@ -612,6 +653,26 @@ function TaskPage() {
           <ListBlock title="Proposed corrections" rows={result.proposedCorrections} />
           <ListBlock title="Resolved issues" rows={result.resolvedIssues} />
           <ListBlock title="Unresolved issues" rows={result.unresolvedIssues} />
+          {result.issueLedger ? (
+            <>
+              <ListBlock
+                title="Issue ledger — unresolved"
+                rows={result.issueLedger.unresolved.map((row) => `${row.issueId} · ${row.severity} · ${row.text}`)}
+              />
+              <ListBlock
+                title="Issue ledger — resolved"
+                rows={result.issueLedger.resolved.map((row) => `${row.issueId} · ${row.severity} · ${row.text}`)}
+              />
+              <ListBlock
+                title="Issue ledger — rejected"
+                rows={result.issueLedger.rejected.map((row) => `${row.issueId} · ${row.severity} · ${row.text}`)}
+              />
+              <ListBlock
+                title="Issue ledger — accepted as patch"
+                rows={result.issueLedger.acceptedAsPatch.map((row) => `${row.issueId} · ${row.severity} · ${row.text}`)}
+              />
+            </>
+          ) : null}
           <ListBlock title="Citations" rows={result.citations} />
           {result.evidence.length ? (
             <>

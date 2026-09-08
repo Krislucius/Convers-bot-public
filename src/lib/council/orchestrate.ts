@@ -881,7 +881,7 @@ export async function runCouncil(input: {
           lastRequestAt = Date.now();
           lastProviderResponseAt = now();
           lastProviderHttpStatus = out.ok ? 200 : (out.failure?.httpStatus ?? null);
-          if (isCancelledSignal(signal) || (!out.ok && out.error === "Council run stopped.")) {
+          if (!out.ok && (isCancelledSignal(signal) || out.error === "Council run stopped.")) {
             agents[agent] = { state: "FAILED", attempt, maxAttempts: attempts, error: "Council run stopped." };
             return errRow("Council run stopped.", attempt);
           }
@@ -1176,8 +1176,10 @@ export async function runCouncil(input: {
       );
       synthAttempts.push(row);
       responses.push(row);
-      if (isCancelledSignal(signal)) return finishCancelled();
-      if (row.error) continue;
+      if (row.error) {
+        if (isCancelledSignal(signal)) return finishCancelled();
+        continue;
+      }
       if (row.dispatchedModelId && row.dispatchedModelId !== synthMember.modelId) {
         continue;
       }
@@ -1200,7 +1202,7 @@ export async function runCouncil(input: {
         { partial: true },
       );
     }
-    const gated = applyGate(parsed, survivingResponses(round2), mode);
+    const gated = applyGate(parsed, survivingResponses([...round1, ...round2]), mode);
     const failedAgents = failedResponses(responses)
       .map((row) => responseMemberId(row))
       .filter((agent, index, all) => agent && all.indexOf(agent) === index);

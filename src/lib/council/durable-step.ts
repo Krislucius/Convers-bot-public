@@ -71,6 +71,7 @@ import {
   subscriptionBlocksRun,
 } from "./start-preflight.ts";
 import { outcomeFromFailure, recordHealth } from "./model-health.ts";
+import { hasPersistedSynthesis, synthesisIsReconcilable } from "./terminal.ts";
 import type {
   AgentKey,
   AgentProgress,
@@ -172,6 +173,10 @@ function failRow(row: DurableRunRow, message: string, stage: DurableStage, now: 
 }
 
 function cancelRow(row: DurableRunRow, now: string, message = "Council run stopped."): DurableRunRow {
+  if (row.status === "COMPLETE" || row.status === "FAILED") return row;
+  if (hasPersistedSynthesis(row) || synthesisIsReconcilable(row.responses, row.frozenInput.task.mode)) {
+    return finalize(row, now);
+  }
   const agents = { ...(row.snapshot.agents ?? {}) };
   for (const member of row.members) {
     const current = agents[member.memberId];
@@ -183,6 +188,7 @@ function cancelRow(row: DurableRunRow, now: string, message = "Council run stopp
   row.completedAt = now;
   row.cancelRequested = true;
   row.cursor.phase = "CANCELLED";
+  row.cursor.stallReason = null;
   patchSnapshot(row, { status: "CANCELLED", stage: "CANCELLED", message, now, agents });
   return row;
 }
@@ -302,7 +308,7 @@ async function askMember(opts: {
         signal,
         nanogptBilling: runBilling,
       });
-      if (isCancelledSignal(signal) || row.cancelRequested || (!out.ok && out.error === "Council run stopped.")) {
+      if (!out.ok && (isCancelledSignal(signal) || row.cancelRequested || out.error === "Council run stopped.")) {
         emit("Council run stopped.", { state: "FAILED", attempt, maxAttempts, error: "Council run stopped." });
         row.cursor.requestUsed = requests.used();
         return errRow("Council run stopped.", attempt);
@@ -940,6 +946,7 @@ async function advancePreflight(
 function finalize(row: DurableRunRow, now: string): DurableRunRow {
   const frozen = row.frozenInput;
   const mode = frozen.task.mode;
+  const round1 = roundRows(row, "ROUND_1");
   const round2 = roundRows(row, "ROUND_2");
   const synthRows = roundRows(row, "SYNTHESIS").filter((item) => !item.error);
   const synth = synthRows.at(-1) ?? null;
@@ -958,7 +965,7 @@ function finalize(row: DurableRunRow, now: string): DurableRunRow {
   if (!parsed || (mode === "CREATE" && !parsed.artifact)) {
     return failRow(row, "Synthesis failed: invalid synthesis response.", "SYNTHESIS", now, true);
   }
-  const gated = applyGate(parsed, survivingResponses(round2), mode);
+  const gated = applyGate(parsed, survivingResponses([...round1, ...round2]), mode);
   const failedAgents = failedResponses(row.responses)
     .map((item) => responseMemberId(item))
     .filter((agent, index, all) => agent && all.indexOf(agent) === index);
@@ -1015,8 +1022,25 @@ function finalize(row: DurableRunRow, now: string): DurableRunRow {
   row.output = out;
   row.completedAt = now;
   row.cursor.phase = "COMPLETE";
+  row.cursor.stallReason = null;
+  row.cursor.internalStage = "COMPLETE";
+  row.cancelRequested = false;
   patchSnapshot(row, { status: "COMPLETE", stage: "COMPLETE", message: "Council complete.", now });
+  row.snapshot = {
+    ...row.snapshot,
+    status: "COMPLETE",
+    proposedStatus: gated.proposedStatus,
+    reconciledStatus: gated.reconciledStatus,
+    gateReason: gated.reason,
+    unresolvedIssues: out.result?.unresolvedIssues ?? [],
+    stallReason: null,
+    internalStage: "COMPLETE",
+  };
   return row;
+}
+
+export function applyStopToRow(row: DurableRunRow, now: string, message = "Council run stopped."): DurableRunRow {
+  return cancelRow(row, now, message);
 }
 
 export async function advanceDurableStep(input: {
@@ -1041,11 +1065,11 @@ export async function advanceDurableStep(input: {
     row = await prepare(row, input.runtime, now);
     return { row, didProviderCall: false, terminal: isTerminalStatus(row.status) };
   }
-  if (row.cancelRequested || isCancelledSignal(input.signal)) {
-    return { row: cancelRow(row, now()), didProviderCall: false, terminal: true };
-  }
   if (isTerminalStatus(row.status)) {
     return { row, didProviderCall: false, terminal: true };
+  }
+  if (row.cancelRequested || isCancelledSignal(input.signal)) {
+    return { row: cancelRow(row, now()), didProviderCall: false, terminal: true };
   }
   if (!row.cursor.accessOk || (row.cursor.preflight && nextPreflightStep(row.cursor.preflight))) {
     row = await advancePreflight(row, input.runtime, now, input.signal);
@@ -1177,9 +1201,6 @@ export async function advanceDurableStep(input: {
   row.responses.push(response);
   row.cursor.completedKeys.push(completedKey("SYNTHESIS", `${synthMember.memberId}:${row.cursor.synthIndex}`));
   row.cursor.synthIndex += 1;
-  if (row.cancelRequested || isCancelledSignal(input.signal) || response.error === "Council run stopped.") {
-    return { row: cancelRow(row, now()), didProviderCall: true, terminal: true };
-  }
   if (!response.error) {
     const json = parseJson(response.responseText);
     const usable =
@@ -1190,6 +1211,9 @@ export async function advanceDurableStep(input: {
     if (usable) {
       return { row: finalize(row, now()), didProviderCall: true, terminal: true };
     }
+  }
+  if (row.cancelRequested || isCancelledSignal(input.signal) || response.error === "Council run stopped.") {
+    return { row: cancelRow(row, now()), didProviderCall: true, terminal: true };
   }
   if (row.cursor.synthIndex >= queue.length) {
     return { row: finalize(row, now()), didProviderCall: true, terminal: true };

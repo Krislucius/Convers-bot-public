@@ -65,12 +65,16 @@ export function criticalContractHash(root) {
   const packetPath = join(root, "src/lib/council/packet.ts");
   const reviewPath = join(root, "src/lib/council/review.ts");
   const evaluatePath = join(root, "src/lib/council/evaluate.ts");
+  const issuesPath = join(root, "src/lib/council/issues.ts");
+  const terminalPath = join(root, "src/lib/council/terminal.ts");
   const pack = existsSync(packPath) ? read(root, "src/lib/evidence/pack.ts") : "";
   const pipeline = existsSync(pipelinePath) ? read(root, "src/lib/evidence/pipeline.ts") : "";
   const tokens = existsSync(tokensPath) ? read(root, "src/lib/evidence/tokens.ts") : "";
   const packet = existsSync(packetPath) ? read(root, "src/lib/council/packet.ts") : "";
   const review = existsSync(reviewPath) ? read(root, "src/lib/council/review.ts") : "";
   const evaluate = existsSync(evaluatePath) ? read(root, "src/lib/council/evaluate.ts") : "";
+  const issues = existsSync(issuesPath) ? read(root, "src/lib/council/issues.ts") : "";
+  const terminal = existsSync(terminalPath) ? read(root, "src/lib/council/terminal.ts") : "";
   const contracts = read(root, "src/lib/architecture/contracts.ts");
   const tokenLimit = contracts.match(/export const CURRENT_CONTEXT_TOKEN_LIMIT = (\d+);/)?.[1] ?? "";
   const tokenBound = protocol.includes("countTokens(ctx)") && protocol.includes("CONTEXT_TOKEN_LIMIT");
@@ -107,6 +111,8 @@ export function criticalContractHash(root) {
       packet,
       review,
       evaluate,
+      issues,
+      terminal,
     }),
   );
 }

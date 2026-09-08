@@ -19,6 +19,7 @@ import {
   nextRecoveryDeadlineMs,
   shouldAcceptDurableWrite,
 } from "./durable-run.ts";
+import { exclusiveRunState } from "./terminal.ts";
 import {
   driveDurableRun,
   getDurableRun,
@@ -691,3 +692,77 @@ describe("sequential preflight and dispatch", () => {
     assert.ok((done?.snapshot.requestBudget?.preflightCalls ?? 0) >= 1);
   });
 });
+
+describe("exclusive terminal after synthesis", () => {
+  it("STOP after COMPLETE synthesis keeps COMPLETE not CANCELLED", async () => {
+    const store = createMemoryDurableStore();
+    const started = await startDurableRun(store, { userId: "u1", taskId: task.id, frozen: frozen() });
+    const rt = runtime(async (opts) => ({ ok: true, completion: completion(opts.model, opts.responseFormat ? "SYNTH" : "") }));
+    const done = await driveDurableRun(store, { runId: started.runId, owner: "w1", runtime: rt });
+    assert.equal(done?.status, "COMPLETE");
+    assert.ok(done?.output?.result);
+    const stopped = await stopDurableRun(store, { userId: "u1", taskId: task.id, runId: started.runId });
+    assert.equal(stopped?.status, "COMPLETE");
+    assert.notEqual(stopped?.status, "CANCELLED");
+    assert.equal(stopped?.output?.result?.status, done?.output?.result?.status);
+    assert.equal(
+      exclusiveRunState({
+        status: stopped?.status,
+        snapshotStatus: stopped?.snapshot.status,
+        result: stopped?.output?.result ?? null,
+        hasSynthesis: Boolean(stopped?.output?.result),
+      }),
+      "COMPLETE",
+    );
+  });
+
+  it("a later CANCELLED write cannot overwrite COMPLETE synthesis", async () => {
+    const store = createMemoryDurableStore();
+    const started = await startDurableRun(store, { userId: "u1", taskId: task.id, frozen: frozen() });
+    const rt = runtime(async (opts) => ({ ok: true, completion: completion(opts.model, opts.responseFormat ? "SYNTH" : "") }));
+    await driveDurableRun(store, { runId: started.runId, owner: "w1", runtime: rt });
+    const complete = await store.get(started.runId);
+    assert.equal(complete?.status, "COMPLETE");
+    const forged = JSON.parse(JSON.stringify(complete)) as typeof complete;
+    assert.ok(forged);
+    forged.status = "CANCELLED";
+    forged.stage = "CANCELLED";
+    forged.snapshot.status = "CANCELLED";
+    forged.snapshot.stage = "CANCELLED";
+    const wrote = await store.write(forged, { generation: forged.generation, leaseEpoch: forged.leaseEpoch });
+    assert.equal(wrote, false);
+    const latest = await store.get(started.runId);
+    assert.equal(latest?.status, "COMPLETE");
+  });
+
+  it("in-flight synthesis then Stop persists COMPLETE not CANCELLED", async () => {
+    const store = createMemoryDurableStore();
+    const started = await startDurableRun(store, { userId: "u1", taskId: task.id, frozen: frozen() });
+    let release = () => undefined as void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const hanging: CouncilCompleteChat = async (opts) => {
+      if (opts.responseFormat) await gate;
+      return { ok: true, completion: completion(opts.model, opts.responseFormat ? "SYNTH" : "") };
+    };
+    const rt = runtime(hanging);
+    const drive = driveDurableRun(store, { runId: started.runId, owner: "w1", runtime: rt, maxTicks: 80 });
+    for (let i = 0; i < 40; i += 1) {
+      const live = await store.get(started.runId);
+      if (live?.cursor.phase === "SYNTHESIS" || live?.status === "SYNTHESIS") break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    release();
+    const done = await drive;
+    const stopped = await stopDurableRun(store, { userId: "u1", taskId: task.id, runId: started.runId });
+    const status = stopped?.status ?? done?.status;
+    assert.equal(status, "COMPLETE");
+    assert.ok(stopped?.output?.result ?? done?.output?.result);
+    assert.notEqual(status, "CANCELLED");
+    if ((stopped?.output ?? done?.output)?.artifact || task.mode === "DECIDE") {
+      assert.equal((stopped ?? done)?.status, "COMPLETE");
+    }
+  });
+});
+

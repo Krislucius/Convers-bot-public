@@ -23,6 +23,7 @@ import { PROVIDER_ATTEMPTS } from "./provider-error.ts";
 import type { PreflightReport } from "./start-preflight.ts";
 import type { ModelHealth } from "./model-health.ts";
 import { diagnoseInternalStage, type StallStage } from "./pacing.ts";
+import { decideDurableWrite, exclusiveRunState, hasPersistedSynthesis } from "./terminal.ts";
 
 export const DURABLE_LEASE_MS = 90_000;
 export const DURABLE_TICK_BUDGET_MS = 25_000;
@@ -292,8 +293,25 @@ export function toPublic(row: DurableRunRow, nowMs = Date.now()): DurableRunPubl
         providerCallsStarted,
         queued: row.status === "QUEUED" || row.cursor.phase === "QUEUED",
       });
+  const terminal = exclusiveRunState({
+    status: row.status,
+    snapshotStatus: row.snapshot.status,
+    hasSynthesis: hasPersistedSynthesis({
+      status: row.status,
+      output: row.output,
+      responses: row.responses,
+      mode: row.frozenInput.task.mode,
+      artifact: row.output?.artifact ?? null,
+    }),
+    result: row.output?.result ?? null,
+    hasArtifact: Boolean(row.output?.artifact),
+  });
+  const publicStatus = terminal ?? row.status;
+  const taskStatus = terminal ?? taskStatusFor(row.status, row.stage);
   const snapshot: CouncilRunSnapshot = {
     ...row.snapshot,
+    status: taskStatus,
+    stage: terminal === "COMPLETE" ? "COMPLETE" : terminal === "CANCELLED" ? "CANCELLED" : row.snapshot.stage,
     lastWakeAt: row.lastWakeAt,
     leaseExpiresAt: leaseExpiresAtIso(row.leaseExpiresAt),
     nextRecoveryDeadline: new Date(deadline).toISOString(),
@@ -319,9 +337,9 @@ export function toPublic(row: DurableRunRow, nowMs = Date.now()): DurableRunPubl
     runId: row.runId,
     taskId: row.taskId,
     generation: row.generation,
-    status: row.status,
-    stage: row.stage,
-    taskStatus: taskStatusFor(row.status, row.stage),
+    status: publicStatus,
+    stage: terminal === "COMPLETE" ? "COMPLETE" : terminal === "CANCELLED" ? "CANCELLED" : row.stage,
+    taskStatus,
     startedAt: row.startedAt,
     lastProgressAt: row.lastProgressAt,
     lastWakeAt: row.lastWakeAt,
@@ -462,9 +480,32 @@ export function createMemoryDurableStore(seed: DurableRunRow[] = []): DurableSto
     async write(row, expected) {
       const current = byId.get(row.runId);
       if (!current) return false;
-      if (!shouldAcceptDurableWrite(current, { runId: row.runId, ...expected })) return false;
+      const decision = decideDurableWrite({
+        currentRunId: current.runId,
+        incomingRunId: row.runId,
+        currentGeneration: current.generation,
+        currentLeaseEpoch: current.leaseEpoch,
+        expectedGeneration: expected.generation,
+        expectedLeaseEpoch: expected.leaseEpoch,
+        currentStatus: current.status,
+        incomingStatus: row.status,
+        currentHasSynthesis: hasPersistedSynthesis({
+          status: current.status,
+          output: current.output,
+          responses: current.responses,
+          mode: current.frozenInput.task.mode,
+        }),
+        incomingHasSynthesis: hasPersistedSynthesis({
+          status: row.status,
+          output: row.output,
+          responses: row.responses,
+          mode: row.frozenInput.task.mode,
+        }),
+      });
+      if (decision !== "ACCEPT") return false;
       const next = cloneRow(row);
       if (next.lastWakeAt == null) next.lastWakeAt = current.lastWakeAt ?? null;
+      if (next.status === "COMPLETE" && current.generation > next.generation) next.generation = current.generation;
       byId.set(row.runId, next);
       return true;
     },
@@ -472,17 +513,17 @@ export function createMemoryDurableStore(seed: DurableRunRow[] = []): DurableSto
 }
 
 export function overlayTaskWithRun(task: Task, row: DurableRunRow, nowMs = Date.now()): Task {
-  const snapshot = toPublic(row, nowMs).snapshot;
+  const pub = toPublic(row, nowMs);
   return {
     ...task,
-    status: taskStatusFor(row.status, row.stage),
+    status: pub.taskStatus,
     error: row.error,
     provider: row.provider,
     selectedModels: row.members,
     nanogptBilling: row.nanogptBilling,
     diagnostics: {
       ...(task.diagnostics ?? {}),
-      run: snapshot,
+      run: pub.snapshot,
     },
   };
 }

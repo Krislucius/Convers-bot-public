@@ -5,6 +5,7 @@ import type { CouncilRole } from "./roles";
 import type { CouncilMember } from "./members";
 import type { DiscoverySnapshot } from "./discover";
 import type { NanoGptBillingMode } from "./nano-billing";
+import type { IssueLedger } from "./issues";
 
 export type AgentKey = string;
 
@@ -232,8 +233,12 @@ export type CouncilResult = {
   synthesisRaw: string | null;
   synthesizerProposedStatus: CouncilStatus | null;
   finalEnforcedStatus: CouncilStatus | null;
+  proposedStatus?: CouncilStatus | null;
+  reconciledStatus?: CouncilStatus | null;
   verdictOverride: boolean;
   overrideReason: string | null;
+  gateReason?: string | null;
+  issueLedger?: IssueLedger | null;
   decision: string | null;
   rationale: string | null;
   dissent: string[];
@@ -358,6 +363,10 @@ export type RunDiagnostics = {
     callableMemberIds: string[];
     blockedMemberIds: string[];
   } | null;
+  proposedStatus?: CouncilStatus | null;
+  reconciledStatus?: CouncilStatus | null;
+  gateReason?: string | null;
+  unresolvedIssues?: string[];
 };
 
 export type Task = {

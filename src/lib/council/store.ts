@@ -39,6 +39,7 @@ import type {
   AgentResponse,
 } from "./types";
 import { archiveRuns, ownedResponses, shouldAcceptRunWrite, type CouncilRunSnapshot } from "./run-control";
+import { exclusiveRunState, hasPersistedSynthesis } from "./terminal";
 
 export const LEGACY_STORE_KEY = "conversation-bot:v012";
 
@@ -386,6 +387,11 @@ export function rememberCouncilProgress(
 }
 
 export function markTaskCancelled(taskId: string, error = "Council run stopped.") {
+  const existing = memory.tasks.find((row) => row.id === taskId);
+  const result = memory.results.find((row) => row.taskId === taskId) ?? null;
+  if (existing && exclusiveRunState({ status: existing.status, result, hasSynthesis: Boolean(result) }) === "COMPLETE") {
+    return;
+  }
   persist({
     ...memory,
     tasks: memory.tasks.map((t) => {
@@ -460,6 +466,33 @@ export function applyCouncilOutput(
   },
 ) {
   const existing = memory.tasks.find((t) => t.id === taskId);
+  const existingResult = memory.results.find((row) => row.taskId === taskId) ?? null;
+  const currentTerminal = exclusiveRunState({
+    status: existing?.status,
+    snapshotStatus: existing?.diagnostics?.run?.status,
+    result: existingResult,
+    hasSynthesis: Boolean(existingResult) || hasPersistedSynthesis({
+      status: existing?.status,
+      responses: memory.responses.filter((row) => row.taskId === taskId),
+      mode: existing?.mode,
+      artifact: memory.artifacts.find((row) => row.taskId === taskId) ?? null,
+    }),
+  });
+  const incomingTerminal = exclusiveRunState({
+    status: patch.task.status,
+    result: patch.result,
+    hasSynthesis: Boolean(patch.result),
+    hasArtifact: Boolean(patch.artifact),
+  });
+  if (currentTerminal === "COMPLETE" && incomingTerminal === "CANCELLED") return;
+  if (incomingTerminal === "COMPLETE" && patch.task.status !== "COMPLETE") {
+    patch = { ...patch, task: { ...patch.task, status: "COMPLETE", error: null } };
+  }
+  if (incomingTerminal !== "COMPLETE") {
+    patch = { ...patch, artifact: null, packet: null };
+  } else if (patch.packet && patch.result?.status !== "APPROVED") {
+    patch = { ...patch, packet: null };
+  }
   const currentRun = existing?.diagnostics?.run?.runId;
   const incomingRun = patch.task.diagnostics?.run?.runId ?? patch.responses.find((row) => row.runId)?.runId ?? null;
   if (!shouldAcceptRunWrite(currentRun ?? null, incomingRun ?? null)) return;
