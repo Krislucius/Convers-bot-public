@@ -59,7 +59,8 @@ FUNCTION BLOCKERS: none.
 
 ### BUILD WORKFLOW
 
-- Production Publish is a user action; git `CB-BUILD-20260908-003` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
+- Production Publish is a user action; git `CB-BUILD-20260908-004` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
+- CREATE safety gate: reconstructed `P1_ARCHITECTURE` notes are not unresolved defects and must not override synthesizer APPROVED. REVIEW still blocks on substantiated P0/P1.
 - The Council sweeper cron is declared once in `vercel.json`. Post-build must not also inject the same path+schedule into `.vercel/output/config.json` (Grok/Vercel merge both and reject the duplicate).
 - Production FUNCTIONALITY READY requires a real browser smoke to an interactive UI. HTTP 200 / bundles / identity / auth-health are necessary but not sufficient.
 - The protected runtime shell is `docs/RUNTIME_SHELL.json`. `npm run shell:gate` (hash, product-vs-shell scope, no client `.server` imports, production build, built-browser smoke) must pass before a release. Functional Council/evidence/history patches that also change shell files fail with `SHELL_SCOPE_VIOLATION`.

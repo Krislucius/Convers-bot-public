@@ -18,7 +18,7 @@ import type {
   Task,
   TaskMode,
 } from "./types.ts";
-import { filterCreateBlockers, normalizeTaskMode } from "./task-mode.ts";
+import { filterCreateBlockers, isTaskMode, normalizeTaskMode } from "./task-mode.ts";
 import { parseSynthesizedArtifact, parseEvidenceLabels } from "./artifact.ts";
 import { asReviewVerdict, reviewVerdictFromStatus } from "./review.ts";
 import { buildMandatoryContext } from "../evidence/pack.ts";
@@ -514,6 +514,7 @@ export function applyGate(
   round2: AgentResponse[],
   mode: TaskMode | string = "REVIEW",
 ): { status: CouncilStatus; blockers: string[]; reason: string | null } {
+  const resolvedMode = isTaskMode(mode) ? mode : parsed.artifact ? "CREATE" : normalizeTaskMode(mode);
   const p0: string[] = [];
   const p1: string[] = [];
   let p4Only = true;
@@ -531,16 +532,19 @@ export function applyGate(
       p0.push(`${row.agent}: ${[remainingP0, blockersP0].filter((part) => hasItems(part)).join("\n").trim()}`);
       p4Only = false;
     }
-    if (hasItems(remainingP1) || hasItems(archP1)) {
+    // CREATE P1_ARCHITECTURE is the reconstruction, not an unresolved defect list.
+    // Residual P1 uncertainty must not veto synthesizer APPROVED.
+    if (resolvedMode === "CREATE") {
+      if (hasItems(remainingP1) || hasItems(archP1)) p4Only = false;
+    } else if (hasItems(remainingP1) || hasItems(archP1)) {
       p1.push(`${row.agent}: ${[remainingP1, archP1].filter((part) => hasItems(part)).join("\n").trim()}`);
       p4Only = false;
     }
     if (hasItems(structured.P2_CORRECTNESS ?? "") || hasItems(structured.P3_ROBUSTNESS ?? "")) p4Only = false;
   }
 
-  const resolvedMode = normalizeTaskMode(mode);
   const gatedP0 = resolvedMode === "CREATE" ? filterCreateBlockers(p0) : p0;
-  const gatedP1 = resolvedMode === "CREATE" ? filterCreateBlockers(p1) : p1;
+  const gatedP1 = resolvedMode === "CREATE" ? [] : p1;
   const parsedBlockers = resolvedMode === "CREATE" ? filterCreateBlockers(parsed.blockers) : parsed.blockers;
 
   const proposed = parsed.status;

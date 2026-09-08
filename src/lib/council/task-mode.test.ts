@@ -296,6 +296,77 @@ describe("CREATE artifact synthesis", () => {
     assert.equal(isNonBlockingCreateFinding("repository is absent"), true);
   });
 
+  it("CREATE does not block APPROVED on reconstructed P1_ARCHITECTURE notes", () => {
+    const parsed = parseJson(`{
+      "status":"APPROVED",
+      "consensus":["canonical v1"],
+      "disagreements":[],
+      "blockers":[],
+      "recommendation":"implement the reconstructed architecture",
+      "agent_positions":{"alt":"surface kernel"},
+      "artifact":{"type":"ARCHITECTURE","title":"v1","version":"1.0","content":"# reconstructed","evidenceLabels":[]}
+    }`);
+    assert.ok(parsed);
+    const alt = {
+      agent: "alt-1",
+      structured: {
+        POSITION: "reconstructed",
+        P0_BLOCKERS: "none",
+        P1_ARCHITECTURE:
+          "Hierarchical Decoupling: The ForwardFlowForecaster manages the Buy-side. Surface-Based Production consumes the entire SupplyElasticitySurface.",
+        REMAINING_P0: "none",
+        REMAINING_P1: "none",
+        P4_IMPROVEMENTS: "none",
+      },
+    };
+    const gated = applyGate(parsed!, [alt as never], "CREATE");
+    assert.equal(gated.status, "APPROVED");
+    assert.equal(gated.reason, null);
+    assert.equal(gated.blockers.some((row) => /Hierarchical Decoupling/i.test(row)), false);
+    const screenshot = applyGate(parsed!, [
+      {
+        agent: "ALTERNATIVE_REASONER",
+        structured: {
+          POSITION: "reconstructed v1",
+          P0_BLOCKERS: "none",
+          P1_ARCHITECTURE:
+            "Hierarchical Decoupling: The ForwardFlowForecaster manages the Buy-side. Event Identity/Revision uses canonical_event_id. Passive Composition: Composer is a deterministic assembler. Surface-Based Production consumes the entire SupplyElasticitySurface.",
+          REMAINING_P0: "none",
+          REMAINING_P1: "none",
+        },
+      } as never,
+    ], "CREATE");
+    assert.equal(screenshot.status, "APPROVED");
+    assert.equal(screenshot.reason, null);
+    assert.equal(screenshot.blockers.length, 0);
+    const inferred = applyGate(parsed!, [alt as never], "not-a-mode");
+    assert.equal(inferred.status, "APPROVED");
+  });
+
+  it("REVIEW still blocks APPROVED when P1 architecture flaws remain", () => {
+    const parsed = parseJson(`{
+      "status":"APPROVED",
+      "consensus":["pass"],
+      "disagreements":[],
+      "blockers":[],
+      "recommendation":"accept",
+      "agent_positions":{"gpt":"ok"}
+    }`);
+    assert.ok(parsed);
+    const row = {
+      agent: "gpt-1",
+      structured: {
+        POSITION: "flawed",
+        P0_BLOCKERS: "none",
+        P1_ARCHITECTURE: "The candidate violates the frozen clock split.",
+        REMAINING_P1: "clock split unresolved",
+      },
+    };
+    const gated = applyGate(parsed!, [row as never], "REVIEW");
+    assert.equal(gated.status, "BLOCKED");
+    assert.match(gated.reason ?? "", /P1/);
+  });
+
   it("CREATE agent contracts are not merely reviewer roles", () => {
     const create = rolesForMode("CREATE");
     assert.match(create.LEAD_REASONER, /CREATE mode/);
