@@ -73,9 +73,10 @@ export function evaluateProject(input: {
 }
 
 export function displayVerdict(verdict: ReviewVerdict | null, status: string): string {
+  if (verdict === "PASS" || (!verdict && status === "APPROVED")) return "Accepted";
+  if (verdict === "PATCH" || status === "PATCH") return "Needs a patch";
+  if (verdict === "BLOCKED" || status === "BLOCKED") return "Cannot accept";
   if (verdict) return verdict;
-  if (status === "APPROVED") return "PASS";
-  if (status === "PATCH") return "PATCH";
-  if (status === "BLOCKED") return "BLOCKED";
+  if (status === "USER_DECISION_REQUIRED") return "Needs your decision";
   return status.replaceAll("_", " ");
 }

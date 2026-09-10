@@ -107,6 +107,65 @@ describe("issue normalization", () => {
     assert.equal(gated.blockers.length, 0);
   });
 
+  it("member-prefixed none --- none is not a P0 blocker", () => {
+    const noise = "legacy_3_Qwen3_5_27B_Claude_4_6_Opus_Reasoning_Di: none --- none ---";
+    const gated = applyGate(
+      parsed("APPROVED", { blockers: [noise], unresolved_issues: [] }),
+      [
+        row("legacy_3_Qwen3_5_27B_Claude_4_6_Opus_Reasoning_Di", {
+          P0_BLOCKERS: "none",
+          REMAINING_P0: noise,
+          REMAINING_P1: "none",
+        }),
+      ],
+      "CREATE",
+    );
+    assert.equal(gated.status, "APPROVED");
+    assert.equal(gated.blockers.length, 0);
+    assert.equal(
+      gated.ledger.unresolved.some((item) => /legacy_3|none --- none/i.test(item.text)),
+      false,
+    );
+  });
+
+  it("CREATE screenshot reconstruction unresolved list is not a P0 blocker", () => {
+    const noise = "legacy_3_Qwen3_5_27B_Claude_4_6_Opus_Reasoning_Di: none --- none ---";
+    const gated = applyGate(
+      parsed("APPROVED", {
+        blockers: [noise],
+        unresolved_issues: [
+          "BuySellCouplingSpec ACP",
+          "latent construct validation gap",
+          "Shadow calibration pipeline: Not yet implemented; recommended for audited threshold adjustments",
+        ],
+      }),
+      [
+        row("legacy_3_Qwen3_5_27B_Claude_4_6_Opus_Reasoning_Di", {
+          P0_BLOCKERS: "none",
+          REMAINING_P0: noise,
+          REMAINING_P1: "none",
+        }),
+      ],
+      "CREATE",
+    );
+    assert.equal(gated.status, "APPROVED");
+    assert.equal(gated.blockers.length, 0);
+    assert.equal(/\bBLOCKED\b/.test(gated.reason ?? ""), false);
+  });
+
+  it("CREATE not-yet-implemented reconstruction is not a P0 blocker", () => {
+    const gated = applyGate(
+      parsed("APPROVED", {
+        unresolved_issues: ["Shadow calibration pipeline: Not yet implemented; recommended for audited threshold adjustments"],
+        blockers: [],
+      }),
+      [row("gpt", { REMAINING_P0: "none", P0_BLOCKERS: "none" })],
+      "CREATE",
+    );
+    assert.notEqual(gated.status, "BLOCKED");
+    assert.equal(gated.blockers.length, 0);
+  });
+
   it("CREATE reconstruction notes are not UNRESOLVED", () => {
     const ledger = buildIssueLedger({
       mode: "CREATE",

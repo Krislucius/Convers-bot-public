@@ -34,7 +34,7 @@ UI (routes + council-ui)
 → persist.postgres
 ```
 
-The browser never owns execution. Closing the tab, reload, or logout does not cancel a run. UI poll is reconnect-only.
+The browser never owns execution. Closing the tab, reload, or logout does not cancel a run. UI poll is reconnect-only. After a run the task page shows two labeled reports: Council run (technical finish/fail with member reasons) and Task verdict (what was created or discussed, what to continue, or why it cannot be accepted). User-facing copy does not use a naked BLOCKED label.
 
 Evidence flow:
 

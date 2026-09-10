@@ -4,17 +4,18 @@ import { AgentCard } from "@/components/agent-card";
 import { PreflightPanel } from "@/components/preflight-panel";
 import { ArtifactPanel, ContextManifestPanel } from "@/components/context-manifest-panel";
 import { CouncilFold } from "@/components/council-fold";
+import { CouncilReports } from "@/components/council-reports";
 import { CouncilRunPanel, CouncilRunMeter } from "@/components/council-run-panel";
 import { CollapsibleText } from "@/components/collapsible-text";
 import { Crumb, DangerButton, GhostButton, Page, PageHeader, Panel, PrimaryButton, StatusPill } from "@/components/council-ui";
 import { ImplementationPacketPanel } from "@/components/implementation-packet-panel";
 import { OpLogPanel } from "@/components/op-log";
-import { displayVerdict } from "@/lib/council/evaluate";
-import { councilPartial, isSynthesisResponse, responseMemberId } from "@/lib/council/agents";
+import { isSynthesisResponse, responseMemberId } from "@/lib/council/agents";
+import { deriveCouncilReports } from "@/lib/council/reports";
 import { runCredsFromReady, isStaleDisconnectError } from "@/lib/council/orchestrate";
 import { providerName } from "@/lib/council/providers";
 import { billingLabel } from "@/lib/council/nano-billing";
-import { attemptLimit, findMember, memberLabel } from "@/lib/council/members";
+import { attemptLimit, memberLabel } from "@/lib/council/members";
 import {
   applyCouncilOutput,
   getStoreSnapshot,
@@ -359,14 +360,24 @@ function TaskPage() {
 
   const canRun = STARTABLE.has(task.status) && terminal !== "COMPLETE";
   const hashMatch = responses.length === 0 || responses.every((row) => row.contextHash === responses[0]?.contextHash);
-  const round1Rows = responses.filter((row) => row.stage === "ROUND_1" || row.round === 1);
-  const workRows = responses.filter((row) => !isSynthesisResponse(row));
-  const partialInfo = councilPartial(round1Rows.length ? round1Rows : workRows);
   const showPartial =
     !isRunning &&
     task.status === "FAILED" &&
     !synth &&
     (Boolean(task.diagnostics?.run?.partial) || responses.length > 0);
+  const reports = deriveCouncilReports({
+    mode: task.mode,
+    terminal,
+    taskStatus: task.status,
+    result,
+    artifact,
+    responses,
+    agents: persistedAgents,
+    members: members.map((row) => ({ memberId: row.memberId, label: memberLabel(row), role: row.role })),
+    running: isRunning,
+  });
+  const showReports = !isRunning && Boolean(terminal || result || showPartial);
+  const failedMemberCount = reports.technical.members.filter((row) => row.outcome === "failed").length;
 
   return (
     <Page>
@@ -514,125 +525,47 @@ function TaskPage() {
         </Panel>
       ) : null}
 
-      {showPartial ? (
-        <Panel>
-          <p className="mb-1 text-xs font-semibold tracking-widest text-muted uppercase">Failed run</p>
-          <div className="mb-3 flex flex-wrap items-center gap-2">
-            <h2 className="font-display m-0 text-xl">Partial result</h2>
-            <StatusPill status="PARTIAL" />
-          </div>
-          <p className="m-0 max-w-measure text-sm text-muted">
-            {task.diagnostics?.run?.synthesisSkipped ||
-              partialInfo.reason ||
-              "Synthesis was not created because fewer than 2 models survived."}
-          </p>
-          <ul className="mt-4 mb-0 grid list-none gap-2 p-0 sm:grid-cols-3">
-            {agentList.map(([agent, label]) => (
-              <AgentCard key={agent} label={label} progress={persistedAgents[agent] ?? agentState[agent]} />
-            ))}
-          </ul>
-          <div className="mt-4 grid gap-3">
-            {workRows
-              .filter((row) => !row.error)
-              .map((row) => {
-                const member = findMember(members, row);
-                return (
-                  <div key={row.id} className="rounded-md border border-line bg-subtle px-3 py-3">
-                    <p className="m-0 mb-2 text-xs font-semibold tracking-widest text-muted uppercase">
-                      {member ? memberLabel(member) : row.role || responseMemberId(row)} ·{" "}
-                      {row.stage === "ROUND_2" ? "cross-review" : "position"}
-                    </p>
-                    <CollapsibleText text={row.responseText} defaultCollapsed />
-                  </div>
-                );
-              })}
-            {responses
-              .filter((row) => isSynthesisResponse(row) && row.error)
-              .map((row) => (
-                <div key={row.id} className="rounded-md border border-line bg-subtle px-3 py-3">
-                  <p className="m-0 mb-2 text-xs font-semibold tracking-widest text-muted uppercase">
-                    Synthesis failure · {row.role || responseMemberId(row)}
-                  </p>
-                  <p className="m-0 text-sm break-words text-danger">{row.error}</p>
-                </div>
-              ))}
-          </div>
-          <div className="mt-4 flex flex-wrap gap-2">
+      {showReports ? (
+        <CouncilReports reports={reports}>
+          {failedMemberCount > 0 && (terminal === "FAILED" || terminal === "COMPLETE") ? (
             <PrimaryButton type="button" disabled={busy} onClick={onRetryFailed}>
               Retry failed models
             </PrimaryButton>
+          ) : null}
+          {showPartial ? (
             <Link
               to="/settings"
               className="inline-flex min-h-11 items-center justify-center gap-2 rounded-sm border border-line bg-transparent px-3.5 py-2.5 font-semibold text-fg no-underline"
             >
               Replace failed models
             </Link>
-            <GhostButton type="button" onClick={onRestart}>
-              Restart Council
-            </GhostButton>
-          </div>
-          {confirmRestart ? (
-            <p className="mt-3 mb-0 rounded-md bg-subtle px-3 py-3 text-sm text-muted">
-              Restart starts a new Council run and may incur new API cost.{" "}
-              <button type="button" className="font-semibold text-fg underline" onClick={onRestart}>
-                Confirm restart
-              </button>
-              {" · "}
-              <button type="button" className="text-muted underline" onClick={() => setConfirmRestart(false)}>
-                Keep this result
-              </button>
-            </p>
           ) : null}
-        </Panel>
+          <GhostButton type="button" onClick={onRestart}>
+            Restart Council
+          </GhostButton>
+        </CouncilReports>
+      ) : null}
+      {showReports && confirmRestart ? (
+        <p className="mt-3 mb-0 rounded-md bg-subtle px-3 py-3 text-sm text-muted">
+          Restart starts a new Council run and may incur new API cost.{" "}
+          <button type="button" className="font-semibold text-fg underline" onClick={onRestart}>
+            Confirm restart
+          </button>
+          {" · "}
+          <button type="button" className="text-muted underline" onClick={() => setConfirmRestart(false)}>
+            Keep this result
+          </button>
+        </p>
       ) : null}
 
       {artifact ? <ArtifactPanel artifact={artifact} /> : null}
       {packet ? <ImplementationPacketPanel packet={packet} /> : null}
 
       {result ? (
-        <Panel>
-          <p className="mb-1 text-xs font-semibold tracking-widest text-muted uppercase">Council synthesis</p>
-          <h2 className="font-display mb-3 text-2xl">
-            <StatusPill
-              status={
-                task.mode === "REVIEW"
-                  ? displayVerdict(result.reviewVerdict, result.reconciledStatus ?? result.finalEnforcedStatus ?? result.status)
-                  : (result.reconciledStatus ?? result.finalEnforcedStatus ?? result.status)
-              }
-            />
-          </h2>
-          <p className="m-0 mb-3 text-sm text-muted">
-            Run state <span className="text-fg">{terminal ?? "COMPLETE"}</span>
-            {" · "}
-            Proposed <span className="text-fg">{result.proposedStatus ?? result.synthesizerProposedStatus ?? result.status}</span>
-            {" · "}
-            Reconciled <span className="text-fg">{result.reconciledStatus ?? result.finalEnforcedStatus ?? result.status}</span>
-          </p>
-          {result.reviewVerdict ? (
-            <p className="m-0 mb-3 text-sm text-muted">
-              Review verdict <span className="text-fg">{result.reviewVerdict}</span>
-            </p>
-          ) : null}
-          {result.failedAgents.length ? (
-            <p className="rounded-md bg-subtle p-3 text-warn">
-              Surviving reviewers continued after {result.failedAgents.join(", ")} failed.
-            </p>
-          ) : null}
-          {(result.gateReason ?? result.overrideReason) ? (
-            <p className="rounded-md bg-subtle p-3 text-danger">
-              Final status is the reconciled verdict from unresolved issues, not the synthesizer word.
-              Proposed: {result.proposedStatus ?? result.synthesizerProposedStatus}.{" "}
-              {result.gateReason ?? result.overrideReason}
-            </p>
-          ) : result.verdictOverride ? (
-            <p className="rounded-md bg-subtle p-3 text-danger">
-              Final status was adjusted by the safety gate. Proposed: {result.synthesizerProposedStatus}.{" "}
-              {result.overrideReason}
-            </p>
-          ) : null}
+        <CouncilFold title="Verdict details" summary="recommendation, issues, evidence, model positions">
           {result.decision ? (
             <>
-              <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">Decision</h3>
+              <h3 className="mt-0 text-sm font-semibold tracking-widest text-muted uppercase">Decision</h3>
               <CollapsibleText text={result.decision} />
               {result.rationale ? (
                 <>
@@ -645,18 +578,19 @@ function TaskPage() {
               <ListBlock title="Risks" rows={result.risks} />
             </>
           ) : null}
-          <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">Main recommendation</h3>
+          <h3 className={`${result.decision ? "mt-4" : "mt-0"} text-sm font-semibold tracking-widest text-muted uppercase`}>
+            Main recommendation
+          </h3>
           <CollapsibleText text={result.recommendation || "—"} />
-          <ListBlock title="Blockers" rows={result.blockers} />
           <ListBlock title="Disagreements" rows={result.disagreements} />
           <ListBlock title="Issues" rows={result.issues} />
           <ListBlock title="Proposed corrections" rows={result.proposedCorrections} />
           <ListBlock title="Resolved issues" rows={result.resolvedIssues} />
-          <ListBlock title="Unresolved issues" rows={result.unresolvedIssues} />
+          <ListBlock title="Open follow-ups" rows={result.unresolvedIssues} />
           {result.issueLedger ? (
             <>
               <ListBlock
-                title="Issue ledger — unresolved"
+                title="Issue ledger — open"
                 rows={result.issueLedger.unresolved.map((row) => `${row.issueId} · ${row.severity} · ${row.text}`)}
               />
               <ListBlock
@@ -688,21 +622,20 @@ function TaskPage() {
             </>
           ) : null}
           <div className="mt-4">
-            <CouncilFold title="Model positions" summary={agentList.map(([, label]) => label).join(" · ") || "selected models"}>
-              <dl className="m-0 grid gap-3">
-                {agentList.map(([key, label]) => (
-                  <div key={key}>
-                    <dt className="text-xs tracking-wider text-faint uppercase">{label}</dt>
-                    <dd className="m-0">
-                      <CollapsibleText
-                        text={positionForMember(result.agentPositions, key, members)}
-                        defaultCollapsed
-                      />
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            </CouncilFold>
+            <h3 className="mt-0 text-sm font-semibold tracking-widest text-muted uppercase">Model positions</h3>
+            <dl className="m-0 grid gap-3">
+              {agentList.map(([key, label]) => (
+                <div key={key}>
+                  <dt className="text-xs tracking-wider text-faint uppercase">{label}</dt>
+                  <dd className="m-0">
+                    <CollapsibleText
+                      text={positionForMember(result.agentPositions, key, members)}
+                      defaultCollapsed
+                    />
+                  </dd>
+                </div>
+              ))}
+            </dl>
           </div>
           {responses[0]?.contextHash ? (
             <p className="mt-3 mb-0 text-xs break-all text-faint">
@@ -710,7 +643,7 @@ function TaskPage() {
               {hashMatch ? " · all agent responses share this snapshot" : " · snapshot mismatch"}
             </p>
           ) : null}
-        </Panel>
+        </CouncilFold>
       ) : null}
 
       {responses.length || result ? (

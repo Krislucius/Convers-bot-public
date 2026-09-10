@@ -12,7 +12,7 @@ export function QualitySummary({ summary }: { summary: ProjectQualitySummary }) 
         <Stat label="Tasks" value={String(summary.taskCount)} />
         <Stat label="Approved / PASS" value={String(summary.approvedOrPass)} />
         <Stat label="PATCH" value={String(summary.patch)} />
-        <Stat label="BLOCKED" value={String(summary.blocked)} />
+        <Stat label="Cannot accept" value={String(summary.blocked)} />
         <Stat label="Disagreements" value={String(summary.disagreements)} />
         <Stat label="Evidence used" value={String(summary.evidenceUsed)} />
         <Stat label="Iterations" value={String(summary.iterations)} />

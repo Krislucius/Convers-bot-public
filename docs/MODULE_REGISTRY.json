@@ -178,8 +178,10 @@
       "architecture_revision": "CB-ARCH-20260908-002",
       "responsibilities": [
         "stable issue_id normalization",
+        "empty and member-prefixed none findings are not issues",
         "final dispositions UNRESOLVED RESOLVED REJECTED ACCEPTED_AS_PATCH USER_DECISION_REQUIRED",
         "safety gate on FINAL unresolved issues only",
+        "CREATE P0 only substantiated invariant breaks",
         "verdict reconciliation proposed vs reconciled"
       ],
       "dependencies": [
@@ -200,6 +202,23 @@
       ],
       "dependencies": [
         "council.protocol"
+      ],
+      "supersedes": []
+    },
+    {
+      "module_id": "council.reports",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/council/reports.ts",
+      "architecture_revision": "CB-ARCH-20260908-002",
+      "responsibilities": [
+        "dual labeled reports after Council: technical run vs task verdict",
+        "technical FINISHED / FINISHED WITH GAPS / FAILED with decoded member reasons",
+        "substance created / accepted / needs patch / cannot accept / needs decision",
+        "user-facing copy never uses a naked BLOCKED label"
+      ],
+      "dependencies": [
+        "council.issues",
+        "council.task-mode"
       ],
       "supersedes": []
     },
@@ -284,11 +303,13 @@
         "stall_reason / internal_stage, preflight/council/retry counts",
         "last_wake_at / lease / next recovery deadline",
         "run state COMPLETE FAILED CANCELLED separate from semantic verdict",
+        "two labeled result reports: Council run and Task verdict",
         "issue ledger unresolved/resolved/rejected/accepted as patch"
       ],
       "dependencies": [
         "council.durable-runner",
-        "council.orchestrator"
+        "council.orchestrator",
+        "council.reports"
       ],
       "supersedes": []
     },

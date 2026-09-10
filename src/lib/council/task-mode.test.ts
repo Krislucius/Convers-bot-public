@@ -294,6 +294,8 @@ describe("CREATE artifact synthesis", () => {
     assert.notEqual(gated.status, "BLOCKED");
     assert.equal(filterCreateBlockers(["No candidate artifact was supplied", "real P0 invariant break"]).length, 1);
     assert.equal(isNonBlockingCreateFinding("repository is absent"), true);
+    assert.equal(isNonBlockingCreateFinding("Shadow calibration pipeline: Not yet implemented"), true);
+    assert.equal(isNonBlockingCreateFinding("latent construct validation gap"), true);
   });
 
   it("CREATE does not block APPROVED on reconstructed P1_ARCHITECTURE notes", () => {

@@ -84,7 +84,9 @@ P4_IMPROVEMENTS
 REVISED_POSITION
 RECOMMENDATION
 
-If a section has no items write "none".`;
+If a section has no items write "none".
+REMAINING_P0 and REMAINING_P1 are lists of remaining issues, or the single word none.
+Do not write per-member attribution tables. Do not prefix lines with member_id. Do not repeat "none" per model.`;
 
 function agentPositionSchema(keys: string[]) {
   const properties = Object.fromEntries(keys.map((key) => [key, { type: "string" }]));
@@ -121,7 +123,7 @@ Distinguish provenance: EVIDENCED, INFERRED, UNKNOWN, CONFLICTED, HISTORICALLY_A
 
 Output a single JSON object:
 {"status":"APPROVED|BLOCKED|USER_DECISION_REQUIRED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"",${positionsPrompt(keys)},"citations":[],"resolved_issues":[],"unresolved_issues":[],"artifact":{"type":"SPECIFICATION|ARCHITECTURE|PLAN|ADR|PROJECT_STATE|OTHER","title":"","version":"1.0","content":"markdown artifact","evidenceLabels":[{"claim":"","status":"EVIDENCED","citation":"[CHAT:source_id:1]"}]}}
-P4 never blocks. Do not BLOCK only because a candidate or repository was missing. ${rosterNote(keys)}`;
+P4 never blocks. Do not BLOCK only because a candidate or repository was missing. blockers must be substantiated invariant breaks; write [] or ["none"] if empty — never member_id, "none --- none", or per-model attribution. ${rosterNote(keys)}`;
 }
 
 export function decideSynthesisPrompt(keys: AgentKey[] = AGENTS): string {

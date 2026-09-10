@@ -100,7 +100,7 @@ export function DangerButton(props: ButtonHTMLAttributes<HTMLButtonElement>) {
   );
 }
 
-export function StatusPill({ status }: { status: TaskStatus | CouncilStatus | string }) {
+export function StatusPill({ status, label }: { status: TaskStatus | CouncilStatus | string; label?: string }) {
   const tone =
     status === "COMPLETE" ||
     status === "APPROVED" ||
@@ -134,10 +134,16 @@ export function StatusPill({ status }: { status: TaskStatus | CouncilStatus | st
           : status === "ARCHIVED"
             ? "text-faint"
             : "text-info";
-  const label = status.replaceAll("_", " ");
+  const shown =
+    label ??
+    (status === "BLOCKED"
+      ? "Not accepted"
+      : status === "USER_DECISION_REQUIRED"
+        ? "Needs your decision"
+        : status.replaceAll("_", " "));
   return (
     <span className={`inline-block rounded-full border border-line px-2 py-1 text-xs tracking-wide uppercase ${tone}`}>
-      {label}
+      {shown}
     </span>
   );
 }

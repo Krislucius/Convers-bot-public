@@ -9,7 +9,7 @@ export const MODE_COPY: Record<TaskMode, { label: string; hint: string }> = {
   },
   REVIEW: {
     label: "Review",
-    hint: "Review an existing candidate. Returns PASS, PATCH, or BLOCKED with issues and proposed corrections.",
+    hint: "Review an existing candidate. Returns accepted, needs a patch, or cannot accept, with issues and proposed corrections.",
   },
   DECIDE: {
     label: "Decide",
@@ -76,7 +76,7 @@ export function councilPreflight(input: {
 }
 
 const NON_BLOCKING_CREATE =
-  /no (pre-existing |existing )?candidate|candidate artifact.{0,40}(missing|absent|not (supplied|provided|present))|there is no candidate|nonexistent candidate|no repository|repository (is )?(absent|missing|unavailable)|no git|no runtime evidence|implementation status.{0,60}unknown/i;
+  /no (pre-existing |existing )?candidate|candidate artifact.{0,40}(missing|absent|not (supplied|provided|present))|there is no candidate|nonexistent candidate|no repository|repository (is )?(absent|missing|unavailable)|no git|no runtime evidence|implementation status.{0,60}unknown|not yet implemented|not implemented|pending final freeze|validation gap|future work|to be implemented|recommended for|reconstruction gap|missing implementation/i;
 
 export function isNonBlockingCreateFinding(text: string): boolean {
   return NON_BLOCKING_CREATE.test(text);

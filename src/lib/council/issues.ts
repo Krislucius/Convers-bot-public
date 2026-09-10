@@ -46,33 +46,49 @@ export type GateResult = {
   ledger: IssueLedger;
 };
 
-const EMPTY = new Set(["none", "n/a", "na", "-", "nil", "null", "no items", "n.a.", "n.a", ""]);
+const EMPTY = new Set(["none", "n/a", "na", "-", "nil", "null", "no items", "n.a.", "n.a", "", "no", "nothing"]);
 
-export function isEmptyFinding(text: string | null | undefined): boolean {
-  const line = String(text ?? "")
+const MEMBER_PREFIX = /^(legacy_\d+_[A-Za-z0-9_]+|m_[a-f0-9]+)\s*[:.\-–—]\s*/i;
+
+export function stripFindingDecor(text: string): string {
+  return String(text ?? "")
     .replace(/^[-*•]\s+/, "")
     .replace(/^\d+[.)]\s+/, "")
-    .trim()
-    .toLowerCase();
-  return !line || EMPTY.has(line);
+    .replace(MEMBER_PREFIX, "")
+    .replace(/(?:^|\s)[-–—*]{2,}(?:\s|$)/g, " ")
+    .replace(/\|/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function isEmptyFinding(text: string | null | undefined): boolean {
+  const decorated = String(text ?? "")
+    .replace(/^[-*•]\s+/, "")
+    .replace(/^\d+[.)]\s+/, "")
+    .trim();
+  if (!decorated) return true;
+  const line = stripFindingDecor(decorated).toLowerCase();
+  if (!line || EMPTY.has(line)) return true;
+  const tokens = line.split(/[\s,;:/]+/).filter(Boolean);
+  if (!tokens.length) return true;
+  if (tokens.every((token) => EMPTY.has(token) || /^-+$/.test(token))) return true;
+  const withoutEmpty = tokens.filter((token) => !EMPTY.has(token) && !/^-+$/.test(token));
+  if (!withoutEmpty.length) return true;
+  if (withoutEmpty.length === 1 && /^(legacy_\d+_[a-z0-9_]+|m_[a-f0-9]+)$/i.test(withoutEmpty[0] ?? "")) return true;
+  return false;
 }
 
 export function splitFindingLines(body: string | null | undefined): string[] {
   const raw = String(body ?? "");
   if (!raw.trim() || isEmptyFinding(raw)) return [];
   return raw
-    .split(/\n+|(?:;\s+)/)
-    .map((line) =>
-      line
-        .replace(/^[-*•]\s+/, "")
-        .replace(/^\d+[.)]\s+/, "")
-        .trim(),
-    )
+    .split(/\n+|(?:;\s+)|(?:\s+---+|\s+–––|\s+———)\s*/)
+    .map((line) => stripFindingDecor(line))
     .filter((line) => line && !isEmptyFinding(line));
 }
 
 export function normalizeIssueKey(text: string): string {
-  return String(text ?? "")
+  return stripFindingDecor(text)
     .toLowerCase()
     .replace(/^(p[0-4]|blocker|issue|remaining|objection)[:.\-\s]+/g, "")
     .replace(/[^a-z0-9\s]/g, " ")
@@ -117,18 +133,20 @@ function upsert(
   severity: IssueSeverity,
   disposition: IssueDisposition,
   source: IssueSource,
-): NormalizedIssue {
-  const existing = findMatch(issues, text);
+): NormalizedIssue | null {
+  const cleaned = stripFindingDecor(text);
+  if (!cleaned || isEmptyFinding(cleaned)) return null;
+  const existing = findMatch(issues, cleaned);
   if (existing) {
     existing.severity = bumpSeverity(existing.severity, severity);
     existing.disposition = disposition;
     existing.sources.push(source);
-    if (existing.text.length < text.trim().length) existing.text = text.trim();
+    if (existing.text.length < cleaned.length) existing.text = cleaned;
     return existing;
   }
   const created: NormalizedIssue = {
-    issueId: issueIdFor(text),
-    text: text.trim(),
+    issueId: issueIdFor(cleaned),
+    text: cleaned,
     severity,
     disposition,
     sources: [source],
@@ -150,11 +168,7 @@ function lastSourceRound(issue: NormalizedIssue): number {
   return issue.sources.reduce((max, src) => Math.max(max, src.round), 0);
 }
 
-function closeRemaining(
-  issues: NormalizedIssue[],
-  remaining: string[],
-  severity: "P0" | "P1",
-): void {
+function closeRemaining(issues: NormalizedIssue[], remaining: string[], severity: IssueSeverity): void {
   for (const line of remaining) {
     const match = findMatch(issues, line);
     if (match) {
@@ -363,6 +377,7 @@ export function buildIssueLedger(input: {
 export function unresolvedBlockers(ledger: IssueLedger, mode: TaskMode | string): NormalizedIssue[] {
   const resolvedMode = isTaskMode(mode) ? mode : normalizeTaskMode(mode);
   return ledger.unresolved.filter((row) => {
+    if (isEmptyFinding(row.text) || isNonBlockingCreateFinding(row.text)) return false;
     if (row.severity === "P0") return true;
     if (resolvedMode === "CREATE") return false;
     return row.severity === "P1";
@@ -389,27 +404,27 @@ export function reconcileVerdict(input: {
 
   if (p0.length) {
     status = "BLOCKED";
-    if (proposed !== "BLOCKED") reason = "Safety gate: unresolved P0 findings require BLOCKED.";
+    if (proposed !== "BLOCKED") reason = "Cannot accept: unresolved P0 findings remain.";
   } else if (p1.length) {
     status = "BLOCKED";
-    if (proposed !== "BLOCKED") reason = "Safety gate: unresolved P1 findings require BLOCKED.";
+    if (proposed !== "BLOCKED") reason = "Cannot accept: unresolved P1 findings remain.";
   } else if (mode === "DECIDE" && proposed === "APPROVED" && (Boolean(input.disagreements?.length) || input.conflictedEvidence)) {
     status = "USER_DECISION_REQUIRED";
-    reason = "Safety gate: DECIDE disagreements or CONFLICTED evidence require USER_DECISION_REQUIRED.";
+    reason = "Safety gate: DECIDE disagreements or CONFLICTED evidence require a user decision.";
   } else if (mode === "REVIEW" && acceptedPatches.length && (proposed === "PATCH" || proposed === "BLOCKED")) {
     status = "PATCH";
-    if (proposed === "BLOCKED") reason = "Safety gate: accepted non-P0 corrections reconcile to PATCH.";
+    if (proposed === "BLOCKED") reason = "Safety gate: accepted non-P0 corrections reconcile to a patch.";
   } else if (mode === "REVIEW" && proposed === "PATCH") {
     status = "PATCH";
   } else if (mode === "CREATE" && proposed === "BLOCKED") {
     status = "APPROVED";
-    reason = "CREATE safety gate: no unresolved P0 findings remain; synthesizer BLOCKED is not the final verdict.";
+    reason = "CREATE safety gate: no unresolved P0 findings remain; synthesizer cannot-accept is not the final verdict.";
   } else if (proposed === "BLOCKED") {
     status = mode === "REVIEW" && acceptedPatches.length ? "PATCH" : "APPROVED";
     reason =
       status === "PATCH"
-        ? "Safety gate: no unresolved P0/P1 findings; accepted corrections reconcile to PATCH."
-        : "Safety gate: no unresolved P0/P1 findings remain; synthesizer BLOCKED is not the final verdict.";
+        ? "Safety gate: no unresolved P0/P1 findings; accepted corrections reconcile to a patch."
+        : "Safety gate: no unresolved P0/P1 findings remain; synthesizer cannot-accept is not the final verdict.";
   } else if (proposed === "USER_DECISION_REQUIRED") {
     status = "USER_DECISION_REQUIRED";
   } else {
