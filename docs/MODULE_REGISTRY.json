@@ -182,6 +182,8 @@
         "final dispositions UNRESOLVED RESOLVED REJECTED ACCEPTED_AS_PATCH USER_DECISION_REQUIRED",
         "safety gate on FINAL unresolved issues only",
         "CREATE P0 only substantiated invariant breaks",
+        "unresolved P0 only is a blocker",
+        "REVIEW unresolved P1 without P0 reconciles to PATCH",
         "verdict reconciliation proposed vs reconciled"
       ],
       "dependencies": [
@@ -211,10 +213,29 @@
       "implementation_path": "src/lib/council/reports.ts",
       "architecture_revision": "CB-ARCH-20260908-002",
       "responsibilities": [
-        "dual labeled reports after Council: technical run vs task verdict",
+        "dual labeled reports after Council: technical run vs substance",
         "technical FINISHED / FINISHED WITH GAPS / FAILED with decoded member reasons",
         "substance created / accepted / needs patch / cannot accept / needs decision",
-        "user-facing copy never uses a naked BLOCKED label"
+        "primary verdict UI is Decision Record, not this substance report"
+      ],
+      "dependencies": [
+        "council.issues",
+        "council.task-mode"
+      ],
+      "supersedes": []
+    },
+    {
+      "module_id": "council.decision",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/council/decision.ts",
+      "architecture_revision": "CB-ARCH-20260908-002",
+      "responsibilities": [
+        "Decision Record after every completed Council run",
+        "run status COMPLETE FAILED CANCELLED separate from task verdict",
+        "verdict APPROVED PATCH BLOCKED USER_DECISION_REQUIRED from unresolved issue set",
+        "unresolved P0 is BLOCKED; unresolved P1 without P0 is PATCH",
+        "normalized blocker why never dumps raw reviewer paragraphs",
+        "next action ACCEPT CREATE PATCH RUN REVIEW RUN DECIDE REQUEST MORE EVIDENCE"
       ],
       "dependencies": [
         "council.issues",
@@ -303,13 +324,16 @@
         "stall_reason / internal_stage, preflight/council/retry counts",
         "last_wake_at / lease / next recovery deadline",
         "run state COMPLETE FAILED CANCELLED separate from semantic verdict",
-        "two labeled result reports: Council run and Task verdict",
+        "Decision Record is the default completed-run view",
+        "run status and task verdict shown as separate pills",
+        "raw synthesis, model positions, evidence, technical metadata collapsed",
         "issue ledger unresolved/resolved/rejected/accepted as patch"
       ],
       "dependencies": [
         "council.durable-runner",
         "council.orchestrator",
-        "council.reports"
+        "council.reports",
+        "council.decision"
       ],
       "supersedes": []
     },
@@ -460,6 +484,7 @@
       "responsibilities": [
         "task quality row",
         "project quality summary",
+        "execution failures separate from APPROVED PATCH BLOCKED USER_DECISION_REQUIRED",
         "later corrections"
       ],
       "dependencies": [

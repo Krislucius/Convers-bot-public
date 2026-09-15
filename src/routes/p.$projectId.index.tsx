@@ -76,7 +76,9 @@ function TasksPage() {
           <p className="text-muted">No tasks.</p>
         ) : (
           <ul className="m-0 grid list-none gap-3 p-0">
-            {tasks.map((task) => (
+            {tasks.map((task) => {
+              const qualityRow = quality.rows.find((row) => row.taskId === task.id);
+              return (
               <li key={task.id}>
                 <Link
                   to="/t/$taskId"
@@ -85,7 +87,9 @@ function TasksPage() {
                 >
                   <strong className="break-words">{task.title}</strong>
                   <span className="text-muted">
-                    {task.mode} · {task.status.replaceAll("_", " ")}
+                    {task.mode} · Run {qualityRow?.runStatus ?? task.status}
+                    {" · Verdict "}
+                    {qualityRow?.taskVerdict ?? "none"}
                   </span>
                   <span className="text-xs text-faint">
                     {task.selectedChatSourceIds.length} AI chat
@@ -96,7 +100,8 @@ function TasksPage() {
                   </span>
                 </Link>
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
       </Panel>

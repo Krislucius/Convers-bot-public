@@ -110,7 +110,7 @@ function rosterNote(keys: string[]): string {
 export function reviewSynthesisPrompt(keys: AgentKey[] = AGENTS): string {
   return `You are the council synthesizer. Output a single JSON object matching:
 {"status":"APPROVED|PATCH|BLOCKED|USER_DECISION_REQUIRED","review_verdict":"PASS|PATCH|BLOCKED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"",${positionsPrompt(keys)},"issues":[],"proposed_corrections":[],"resolved_issues":[],"unresolved_issues":[],"citations":[]}
-REVIEW: PASS = candidate is acceptable, PATCH = issues with proposed corrections, BLOCKED = P0/P1. Preserve each model position, disagreements, and citations. Any substantiated P0 or unresolved P1 => BLOCKED. P4 never blocks. ${rosterNote(keys)}`;
+REVIEW: PASS = candidate is acceptable, PATCH = material fix required with no P0, BLOCKED = unresolved P0. Preserve each model position, disagreements, and citations. Substantiated P0 => BLOCKED. Unresolved P1 without P0 => PATCH. P4 never blocks. ${rosterNote(keys)}`;
 }
 
 export function createSynthesisPrompt(keys: AgentKey[] = AGENTS): string {
@@ -129,7 +129,7 @@ P4 never blocks. Do not BLOCK only because a candidate or repository was missing
 export function decideSynthesisPrompt(keys: AgentKey[] = AGENTS): string {
   return `You are the DECIDE-mode synthesizer. Output a single JSON object:
 {"status":"APPROVED|BLOCKED|USER_DECISION_REQUIRED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"",${positionsPrompt(keys)},"decision":"","alternatives":[],"rationale":"","dissent":[],"evidence":[{"claim":"","status":"EVIDENCED","citation":"[CHAT:source_id:1]"}],"risks":[],"citations":[]}
-Unresolved material disagreement or CONFLICTED evidence => USER_DECISION_REQUIRED. Substantiated P0/P1 => BLOCKED. ${rosterNote(keys)}`;
+Unresolved material disagreement or CONFLICTED evidence => USER_DECISION_REQUIRED. Substantiated P0 => BLOCKED. Unresolved P1 without P0 is not BLOCKED. ${rosterNote(keys)}`;
 }
 
 export const SYNTHESIS = reviewSynthesisPrompt();

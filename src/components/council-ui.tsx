@@ -134,13 +134,7 @@ export function StatusPill({ status, label }: { status: TaskStatus | CouncilStat
           : status === "ARCHIVED"
             ? "text-faint"
             : "text-info";
-  const shown =
-    label ??
-    (status === "BLOCKED"
-      ? "Not accepted"
-      : status === "USER_DECISION_REQUIRED"
-        ? "Needs your decision"
-        : status.replaceAll("_", " "));
+  const shown = label ?? status.replaceAll("_", " ");
   return (
     <span className={`inline-block rounded-full border border-line px-2 py-1 text-xs tracking-wide uppercase ${tone}`}>
       {shown}

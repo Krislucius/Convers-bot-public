@@ -300,7 +300,7 @@ describe("final verdict reconciliation", () => {
     assert.equal(patch.status, "APPROVED");
   });
 
-  it("REVIEW real P0/P1 still blocks", () => {
+  it("REVIEW unresolved P1 without P0 is PATCH not BLOCKED", () => {
     const gated = applyGate(
       parsed("APPROVED"),
       [
@@ -312,8 +312,9 @@ describe("final verdict reconciliation", () => {
       ],
       "REVIEW",
     );
-    assert.equal(gated.status, "BLOCKED");
-    assert.match(gated.reason ?? "", /P1/);
+    assert.equal(gated.status, "PATCH");
+    assert.equal(gated.blockers.length, 0);
+    assert.match(gated.reason ?? "", /P1|PATCH/);
   });
 
   it("blockers exclude resolved issues", () => {

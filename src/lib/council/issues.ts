@@ -375,11 +375,18 @@ export function buildIssueLedger(input: {
 }
 
 export function unresolvedBlockers(ledger: IssueLedger, mode: TaskMode | string): NormalizedIssue[] {
-  const resolvedMode = isTaskMode(mode) ? mode : normalizeTaskMode(mode);
+  void mode;
   return ledger.unresolved.filter((row) => {
     if (isEmptyFinding(row.text) || isNonBlockingCreateFinding(row.text)) return false;
-    if (row.severity === "P0") return true;
-    if (resolvedMode === "CREATE") return false;
+    return row.severity === "P0";
+  });
+}
+
+export function materialFixes(ledger: IssueLedger, mode: TaskMode | string): NormalizedIssue[] {
+  const resolvedMode = isTaskMode(mode) ? mode : normalizeTaskMode(mode);
+  if (resolvedMode === "CREATE") return [];
+  return ledger.unresolved.filter((row) => {
+    if (isEmptyFinding(row.text) || isNonBlockingCreateFinding(row.text)) return false;
     return row.severity === "P1";
   });
 }
@@ -393,54 +400,45 @@ export function reconcileVerdict(input: {
 }): GateResult {
   const mode = isTaskMode(input.mode) ? input.mode : normalizeTaskMode(input.mode);
   const proposed = input.proposed;
-  const blockers = unresolvedBlockers(input.ledger, mode);
-  const blockerTexts = blockers.map((row) => row.text);
+  const p0 = unresolvedBlockers(input.ledger, mode);
+  const p1 = materialFixes(input.ledger, mode);
+  const blockerTexts = p0.map((row) => row.text);
   const acceptedPatches = input.ledger.acceptedAsPatch.filter((row) => row.severity !== "P4");
+  const needsUser =
+    mode === "DECIDE" && (Boolean(input.disagreements?.length) || Boolean(input.conflictedEvidence) || proposed === "USER_DECISION_REQUIRED");
   let status: CouncilStatus = proposed;
   let reason: string | null = null;
-
-  const p0 = blockers.filter((row) => row.severity === "P0");
-  const p1 = blockers.filter((row) => row.severity === "P1");
 
   if (p0.length) {
     status = "BLOCKED";
     if (proposed !== "BLOCKED") reason = "Cannot accept: unresolved P0 findings remain.";
-  } else if (p1.length) {
-    status = "BLOCKED";
-    if (proposed !== "BLOCKED") reason = "Cannot accept: unresolved P1 findings remain.";
-  } else if (mode === "DECIDE" && proposed === "APPROVED" && (Boolean(input.disagreements?.length) || input.conflictedEvidence)) {
+  } else if (needsUser) {
     status = "USER_DECISION_REQUIRED";
-    reason = "Safety gate: DECIDE disagreements or CONFLICTED evidence require a user decision.";
-  } else if (mode === "REVIEW" && acceptedPatches.length && (proposed === "PATCH" || proposed === "BLOCKED")) {
-    status = "PATCH";
-    if (proposed === "BLOCKED") reason = "Safety gate: accepted non-P0 corrections reconcile to a patch.";
-  } else if (mode === "REVIEW" && proposed === "PATCH") {
-    status = "PATCH";
-  } else if (mode === "CREATE" && proposed === "BLOCKED") {
+    if (proposed !== "USER_DECISION_REQUIRED") {
+      reason = "Safety gate: DECIDE disagreements or CONFLICTED evidence require a user decision.";
+    }
+  } else if (p1.length || (mode === "REVIEW" && (acceptedPatches.length || proposed === "PATCH"))) {
+    status = mode === "DECIDE" ? "USER_DECISION_REQUIRED" : "PATCH";
+    if (mode === "REVIEW" && proposed !== "PATCH") {
+      reason = p1.length
+        ? "Material fix required; unresolved P1 without P0 reconciles to PATCH."
+        : "Safety gate: accepted non-P0 corrections reconcile to a patch.";
+    }
+  } else if (mode === "CREATE" && (proposed === "BLOCKED" || proposed === "PATCH")) {
     status = "APPROVED";
     reason = "CREATE safety gate: no unresolved P0 findings remain; synthesizer cannot-accept is not the final verdict.";
   } else if (proposed === "BLOCKED") {
-    status = mode === "REVIEW" && acceptedPatches.length ? "PATCH" : "APPROVED";
-    reason =
-      status === "PATCH"
-        ? "Safety gate: no unresolved P0/P1 findings; accepted corrections reconcile to a patch."
-        : "Safety gate: no unresolved P0/P1 findings remain; synthesizer cannot-accept is not the final verdict.";
+    status = "APPROVED";
+    reason = "Safety gate: no unresolved P0 findings remain; synthesizer cannot-accept is not the final verdict.";
   } else if (proposed === "USER_DECISION_REQUIRED") {
     status = "USER_DECISION_REQUIRED";
   } else {
-    status =
-      proposed === "PATCH" && mode === "REVIEW"
-        ? "PATCH"
-        : proposed === "APPROVED" || proposed === "PATCH"
-          ? mode === "CREATE"
-            ? "APPROVED"
-            : proposed
-          : "APPROVED";
+    status = mode === "CREATE" ? "APPROVED" : proposed === "PATCH" && mode === "REVIEW" ? "PATCH" : proposed === "APPROVED" || proposed === "PATCH" ? proposed : "APPROVED";
     if (mode === "CREATE" && proposed === "PATCH") status = "APPROVED";
   }
 
-  if (!p0.length && !p1.length && status === "BLOCKED") {
-    status = proposed === "USER_DECISION_REQUIRED" ? "USER_DECISION_REQUIRED" : "APPROVED";
+  if (!p0.length && status === "BLOCKED") {
+    status = needsUser ? "USER_DECISION_REQUIRED" : p1.length && mode === "REVIEW" ? "PATCH" : "APPROVED";
   }
 
   return {

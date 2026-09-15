@@ -345,7 +345,7 @@ describe("CREATE artifact synthesis", () => {
     assert.equal(inferred.status, "APPROVED");
   });
 
-  it("REVIEW still blocks APPROVED when P1 architecture flaws remain", () => {
+  it("REVIEW unresolved P1 without P0 is PATCH not BLOCKED", () => {
     const parsed = parseJson(`{
       "status":"APPROVED",
       "consensus":["pass"],
@@ -365,8 +365,8 @@ describe("CREATE artifact synthesis", () => {
       },
     };
     const gated = applyGate(parsed!, [row as never], "REVIEW");
-    assert.equal(gated.status, "BLOCKED");
-    assert.match(gated.reason ?? "", /P1/);
+    assert.equal(gated.status, "PATCH");
+    assert.equal(gated.blockers.length, 0);
   });
 
   it("CREATE agent contracts are not merely reviewer roles", () => {

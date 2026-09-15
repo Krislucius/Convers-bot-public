@@ -4,7 +4,7 @@ import { AgentCard } from "@/components/agent-card";
 import { PreflightPanel } from "@/components/preflight-panel";
 import { ArtifactPanel, ContextManifestPanel } from "@/components/context-manifest-panel";
 import { CouncilFold } from "@/components/council-fold";
-import { CouncilReports } from "@/components/council-reports";
+import { DecisionRecordPanel } from "@/components/decision-record";
 import { CouncilRunPanel, CouncilRunMeter } from "@/components/council-run-panel";
 import { CollapsibleText } from "@/components/collapsible-text";
 import { Crumb, DangerButton, GhostButton, Page, PageHeader, Panel, PrimaryButton, StatusPill } from "@/components/council-ui";
@@ -12,6 +12,7 @@ import { ImplementationPacketPanel } from "@/components/implementation-packet-pa
 import { OpLogPanel } from "@/components/op-log";
 import { isSynthesisResponse, responseMemberId } from "@/lib/council/agents";
 import { deriveCouncilReports } from "@/lib/council/reports";
+import { deriveDecisionRecord } from "@/lib/council/decision";
 import { runCredsFromReady, isStaleDisconnectError } from "@/lib/council/orchestrate";
 import { providerName } from "@/lib/council/providers";
 import { billingLabel } from "@/lib/council/nano-billing";
@@ -376,6 +377,11 @@ function TaskPage() {
     members: members.map((row) => ({ memberId: row.memberId, label: memberLabel(row), role: row.role })),
     running: isRunning,
   });
+  const decision = deriveDecisionRecord({
+    mode: task.mode,
+    runStatus: terminal === "COMPLETE" || terminal === "FAILED" || terminal === "CANCELLED" ? terminal : null,
+    result,
+  });
   const showReports = !isRunning && Boolean(terminal || result || showPartial);
   const failedMemberCount = reports.technical.members.filter((row) => row.outcome === "failed").length;
 
@@ -399,9 +405,19 @@ function TaskPage() {
             <CollapsibleText text={task.prompt} />
           </PageHeader>
         </div>
-        <div className="flex flex-col items-end gap-1">
-          <p className="m-0 text-[10px] font-semibold tracking-widest text-muted uppercase">Run</p>
-          <StatusPill status={terminal ?? task.status} />
+        <div className="flex flex-col items-end gap-3">
+          <div className="flex flex-col items-end gap-1">
+            <p className="m-0 text-xs font-semibold tracking-widest text-muted uppercase">Run</p>
+            <StatusPill status={terminal ?? task.status} />
+          </div>
+          <div className="flex flex-col items-end gap-1">
+            <p className="m-0 text-xs font-semibold tracking-widest text-muted uppercase">Verdict</p>
+            {result ? (
+              <StatusPill status={result.reconciledStatus ?? result.finalEnforcedStatus ?? result.status} />
+            ) : (
+              <span className="text-sm text-faint">none</span>
+            )}
+          </div>
         </div>
       </header>
 
@@ -526,7 +542,7 @@ function TaskPage() {
       ) : null}
 
       {showReports ? (
-        <CouncilReports reports={reports}>
+        <DecisionRecordPanel record={decision} run={reports.technical}>
           {failedMemberCount > 0 && (terminal === "FAILED" || terminal === "COMPLETE") ? (
             <PrimaryButton type="button" disabled={busy} onClick={onRetryFailed}>
               Retry failed models
@@ -543,7 +559,7 @@ function TaskPage() {
           <GhostButton type="button" onClick={onRestart}>
             Restart Council
           </GhostButton>
-        </CouncilReports>
+        </DecisionRecordPanel>
       ) : null}
       {showReports && confirmRestart ? (
         <p className="mt-3 mb-0 rounded-md bg-subtle px-3 py-3 text-sm text-muted">

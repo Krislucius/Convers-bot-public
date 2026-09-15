@@ -284,6 +284,8 @@ export type ImplementationPacket = {
 export type TaskQualityRow = {
   taskId: string;
   mode: TaskMode;
+  runStatus: string;
+  taskVerdict: string | null;
   councilOutcome: string;
   reviewVerdict: ReviewVerdict | null;
   disagreements: number;
@@ -296,9 +298,11 @@ export type TaskQualityRow = {
 export type ProjectQualitySummary = {
   projectId: string;
   taskCount: number;
+  executionFailed: number;
   approvedOrPass: number;
   patch: number;
   blocked: number;
+  userDecision: number;
   disagreements: number;
   evidenceUsed: number;
   iterations: number;
