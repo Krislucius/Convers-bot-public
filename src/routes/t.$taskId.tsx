@@ -37,6 +37,7 @@ import { useSession } from "@/lib/council/session";
 import type { AgentKey, AgentProgress } from "@/lib/council/types";
 import type { EvidencePipelineResult } from "@/lib/evidence/pipeline-cache";
 import { formatCouncilOpLog, formatExceptionLog, formatOpLog } from "@/lib/op-log";
+import { useI18n } from "@/lib/i18n/provider";
 
 export const Route = createFileRoute("/t/$taskId")({ component: TaskPage });
 
@@ -45,6 +46,7 @@ const RUNNING = new Set(["PREPARING", "COUNCIL_ROUND_1", "COUNCIL_ROUND_2", "SYN
 const STARTABLE = new Set(["CREATED", "FAILED", "CANCELLED"]);
 
 function ListBlock({ title, rows }: { title: string; rows: string[] }) {
+  const { t } = useI18n();
   return (
     <>
       <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">{title}</h3>
@@ -57,7 +59,7 @@ function ListBlock({ title, rows }: { title: string; rows: string[] }) {
           ))}
         </ul>
       ) : (
-        <p className="text-muted">None recorded.</p>
+        <p className="text-muted">{t("task.noneRecorded")}</p>
       )}
     </>
   );
@@ -83,6 +85,7 @@ function TaskPage() {
   const { taskId } = Route.useParams();
   const store = useStore();
   const { config, creds, setProvider } = useSession();
+  const { t } = useI18n();
   const task = store.tasks.find((t) => t.id === taskId);
   const project = store.projects.find((p) => p.id === task?.projectId);
   const context = store.context.filter((c) => c.projectId === task?.projectId);
@@ -389,7 +392,7 @@ function TaskPage() {
     <Page>
       <Crumb>
         <Link to="/" className="text-muted">
-          Projects
+          {t("nav.projects")}
         </Link>
         {" / "}
         <Link to="/p/$projectId" params={{ projectId: project.id }} className="text-muted">
@@ -400,22 +403,28 @@ function TaskPage() {
       </Crumb>
       <header className="mb-6 flex flex-wrap items-start justify-between gap-6">
         <div className="min-w-0">
-          <p className="mb-2 text-xs font-semibold tracking-widest text-muted uppercase">{task.mode} task</p>
-          <PageHeader title={task.title}>
-            <CollapsibleText text={task.prompt} />
+          <p className="mb-2 text-xs font-semibold tracking-widest text-muted uppercase">{t("task.modeLine", { mode: task.mode })}</p>
+          <PageHeader title={task.originalTitle || task.title}>
+            <CollapsibleText text={task.originalTask || task.prompt} />
+            {task.originalTask && task.canonicalTaskEn && task.originalTask !== task.canonicalTaskEn ? (
+              <details className="mt-2">
+                <summary className="cursor-pointer text-xs text-faint">{t("task.canonical")}</summary>
+                <CollapsibleText text={task.canonicalTaskEn} />
+              </details>
+            ) : null}
           </PageHeader>
         </div>
         <div className="flex flex-col items-end gap-3">
           <div className="flex flex-col items-end gap-1">
-            <p className="m-0 text-xs font-semibold tracking-widest text-muted uppercase">Run</p>
+            <p className="m-0 text-xs font-semibold tracking-widest text-muted uppercase">{t("task.run")}</p>
             <StatusPill status={terminal ?? task.status} />
           </div>
           <div className="flex flex-col items-end gap-1">
-            <p className="m-0 text-xs font-semibold tracking-widest text-muted uppercase">Verdict</p>
+            <p className="m-0 text-xs font-semibold tracking-widest text-muted uppercase">{t("task.verdict")}</p>
             {result ? (
               <StatusPill status={result.reconciledStatus ?? result.finalEnforcedStatus ?? result.status} />
             ) : (
-              <span className="text-sm text-faint">none</span>
+              <span className="text-sm text-faint">{t("status.none")}</span>
             )}
           </div>
         </div>
@@ -542,10 +551,10 @@ function TaskPage() {
       ) : null}
 
       {showReports ? (
-        <DecisionRecordPanel record={decision} run={reports.technical}>
+        <DecisionRecordPanel record={decision} run={reports.technical} taskId={task.id}>
           {failedMemberCount > 0 && (terminal === "FAILED" || terminal === "COMPLETE") ? (
             <PrimaryButton type="button" disabled={busy} onClick={onRetryFailed}>
-              Retry failed models
+              {t("task.retryFailed")}
             </PrimaryButton>
           ) : null}
           {showPartial ? (
@@ -553,11 +562,11 @@ function TaskPage() {
               to="/settings"
               className="inline-flex min-h-11 items-center justify-center gap-2 rounded-sm border border-line bg-transparent px-3.5 py-2.5 font-semibold text-fg no-underline"
             >
-              Replace failed models
+              {t("task.replaceFailed")}
             </Link>
           ) : null}
           <GhostButton type="button" onClick={onRestart}>
-            Restart Council
+            {t("task.restart")}
           </GhostButton>
         </DecisionRecordPanel>
       ) : null}

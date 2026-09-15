@@ -6,6 +6,7 @@ import type {
   TextareaHTMLAttributes,
 } from "react";
 import type { CouncilStatus, TaskStatus } from "@/lib/council/types";
+import { useI18n } from "@/lib/i18n/provider";
 
 export function Page({ children }: { children: ReactNode }) {
   return <main className="mx-auto w-full max-w-page flex-1 px-4 py-7 pb-16">{children}</main>;
@@ -101,6 +102,7 @@ export function DangerButton(props: ButtonHTMLAttributes<HTMLButtonElement>) {
 }
 
 export function StatusPill({ status, label }: { status: TaskStatus | CouncilStatus | string; label?: string }) {
+  const { status: statusText } = useI18n();
   const tone =
     status === "COMPLETE" ||
     status === "APPROVED" ||
@@ -134,7 +136,7 @@ export function StatusPill({ status, label }: { status: TaskStatus | CouncilStat
           : status === "ARCHIVED"
             ? "text-faint"
             : "text-info";
-  const shown = label ?? status.replaceAll("_", " ");
+  const shown = label ?? statusText(status);
   return (
     <span className={`inline-block rounded-full border border-line px-2 py-1 text-xs tracking-wide uppercase ${tone}`}>
       {shown}

@@ -76,6 +76,7 @@ Applied migrations (basename order):
 12. `0012_durable_council_runs.sql` — `council_runs` (run_id, leases, checkpoints, frozen provider/members, one active run per task)
 13. `0013_council_run_waker.sql` — `council_runs.last_wake_at` (independent sweeper heartbeat)
 14. `0014_provider_credentials.sql` — `account_settings.provider_credentials` (fingerprint / last4 / last validation per provider). Secrets in `nanogpt_key` / `openrouter_key` / `openrusrouter_key` are encrypted at rest.
+15. `0015_i18n.sql` — `account_settings.ui_language` (default `en`); `tasks.original_task`, `canonical_task_en`, `source_language`, `original_title`; `council_results.localized_ru` display cache. Canonical Council artifacts stay English.
 
 `migrations/auth/` is a template copy. Appliers do not descend into subdirectories.
 

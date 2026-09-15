@@ -1,4 +1,5 @@
 import { StatusPill } from "@/components/council-ui";
+import { useI18n } from "@/lib/i18n/provider";
 
 type PreflightView = {
   steps: Array<{
@@ -11,10 +12,11 @@ type PreflightView = {
 };
 
 export function PreflightPanel({ report }: { report: PreflightView | null | undefined }) {
+  const { t, error } = useI18n();
   if (!report) return null;
   return (
     <div className="mb-4 rounded-md border border-line bg-subtle px-3 py-3">
-      <p className="mb-2 text-xs font-semibold tracking-widest text-muted uppercase">Precheck</p>
+      <p className="mb-2 text-xs font-semibold tracking-widest text-muted uppercase">{t("run.precheck")}</p>
       <ul className="m-0 grid list-none gap-1 p-0">
         {report.steps.map((step) => (
           <li key={step.id} className="flex flex-wrap items-baseline justify-between gap-2">
@@ -25,7 +27,7 @@ export function PreflightPanel({ report }: { report: PreflightView | null | unde
               ) : null}
               <StatusPill status={step.status === "PASS" ? "VERIFIED" : step.status} />
             </span>
-            {step.error ? <p className="m-0 w-full text-xs text-danger">{step.error}</p> : null}
+            {step.error ? <p className="m-0 w-full text-xs text-danger">{error(step.error)}</p> : null}
           </li>
         ))}
       </ul>

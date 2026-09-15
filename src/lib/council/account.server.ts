@@ -39,6 +39,7 @@ type SettingsRow = {
   last_test_ok?: boolean | null;
   nanogpt_billing_mode?: string | null;
   provider_credentials?: unknown;
+  ui_language?: string | null;
 };
 
 function asString(value: unknown, fallback = ""): string {
@@ -217,6 +218,7 @@ function publicSettings(row: SettingsRow | null): AccountSettingsPublic {
     lastTestOk,
     nanogptBilling: normalizeNanoGptBilling(row?.nanogpt_billing_mode),
     credentialPresent: selectedSlot.saved,
+    uiLanguage: row?.ui_language === "ru" ? "ru" : "en",
     nanogpt,
     openrouter,
     openrusrouter,
@@ -231,6 +233,60 @@ async function settingsRow(userId: string): Promise<SettingsRow | null> {
 
 export async function loadPublicSettings(userId: string): Promise<AccountSettingsPublic> {
   return publicSettings(await settingsRow(userId));
+}
+
+export async function saveUiLanguage(userId: string, language: "en" | "ru"): Promise<AccountSettingsPublic> {
+  const sql = await getSql();
+  const updatedAt = new Date().toISOString();
+  const uiLanguage = language === "ru" ? "ru" : "en";
+  await sql`
+    insert into account_settings (
+      user_id, provider, nanogpt_key, openrouter_key, openrusrouter_key, gpt_model, grok_model, claude_model,
+      max_cost_usd, ui_language, updated_at
+    ) values (
+      ${userId}, ${DEFAULT_PROVIDER}, '', '', '', '', '', '', ${DEFAULT_MAX_COST_USD}, ${uiLanguage}, ${updatedAt}
+    )
+    on conflict (user_id) do update set
+      ui_language = excluded.ui_language,
+      updated_at = excluded.updated_at
+  `;
+  await durable();
+  return loadPublicSettings(userId);
+}
+
+export async function loadResultLocalization(
+  userId: string,
+  taskId: string,
+): Promise<import("@/lib/i18n/result-localize").CachedRuLocalization | null> {
+  const sql = await getSql();
+  try {
+    const rows = await sql<{ localized_ru: unknown }>`
+      select localized_ru from council_results where user_id = ${userId} and task_id = ${taskId} limit 1
+    `;
+    const raw = rows[0]?.localized_ru;
+    if (!raw || typeof raw !== "object") return null;
+    const parsed = asJson<import("@/lib/i18n/result-localize").CachedRuLocalization | null>(raw, null);
+    if (!parsed?.sourceHash) return null;
+    return parsed;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!/localized_ru|does not exist|undefined_column/i.test(message)) throw err;
+    return null;
+  }
+}
+
+export async function saveResultLocalization(
+  userId: string,
+  taskId: string,
+  cache: import("@/lib/i18n/result-localize").CachedRuLocalization,
+): Promise<void> {
+  const sql = await getSql();
+  await sql`
+    update council_results
+    set localized_ru = ${jsonParam(cache)}::jsonb
+    where user_id = ${userId} and task_id = ${taskId}
+  `;
+  await durable();
 }
 
 export async function resolveStoredKey(
@@ -442,6 +498,11 @@ function mapTask(row: Record<string, unknown>): Task {
     provider: isProviderId(row.provider) ? row.provider : null,
     selectedModels: asMembers(row.selected_models),
     nanogptBilling: row.nanogpt_billing_mode ? normalizeNanoGptBilling(row.nanogpt_billing_mode) : null,
+    originalTask: row.original_task == null ? asString(row.prompt) : asString(row.original_task),
+    canonicalTaskEn: row.canonical_task_en == null ? asString(row.prompt) : asString(row.canonical_task_en),
+    sourceLanguage:
+      row.source_language === "ru" || row.source_language === "mixed" ? row.source_language : "en",
+    originalTitle: row.original_title == null ? asString(row.title) : asString(row.original_title),
   };
 }
 
@@ -775,13 +836,15 @@ async function insertTaskRow(userId: string, task: Task) {
     insert into tasks (
       id, user_id, project_id, title, prompt, status, error, created_at, completed_at,
       total_input_tokens, total_output_tokens, total_cost_usd, total_latency_ms, diagnostics, selected_chat_source_ids,
-      selected_file_ids, mode, requires_historical_context, candidate_artifact_id, decision_question, context_manifest_id, context_hash, provider, selected_models, nanogpt_billing_mode
+      selected_file_ids, mode, requires_historical_context, candidate_artifact_id, decision_question, context_manifest_id, context_hash, provider, selected_models, nanogpt_billing_mode,
+      original_task, canonical_task_en, source_language, original_title
     ) values (
       ${task.id}, ${userId}, ${task.projectId}, ${task.title}, ${task.prompt}, ${task.status}, ${task.error},
       ${task.createdAt}, ${task.completedAt}, ${task.totalInputTokens}, ${task.totalOutputTokens}, ${task.totalCostUsd},
       ${task.totalLatencyMs}, ${jsonParam(task.diagnostics)}::jsonb, ${jsonParam(task.selectedChatSourceIds) ?? "[]"}::jsonb,
       ${jsonParam(task.selectedFileIds) ?? "[]"}::jsonb, ${task.mode}, ${task.requiresHistoricalContext}, ${task.candidateArtifactId}, ${task.decisionQuestion},
-      ${task.contextManifestId}, ${task.contextHash}, ${task.provider}, ${jsonParam(task.selectedModels)}::jsonb, ${task.nanogptBilling ?? null}
+      ${task.contextManifestId}, ${task.contextHash}, ${task.provider}, ${jsonParam(task.selectedModels)}::jsonb, ${task.nanogptBilling ?? null},
+      ${task.originalTask ?? task.prompt}, ${task.canonicalTaskEn ?? task.prompt}, ${task.sourceLanguage ?? "en"}, ${task.originalTitle ?? task.title}
     )
     on conflict (id) do update set
       title = excluded.title,
@@ -804,7 +867,11 @@ async function insertTaskRow(userId: string, task: Task) {
       context_hash = excluded.context_hash,
       provider = excluded.provider,
       selected_models = excluded.selected_models,
-      nanogpt_billing_mode = excluded.nanogpt_billing_mode
+      nanogpt_billing_mode = excluded.nanogpt_billing_mode,
+      original_task = excluded.original_task,
+      canonical_task_en = excluded.canonical_task_en,
+      source_language = excluded.source_language,
+      original_title = excluded.original_title
     where tasks.user_id = ${userId}
   `;
 }

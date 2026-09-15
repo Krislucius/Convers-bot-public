@@ -4,6 +4,7 @@ import { Field, PrimaryButton, TextInput } from "@/components/council-ui";
 import { GROK_PROVIDERS, authClient, authEnabled, signIn, signOut } from "@/lib/auth/client";
 import { emailAndPasswordEnabled } from "@/lib/auth/email-password";
 import { captureSessionToken, markAuthReturning, shouldPopupOAuth, withDeadline, GET_SESSION_WAIT_MS } from "@/lib/auth-loop";
+import { useI18n } from "@/lib/i18n/provider";
 
 const OAUTH_BTN =
   "inline-flex min-h-11 w-full cursor-pointer items-center justify-center rounded-sm border border-accent bg-accent px-3.5 py-2.5 font-semibold text-accent-fg no-underline";
@@ -19,15 +20,16 @@ export const ERROR_COPY: Record<string, string> = {
 
 export function StaySignedIn() {
   const [busy, setBusy] = useState(false);
+  const { t } = useI18n();
   return (
     <div className="grid gap-3">
-      <p className="m-0 text-sm text-muted">You are already signed in. Open the app instead of bouncing back through Sign in.</p>
+      <p className="m-0 text-sm text-muted">{t("login.already")}</p>
       <a
         href="/"
         className={OAUTH_BTN}
         style={{ background: "#d7d4cc", color: "#0c0c0d", textDecoration: "none" }}
       >
-        Continue to projects
+        {t("login.continue")}
       </a>
       <button
         type="button"
@@ -38,7 +40,7 @@ export function StaySignedIn() {
           void signOut().catch(() => setBusy(false));
         }}
       >
-        {busy ? "Signing out…" : "Sign out"}
+        {busy ? t("login.signingOut") : t("login.signOut")}
       </button>
       <AuthReportPanel extra={{ page: "stay-signed-in" }} />
     </div>

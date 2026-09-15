@@ -14,6 +14,9 @@ import {
 } from "./providers";
 import type { AccountSettingsPublic, DiscoverySnapshot, ProviderCreds, ProviderId } from "./types";
 import { DEFAULT_NANOGPT_BILLING, normalizeNanoGptBilling, type NanoGptBillingMode } from "./nano-billing";
+import { I18nProvider } from "@/lib/i18n/provider";
+import { normalizeUiLanguage, type UiLanguage } from "@/lib/i18n/locale";
+import { saveUiLanguage } from "@/lib/i18n/api";
 
 export type { ProviderCreds, ProviderId };
 
@@ -35,6 +38,7 @@ export type SessionConfig = {
   nanogpt: { saved: boolean; masked: string };
   openrouter: { saved: boolean; masked: string };
   openrusrouter: { saved: boolean; masked: string };
+  uiLanguage: UiLanguage;
 };
 
 type SessionApi = {
@@ -42,6 +46,7 @@ type SessionApi = {
   creds: ProviderCreds | null;
   hydrateFromAccount: (settings: AccountSettingsPublic) => void;
   setProvider: (provider: ProviderId) => void;
+  setUiLanguage: (language: UiLanguage) => void;
   setNanoGptBilling: (billing: NanoGptBillingMode) => void;
   save: (
     next: ProviderCreds & {
@@ -74,6 +79,7 @@ const emptySettings: AccountSettingsPublic = {
   nanogpt: { saved: false, masked: "" },
   openrouter: { saved: false, masked: "" },
   openrusrouter: { saved: false, masked: "" },
+  uiLanguage: "en",
 };
 
 function fromPublic(settings: AccountSettingsPublic): SessionConfig {
@@ -112,6 +118,7 @@ function fromPublic(settings: AccountSettingsPublic): SessionConfig {
     nanogpt: settings.nanogpt,
     openrouter: settings.openrouter,
     openrusrouter: settings.openrusrouter,
+    uiLanguage: normalizeUiLanguage(settings.uiLanguage),
   };
 }
 
@@ -253,11 +260,26 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setConfig(fromPublic(saved));
         return saved;
       },
+      setUiLanguage: (language) => {
+        const next = normalizeUiLanguage(language);
+        setConfig((prev) => (prev.uiLanguage === next ? prev : { ...prev, uiLanguage: next }));
+        void runWithPersistRetry(() => saveUiLanguage({ data: { language: next } }))
+          .then((saved) => {
+            setConfig((prev) => ({ ...prev, uiLanguage: saved.language }));
+          })
+          .catch(() => undefined);
+      },
     }),
     [config, hydrateFromAccount],
   );
 
-  return <SessionContext.Provider value={api}>{children}</SessionContext.Provider>;
+  return (
+    <SessionContext.Provider value={api}>
+      <I18nProvider language={config.uiLanguage} onChange={api.setUiLanguage}>
+        {children}
+      </I18nProvider>
+    </SessionContext.Provider>
+  );
 }
 
 export async function refreshAccountSettings(): Promise<AccountSettingsPublic> {

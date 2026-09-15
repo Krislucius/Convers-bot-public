@@ -16,6 +16,7 @@ import { cachedEvidencePipeline, type EvidencePipelineResult } from "@/lib/evide
 import { ledgerFoldLabelFromManifest } from "@/lib/evidence/preview";
 import { formatTokens, formatUsd } from "@/lib/history/format";
 import type { ChatSource, HistoryMessage } from "@/lib/history/types";
+import { useI18n } from "@/lib/i18n/provider";
 
 export function CouncilRunMeter({
   provider,
@@ -30,20 +31,21 @@ export function CouncilRunMeter({
   costUsd?: number | null;
   billing?: string | null;
 }) {
+  const { t } = useI18n();
   return (
     <p className="m-0 flex flex-wrap gap-x-4 gap-y-1 text-sm tabular-nums">
       <span>
-        Provider: <span className="text-fg">{provider}</span>
+        {t("run.provider")}: <span className="text-fg">{provider}</span>
       </span>
       {billing ? (
         <span>
-          Billing: <span className="text-fg">{billing}</span>
+          {t("run.billing")}: <span className="text-fg">{billing}</span>
         </span>
       ) : null}
       <span>
-        Calls: <span className="text-fg">{used} / {limit}</span>
+        {t("run.calls")}: <span className="text-fg">{used} / {limit}</span>
       </span>
-      <span>Cost: {costUsd != null ? `${formatUsd(costUsd)} (telemetry)` : "telemetry only"}</span>
+      <span>{t("run.cost")}: {costUsd != null ? t("run.telemetryUsd", { usd: formatUsd(costUsd) }) : t("run.telemetry")}</span>
     </p>
   );
 }

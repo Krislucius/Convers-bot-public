@@ -4,12 +4,14 @@ import { Banner, Field, Page, PageHeader, Panel, PrimaryButton, TextArea, TextIn
 import { providerName } from "@/lib/council/providers";
 import { createProject, useStore } from "@/lib/council/store";
 import { useSession } from "@/lib/council/session";
+import { useI18n } from "@/lib/i18n/provider";
 
 export const Route = createFileRoute("/")({ component: Home });
 
 function Home() {
   const { projects } = useStore();
   const { config } = useSession();
+  const { t } = useI18n();
   const navigate = useNavigate();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -28,28 +30,25 @@ function Home() {
     <Page>
       {!config.ready ? (
         <Banner
-          title="AI Council is not connected yet."
-          body="You can still create projects and tasks. Council runs need a saved API key."
+          title={t("banner.councilOffTitle")}
+          body={t("banner.councilOffBody")}
           action={
             <Link
               to="/settings"
               className="inline-flex min-h-11 items-center rounded-sm border border-accent bg-accent px-4 font-semibold text-accent-fg no-underline"
             >
-              Connect {providerName(config.provider)}
+              {t("banner.connect", { provider: providerName(config.provider) })}
             </Link>
           }
         />
       ) : null}
 
-      <PageHeader title="Projects">
-        <p className="max-w-measure text-muted">
-          One task goes to three independent reviewers. Round 2 is a cross-review. A local gate can override
-          the synthesizer on P0 and P1.
-        </p>
+      <PageHeader title={t("nav.projects")}>
+        <p className="max-w-measure text-muted">{t("home.subtitle")}</p>
       </PageHeader>
 
       {projects.length === 0 ? (
-        <p className="text-muted">No projects on this account yet. Create one below.</p>
+        <p className="text-muted">{t("home.noProjects")}</p>
       ) : (
         <ul className="m-0 grid list-none gap-3 p-0">
           {projects.map((p) => (
@@ -60,7 +59,7 @@ function Home() {
                 className="grid gap-1.5 rounded-lg border border-line bg-elevated p-4 no-underline transition-colors hover:bg-subtle"
               >
                 <strong className="font-display text-lg">{p.name}</strong>
-                <span className="text-muted">{p.description || "No description."}</span>
+                <span className="text-muted">{p.description || t("home.noDescription")}</span>
               </Link>
             </li>
           ))}
@@ -68,15 +67,15 @@ function Home() {
       )}
 
       <Panel>
-        <h2 className="font-display mb-3 text-lg">New project</h2>
+        <h2 className="font-display mb-3 text-lg">{t("home.newProject")}</h2>
         <form className="grid gap-3" onSubmit={onCreate}>
-          <Field label="Name">
+          <Field label={t("home.name")}>
             <TextInput value={name} onChange={(e) => setName(e.target.value)} required />
           </Field>
-          <Field label="Description">
+          <Field label={t("home.description")}>
             <TextArea value={description} onChange={(e) => setDescription(e.target.value)} />
           </Field>
-          <PrimaryButton type="submit">Create project</PrimaryButton>
+          <PrimaryButton type="submit">{t("home.create")}</PrimaryButton>
         </form>
       </Panel>
     </Page>

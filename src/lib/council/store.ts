@@ -103,6 +103,10 @@ function normalizeTask(task: Task): Task {
     decisionQuestion: task.decisionQuestion ?? null,
     contextManifestId: task.contextManifestId ?? null,
     contextHash: task.contextHash ?? null,
+    originalTask: task.originalTask ?? task.prompt,
+    canonicalTaskEn: task.canonicalTaskEn ?? task.prompt,
+    sourceLanguage: task.sourceLanguage === "ru" || task.sourceLanguage === "mixed" ? task.sourceLanguage : "en",
+    originalTitle: task.originalTitle ?? task.title,
   };
 }
 
@@ -268,6 +272,10 @@ export type CreateTaskInput = {
   decisionQuestion?: string | null;
   provider?: Task["provider"];
   selectedModels?: Task["selectedModels"];
+  originalTask?: string;
+  canonicalTaskEn?: string;
+  sourceLanguage?: Task["sourceLanguage"];
+  originalTitle?: string;
 };
 
 export function createTask(input: CreateTaskInput): Task {
@@ -289,7 +297,7 @@ export function createTask(input: CreateTaskInput): Task {
     id: nid(),
     projectId: input.projectId,
     title: input.title,
-    prompt: input.prompt,
+    prompt: input.canonicalTaskEn ?? input.prompt,
     status: "CREATED",
     error: null,
     createdAt: new Date().toISOString(),
@@ -309,6 +317,10 @@ export function createTask(input: CreateTaskInput): Task {
     contextHash: null,
     provider: input.provider ?? null,
     selectedModels: input.selectedModels ?? null,
+    originalTask: input.originalTask ?? input.prompt,
+    canonicalTaskEn: input.canonicalTaskEn ?? input.prompt,
+    sourceLanguage: input.sourceLanguage === "ru" || input.sourceLanguage === "mixed" ? input.sourceLanguage : "en",
+    originalTitle: input.originalTitle ?? input.title,
   };
   persist({ ...memory, tasks: [task, ...memory.tasks] });
   enqueue(() => persistAccountTask({ data: task }));

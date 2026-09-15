@@ -182,3 +182,12 @@ Only ACTIVE rows define current architecture.
 - RATIONALE: A killed Vercel isolate that died after a checkpoint and before self-tick left the run durable but unattended. UI poll could recover only while a browser tab was open.
 - SUPERSEDES: none (closes the wake-source gap in ADR-019)
 - AFFECTED_MODULES: council.durable-waker, council.durable-runner, persist.postgres, ui.task
+
+## ADR-021
+
+- DECISION: UI language is per-account `en` | `ru` (default `en` for existing accounts). All static UI text goes through one catalog. Russian or mixed tasks store `original_task` verbatim and a faithful `canonical_task_en` before Council runs; English tasks copy through unchanged. Council internals (prompts, positions, synthesis, Decision Record storage, Implementation Packet JSON, logs, enums) stay English. User-facing results in RU are a cached localization of the same canonical English record. Switching RU ↔ EN never reruns Council and never overwrites canonical artifacts. Citations, issue ids, model/provider names, code, formulas, and API fields are preserved.
+- STATUS: ACTIVE
+- ARCHITECTURE_REVISION: CB-ARCH-20260908-002
+- RATIONALE: Operators work in Russian or English. Council reasoning must remain one canonical English record so verdicts, evidence, and packets stay comparable.
+- SUPERSEDES: none
+- AFFECTED_MODULES: i18n.locale, account.persistence, ui.task, ui.settings, council.decision

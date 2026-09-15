@@ -514,6 +514,29 @@
       "supersedes": []
     },
     {
+      "module_id": "i18n.locale",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/i18n",
+      "architecture_revision": "CB-ARCH-20260908-002",
+      "responsibilities": [
+        "per-account UI language en|ru default en",
+        "one static UI catalog",
+        "original_task plus canonical_task_en",
+        "faithful Russian to English task translation before Council",
+        "Council internals remain English",
+        "cached Russian display of canonical Decision Record",
+        "language switch does not rerun Council",
+        "canonical artifacts are never overwritten by translation"
+      ],
+      "dependencies": [
+        "account.persistence",
+        "council.decision",
+        "ui.task",
+        "ui.settings"
+      ],
+      "supersedes": []
+    },
+    {
       "module_id": "architecture.lock",
       "status": "ACTIVE",
       "implementation_path": "docs/ARCHITECTURE_LOCK.json",

@@ -404,6 +404,10 @@ export type Task = {
   provider: ProviderId | null;
   selectedModels?: CouncilMember[] | null;
   nanogptBilling?: NanoGptBillingMode | null;
+  originalTask?: string | null;
+  canonicalTaskEn?: string | null;
+  sourceLanguage?: "en" | "ru" | "mixed" | null;
+  originalTitle?: string | null;
 };
 
 export type StoreShape = {
@@ -445,6 +449,7 @@ export type AccountSettingsPublic = {
   lastTestOk: boolean | null;
   nanogptBilling: NanoGptBillingMode;
   credentialPresent?: boolean;
+  uiLanguage?: "en" | "ru";
   nanogpt: { saved: boolean; masked: string; present?: boolean; last4?: string; fingerprint?: string; lastValidatedAt?: string | null; lastValidation?: "CONNECTED" | "FAILED" | "NOT_TESTED" };
   openrouter: { saved: boolean; masked: string; present?: boolean; last4?: string; fingerprint?: string; lastValidatedAt?: string | null; lastValidation?: "CONNECTED" | "FAILED" | "NOT_TESTED" };
   openrusrouter: { saved: boolean; masked: string; present?: boolean; last4?: string; fingerprint?: string; lastValidatedAt?: string | null; lastValidation?: "CONNECTED" | "FAILED" | "NOT_TESTED" };

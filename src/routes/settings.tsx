@@ -14,6 +14,7 @@ import { refreshAccountSettings, useSession, type SessionConfig } from "@/lib/co
 import type { AccountSettingsPublic, ProviderId } from "@/lib/council/types";
 import { billingLabel, type NanoGptBillingMode } from "@/lib/council/nano-billing";
 import { runSaveAcceptance } from "@/lib/council/save-acceptance";
+import { useI18n } from "@/lib/i18n/provider";
 import {
   applyDiscovery,
   attemptIdFromLog,
@@ -44,6 +45,7 @@ function attemptFromConfig(config: SessionConfig): ScanAttempt {
 
 function SettingsPage() {
   const { config, save, clearKey, setProvider, setNanoGptBilling, hydrateFromAccount } = useSession();
+  const { t } = useI18n();
   const provider = config.provider;
   const meta = PROVIDERS[provider];
   const [apiKey, setApiKey] = useState("");
@@ -351,7 +353,7 @@ function SettingsPage() {
 
   return (
     <Page>
-      <PageHeader title="API Settings">
+      <PageHeader title={t("settings.title")}>
         <p className="max-w-measure text-muted">
           NanoGPT, OpenRouter, and OpenRusRouter are API providers, not Council members. Refresh models discovers the
           catalog for the selected provider and mode, then probes whether this account can actually call those models.
