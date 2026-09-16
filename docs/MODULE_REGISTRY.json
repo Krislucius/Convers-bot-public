@@ -277,6 +277,8 @@
         "browser is reconnect-only",
         "STOP cancel flag, RESTART new run_id, one active run per task",
         "COMPLETE FAILED CANCELLED mutually exclusive; COMPLETE synthesis wins over later cancel",
+        "SYNTHESIS → FINALIZING → COMPLETE requires a task verdict; interrupted terminal is healed on the next tick",
+        "a persisted reconcilable synthesis cannot remain RUNNING; COMPLETE without a verdict is healed to FAILED",
         "discard late writes from old run_id/generation/lease epoch",
         "independent Vercel Cron sweeper",
         "reclaim expired or missing leases without a browser",
@@ -318,15 +320,11 @@
       "architecture_revision": "CB-ARCH-20260908-002",
       "responsibilities": [
         "START/STOP/RESTART server RPCs",
-        "RUNNING IN BACKGROUND reconnect UI",
-        "poll persisted stage, member states, started_at, last_progress_at",
-        "PRECHECK panel PROVIDER/SUBSCRIPTION/CATALOG/MODEL PASS|FAILED",
-        "stall_reason / internal_stage, preflight/council/retry counts",
-        "last_wake_at / lease / next recovery deadline",
-        "run state COMPLETE FAILED CANCELLED separate from semantic verdict",
+        "operator status WORKING/COMPLETE/STOPPED/ERROR with compact live stage and member progress",
         "Decision Record is the default completed-run view",
         "run status and task verdict shown as separate pills",
-        "raw synthesis, model positions, evidence, technical metadata collapsed",
+        "technical lease/stall/recovery only under Technical details",
+        "raw synthesis, model positions, evidence collapsed; Russian view uses cached translation plus Original in English",
         "issue ledger unresolved/resolved/rejected/accepted as patch"
       ],
       "dependencies": [

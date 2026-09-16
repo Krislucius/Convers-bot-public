@@ -5,8 +5,16 @@ import type { AgentResponse, Artifact, CouncilResult, ImplementationPacket, RunC
 export const EXCLUSIVE_TERMINALS = ["COMPLETE", "FAILED", "CANCELLED"] as const;
 export type ExclusiveTerminal = (typeof EXCLUSIVE_TERMINALS)[number];
 
+export const VERDICT_FAILED_MESSAGE = "Council finished synthesis but could not produce a task verdict.";
+
 export function isExclusiveTerminal(status: string | null | undefined): status is ExclusiveTerminal {
   return status === "COMPLETE" || status === "FAILED" || status === "CANCELLED";
+}
+
+export function resultVerdict(
+  result: { status?: string | null; reconciledStatus?: string | null; finalEnforcedStatus?: string | null } | null | undefined,
+): string | null {
+  return result?.reconciledStatus || result?.finalEnforcedStatus || result?.status || null;
 }
 
 export function synthesisIsReconcilable(
@@ -35,6 +43,22 @@ export function hasPersistedSynthesis(input: {
   return synthesisIsReconcilable(input.responses ?? input.output?.responses, input.mode);
 }
 
+export function needsFinalization(input: {
+  status?: string | null;
+  output?: RunCouncilOutput | null;
+  responses?: AgentResponse[] | null;
+  mode?: string | null;
+  artifact?: Artifact | null;
+}): boolean {
+  const status = String(input.status ?? "");
+  if (status === "FAILED" || status === "CANCELLED") return false;
+  const verdict = resultVerdict(input.output?.result);
+  if (status === "COMPLETE" && verdict) return false;
+  if (status === "COMPLETE" && !verdict) return true;
+  if (status === "FINALIZING") return true;
+  return hasPersistedSynthesis(input);
+}
+
 export function exclusiveRunState(input: {
   status?: string | null;
   snapshotStatus?: string | null;
@@ -43,8 +67,8 @@ export function exclusiveRunState(input: {
   hasArtifact?: boolean;
   result?: CouncilResult | null;
 }): ExclusiveTerminal | null {
-  const synthesisDone = Boolean(input.hasSynthesis || input.hasArtifact || input.result);
-  if (synthesisDone) return "COMPLETE";
+  const verdict = Boolean(resultVerdict(input.result));
+  if (verdict) return "COMPLETE";
   const candidates = [input.status, input.snapshotStatus, input.taskStatus].filter(Boolean);
   if (candidates.includes("COMPLETE")) return "COMPLETE";
   if (candidates.includes("FAILED")) return "FAILED";
@@ -117,7 +141,13 @@ export function decideDurableWrite(input: {
     status: input.currentStatus,
     hasSynthesis: input.currentHasSynthesis,
   });
-  if (currentTerminal === "COMPLETE" && input.incomingStatus !== "COMPLETE") return "KEEP_CURRENT";
+  if (input.currentHasSynthesis && input.incomingStatus === "CANCELLED") return "KEEP_CURRENT";
+  if (currentTerminal === "COMPLETE" && input.incomingStatus === "FAILED" && input.currentHasSynthesis) {
+    return "KEEP_CURRENT";
+  }
+  if (currentTerminal === "COMPLETE" && input.incomingStatus !== "COMPLETE" && input.incomingStatus !== "FAILED") {
+    return "KEEP_CURRENT";
+  }
   if (input.incomingStatus === "COMPLETE" && input.incomingHasSynthesis && currentTerminal !== "COMPLETE") {
     return "ACCEPT";
   }

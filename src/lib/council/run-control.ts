@@ -9,7 +9,7 @@ import type { StallStage } from "./pacing.ts";
 export const RUN_ID_FIELD = "__runId";
 export const MAX_AUDITED_RUNS = 8;
 
-export type CouncilStageName = "PREPARING" | "ROUND_1" | "ROUND_2" | "SYNTHESIS" | "COMPLETE" | "CANCELLED";
+export type CouncilStageName = "PREPARING" | "ROUND_1" | "ROUND_2" | "SYNTHESIS" | "FINALIZING" | "COMPLETE" | "CANCELLED";
 
 export type CouncilCurrentStage =
   | "PREFLIGHT_PROVIDER"

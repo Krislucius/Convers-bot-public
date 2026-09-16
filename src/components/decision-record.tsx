@@ -107,7 +107,7 @@ export function DecisionRecordPanel({
   taskId?: string;
   children?: ReactNode;
 }) {
-  const { t, locale } = useI18n();
+  const { t, locale, error } = useI18n();
   const [view, setView] = useState<LocalizedDecisionView>(() => localizeDecisionRecordStatic(record, locale));
 
   useEffect(() => {
@@ -203,8 +203,8 @@ export function DecisionRecordPanel({
       {run && (run.kind === "FAILED" || run.kind === "FINISHED_WITH_GAPS" || run.kind === "CANCELLED") ? (
         <Panel className={`border-l-4 ${run.kind === "FAILED" ? "border-l-danger" : "border-l-warn"}`}>
           <p className="mb-1 text-xs font-semibold tracking-widest text-muted uppercase">{t("app.name")}</p>
-          <h2 className="font-display m-0 text-xl">{run.headline}</h2>
-          <p className="mt-2 mb-0 max-w-measure text-sm text-muted">{run.summary}</p>
+          <h2 className="font-display m-0 text-xl">{error(run.headline)}</h2>
+          <p className="mt-2 mb-0 max-w-measure text-sm text-muted">{error(run.summary)}</p>
           {run.members.filter((row) => row.outcome === "failed").length ? (
             <ul className="mt-3 mb-0 grid list-none gap-2 p-0">
               {run.members

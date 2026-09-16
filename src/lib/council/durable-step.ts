@@ -46,6 +46,7 @@ import { assertRunCredentials, type CouncilRuntime } from "./orchestrate.ts";
 import {
   hydrateCursor,
   isTerminalStatus,
+  sealTerminalRow,
   taskStatusFor,
   waitingAgents,
   completedKey,
@@ -71,7 +72,7 @@ import {
   subscriptionBlocksRun,
 } from "./start-preflight.ts";
 import { outcomeFromFailure, recordHealth } from "./model-health.ts";
-import { hasPersistedSynthesis, synthesisIsReconcilable } from "./terminal.ts";
+import { hasPersistedSynthesis, needsFinalization, synthesisIsReconcilable, VERDICT_FAILED_MESSAGE } from "./terminal.ts";
 import type {
   AgentKey,
   AgentProgress,
@@ -166,8 +167,7 @@ function failRow(row: DurableRunRow, message: string, stage: DurableStage, now: 
     row.snapshot.synthesisSkipped = message;
   }
   row.output = out;
-  row.completedAt = now;
-  row.cursor.phase = "FAILED";
+  sealTerminalRow(row, "FAILED", now);
   patchSnapshot(row, { status: "FAILED", stage, message, now, requestUsed: row.cursor.requestUsed });
   return row;
 }
@@ -185,10 +185,8 @@ function cancelRow(row: DurableRunRow, now: string, message = "Council run stopp
     }
   }
   row.output = cancelledOutput(row.frozenInput.task, row.responses, { manifest: row.cursor.manifest, message });
-  row.completedAt = now;
+  sealTerminalRow(row, "CANCELLED", now);
   row.cancelRequested = true;
-  row.cursor.phase = "CANCELLED";
-  row.cursor.stallReason = null;
   patchSnapshot(row, { status: "CANCELLED", stage: "CANCELLED", message, now, agents });
   return row;
 }
@@ -944,6 +942,17 @@ async function advancePreflight(
 }
 
 function finalize(row: DurableRunRow, now: string): DurableRunRow {
+  row.status = "FINALIZING";
+  row.stage = "FINALIZING";
+  row.cursor.phase = "FINALIZING";
+  row.cursor.internalStage = "FINALIZING";
+  row.cursor.stallReason = null;
+  patchSnapshot(row, {
+    status: "FINALIZING",
+    stage: "FINALIZING",
+    message: "Finalizing the Decision Record.",
+    now,
+  });
   const frozen = row.frozenInput;
   const mode = frozen.task.mode;
   const round1 = roundRows(row, "ROUND_1");
@@ -965,78 +974,86 @@ function finalize(row: DurableRunRow, now: string): DurableRunRow {
   if (!parsed || (mode === "CREATE" && !parsed.artifact)) {
     return failRow(row, "Synthesis failed: invalid synthesis response.", "SYNTHESIS", now, true);
   }
-  const gated = applyGate(parsed, survivingResponses([...round1, ...round2]), mode);
-  const failedAgents = failedResponses(row.responses)
-    .map((item) => responseMemberId(item))
-    .filter((agent, index, all) => agent && all.indexOf(agent) === index);
-  const packedCitations = row.cursor.manifest?.payload.evidence?.packedCitations ?? [];
-  let artifact: Artifact | null = null;
-  if (mode === "CREATE") {
-    const drafted = parsed.artifact;
-    if (!drafted) return failRow(row, "CREATE synthesis did not produce an artifact.", "SYNTHESIS", now, true);
-    const sanitized = sanitizeEvidenceLabels(normalizeEvidenceLabels(drafted.evidenceLabels), packedCitations);
-    artifact = {
-      id: crypto.randomUUID().replaceAll("-", "").slice(0, 32),
-      projectId: frozen.project.id,
-      taskId: frozen.task.id,
-      type: drafted.type,
-      title: drafted.title,
-      version: drafted.version,
-      content: drafted.content,
-      status: nextArtifactStatus(gated.status),
-      contextHash: row.cursor.manifest?.hash ?? "",
-      evidenceLabels: sanitized.labels,
-      createdAt: now,
-    };
-  }
-  if (mode === "REVIEW") {
-    const candidate = frozen.artifacts.find((item) => item.id === frozen.task.candidateArtifactId) ?? null;
-    if (candidate) {
-      const verdict = parsed.reviewVerdict ?? reviewVerdictFromStatus(gated.status);
-      artifact = { ...candidate, status: artifactStatusForReview(verdict, gated.status) };
+  try {
+    const gated = applyGate(parsed, survivingResponses([...round1, ...round2]), mode);
+    const failedAgents = failedResponses(row.responses)
+      .map((item) => responseMemberId(item))
+      .filter((agent, index, all) => agent && all.indexOf(agent) === index);
+    const packedCitations = row.cursor.manifest?.payload.evidence?.packedCitations ?? [];
+    let artifact: Artifact | null = null;
+    if (mode === "CREATE") {
+      const drafted = parsed.artifact;
+      if (!drafted) return failRow(row, "CREATE synthesis did not produce an artifact.", "SYNTHESIS", now, true);
+      const sanitized = sanitizeEvidenceLabels(normalizeEvidenceLabels(drafted.evidenceLabels), packedCitations);
+      artifact = {
+        id: crypto.randomUUID().replaceAll("-", "").slice(0, 32),
+        projectId: frozen.project.id,
+        taskId: frozen.task.id,
+        type: drafted.type,
+        title: drafted.title,
+        version: drafted.version,
+        content: drafted.content,
+        status: nextArtifactStatus(gated.status),
+        contextHash: row.cursor.manifest?.hash ?? "",
+        evidenceLabels: sanitized.labels,
+        createdAt: now,
+      };
     }
-  }
-  if (parsed.evidence.length) {
-    parsed.evidence = sanitizeEvidenceLabels(parsed.evidence, packedCitations).labels;
-  }
-  let packet: ImplementationPacket | null = null;
-  if (mode === "REVIEW" && artifact && (gated.status === "APPROVED" || parsed.reviewVerdict === "PASS")) {
-    packet = buildImplementationPacket({
-      project: frozen.project,
-      task: frozen.task,
+    if (mode === "REVIEW") {
+      const candidate = frozen.artifacts.find((item) => item.id === frozen.task.candidateArtifactId) ?? null;
+      if (candidate) {
+        const verdict = parsed.reviewVerdict ?? reviewVerdictFromStatus(gated.status);
+        artifact = { ...candidate, status: artifactStatusForReview(verdict, gated.status) };
+      }
+    }
+    if (parsed.evidence.length) {
+      parsed.evidence = sanitizeEvidenceLabels(parsed.evidence, packedCitations).labels;
+    }
+    let packet: ImplementationPacket | null = null;
+    if (mode === "REVIEW" && artifact && (gated.status === "APPROVED" || parsed.reviewVerdict === "PASS")) {
+      packet = buildImplementationPacket({
+        project: frozen.project,
+        task: frozen.task,
+        artifact,
+        result: { blockers: gated.blockers, status: gated.status },
+        frozen: frozen.context,
+        packedCitations,
+        parentPacketId: frozen.parentPacket?.id ?? null,
+        iteration: frozen.parentPacket ? frozen.parentPacket.iteration + 1 : 1,
+      });
+    }
+    const out = completeOutput(frozen.task, row.responses, parsed, gated, {
       artifact,
-      result: { blockers: gated.blockers, status: gated.status },
-      frozen: frozen.context,
+      manifest: row.cursor.manifest,
+      packet,
       packedCitations,
-      parentPacketId: frozen.parentPacket?.id ?? null,
-      iteration: frozen.parentPacket ? frozen.parentPacket.iteration + 1 : 1,
+      failedAgents,
     });
+    if (!out.result?.status && !out.result?.reconciledStatus) {
+      return failRow(row, VERDICT_FAILED_MESSAGE, "FINALIZING", now);
+    }
+    row.output = out;
+    row.cancelRequested = false;
+    sealTerminalRow(row, "COMPLETE", now);
+    patchSnapshot(row, { status: "COMPLETE", stage: "COMPLETE", message: "Council complete.", now });
+    row.snapshot = {
+      ...row.snapshot,
+      status: "COMPLETE",
+      proposedStatus: gated.proposedStatus,
+      reconciledStatus: gated.reconciledStatus,
+      gateReason: gated.reason,
+      unresolvedIssues: out.result?.unresolvedIssues ?? [],
+      stallReason: null,
+      internalStage: "COMPLETE",
+      lastWakeAt: null,
+      leaseExpiresAt: null,
+      nextRecoveryDeadline: null,
+    };
+    return row;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : VERDICT_FAILED_MESSAGE;
+    return failRow(row, message || VERDICT_FAILED_MESSAGE, "FINALIZING", now);
   }
-  const out = completeOutput(frozen.task, row.responses, parsed, gated, {
-    artifact,
-    manifest: row.cursor.manifest,
-    packet,
-    packedCitations,
-    failedAgents,
-  });
-  row.output = out;
-  row.completedAt = now;
-  row.cursor.phase = "COMPLETE";
-  row.cursor.stallReason = null;
-  row.cursor.internalStage = "COMPLETE";
-  row.cancelRequested = false;
-  patchSnapshot(row, { status: "COMPLETE", stage: "COMPLETE", message: "Council complete.", now });
-  row.snapshot = {
-    ...row.snapshot,
-    status: "COMPLETE",
-    proposedStatus: gated.proposedStatus,
-    reconciledStatus: gated.reconciledStatus,
-    gateReason: gated.reason,
-    unresolvedIssues: out.result?.unresolvedIssues ?? [],
-    stallReason: null,
-    internalStage: "COMPLETE",
-  };
-  return row;
 }
 
 export function applyStopToRow(row: DurableRunRow, now: string, message = "Council run stopped."): DurableRunRow {
@@ -1054,6 +1071,18 @@ export async function advanceDurableStep(input: {
   const nowMs = input.nowMs ?? Date.now();
   let row = input.row;
   row.cursor = hydrateCursor(row.cursor);
+  if (
+    needsFinalization({
+      status: row.status,
+      output: row.output,
+      responses: row.responses,
+      mode: row.frozenInput.task.mode,
+      artifact: row.output?.artifact ?? null,
+    })
+  ) {
+    row = finalize(row, now());
+    return { row, didProviderCall: false, terminal: isTerminalStatus(row.status) };
+  }
   if (stallAfterIdle({ lastActivityAt: row.cursor.lastProviderResponseAt ?? row.lastProgressAt, nowMs })) {
     row.cursor.stallReason = String(row.cursor.internalStage || "SCHEDULER_WAIT");
   } else {

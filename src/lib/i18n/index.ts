@@ -7,7 +7,10 @@ export {
   citationsUnchanged,
   localizeDecisionRecord,
   localizeDecisionRecordStatic,
+  localizeCouncilNarrative,
+  englishNarrative,
   type CachedRuLocalization,
   type LocalizedDecisionView,
+  type LocalizedNarrative,
 } from "./result-localize.ts";
 export { I18nProvider, useI18n } from "./provider";

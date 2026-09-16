@@ -3,13 +3,8 @@ import type { AgentResponse, ProviderId } from "./types.ts";
 import { isProviderId, normalizeProviderId } from "./providers.ts";
 import { normalizeNanoGptBilling, type NanoGptBillingMode } from "./nano-billing.ts";
 import { formatProviderFailure, toProviderFailure } from "./provider-error.ts";
-import {
-  isTerminalStatus,
-  overlayTaskWithRun,
-  toPublic,
-  type DurableFrozenInput,
-  type DurableRunPublic,
-} from "./durable-run.ts";
+import { isTerminalStatus, overlayTaskWithRun, toPublic, type DurableFrozenInput, type DurableRunPublic } from "./durable-run.ts";
+import { needsFinalization } from "./terminal.ts";
 import {
   driveDurableRun,
   getDurableRun,
@@ -176,6 +171,7 @@ export async function providerRuntime(userId: string, provider: ProviderId, bill
 
 async function persistTerminal(userId: string, publicRun: DurableRunPublic | null): Promise<void> {
   if (!publicRun?.output) return;
+  if (publicRun.status === "COMPLETE" && !publicRun.output.result) return;
   try {
     await persistCouncilOutput(userId, {
       task: {
@@ -262,7 +258,19 @@ export async function enqueueCouncilRun(runId: string): Promise<void> {
   const vercel = Boolean(process.env.VERCEL);
   await scheduleBackground(async () => {
     const row = await store.get(runId);
-    if (!row || isTerminalStatus(row.status)) return;
+    if (
+      !row ||
+      (isTerminalStatus(row.status) &&
+        !needsFinalization({
+          status: row.status,
+          output: row.output,
+          responses: row.responses,
+          mode: row.frozenInput.task.mode,
+          artifact: row.output?.artifact ?? null,
+        }))
+    ) {
+      return;
+    }
     const runtime = await providerRuntime(row.userId, row.provider, row.nanogptBilling ?? undefined);
     if (vercel) {
       const started = Date.now();
@@ -273,7 +281,19 @@ export async function enqueueCouncilRun(runId: string): Promise<void> {
         return;
       }
       const latest = await store.get(runId);
-      if (latest && !isTerminalStatus(latest.status)) await scheduleSelfTick(latest.runId, latest.tickToken);
+      if (
+        latest &&
+        (!isTerminalStatus(latest.status) ||
+          needsFinalization({
+            status: latest.status,
+            output: latest.output,
+            responses: latest.responses,
+            mode: latest.frozenInput.task.mode,
+            artifact: latest.output?.artifact ?? null,
+          }))
+      ) {
+        await scheduleSelfTick(latest.runId, latest.tickToken);
+      }
       return;
     }
     const done = await driveDurableRun(store, {
@@ -328,9 +348,16 @@ export async function getServerCouncilRun(input: {
   let row = input.runId ? await store.get(input.runId) : null;
   if (!row && input.taskId) row = await store.getActive(input.userId, input.taskId);
   if (!row || row.userId !== input.userId) return null;
-  if (!isTerminalStatus(row.status)) {
+  const heal = needsFinalization({
+    status: row.status,
+    output: row.output,
+    responses: row.responses,
+    mode: row.frozenInput.task.mode,
+    artifact: row.output?.artifact ?? null,
+  });
+  if (!isTerminalStatus(row.status) || heal) {
     const expired = !row.leaseExpiresAt || row.leaseExpiresAt <= Date.now();
-    if (expired) await enqueueCouncilRun(row.runId);
+    if (expired || heal) await enqueueCouncilRun(row.runId);
   }
   return toPublic(row);
 }
@@ -338,7 +365,14 @@ export async function getServerCouncilRun(input: {
 export async function tickByToken(runId: string, token: string): Promise<DurableRunPublic | null> {
   const authorized = await loadRunByToken(runId, token);
   if (!authorized) return null;
-  if (isTerminalStatus(authorized.status)) return toPublic(authorized);
+  const heal = needsFinalization({
+    status: authorized.status,
+    output: authorized.output,
+    responses: authorized.responses,
+    mode: authorized.frozenInput.task.mode,
+    artifact: authorized.output?.artifact ?? null,
+  });
+  if (isTerminalStatus(authorized.status) && !heal) return toPublic(authorized);
   await enqueueCouncilRun(authorized.runId);
   return getDurableRun(store, authorized.runId);
 }

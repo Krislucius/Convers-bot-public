@@ -412,7 +412,7 @@ describe("durable server runner", () => {
     assert.equal(SWEEP_SCHEDULE, "* * * * *");
     assert.equal(nextRecoveryDeadlineMs({ leaseExpiresAt: null }, 1_000), 1_000 + SWEEP_INTERVAL_MS);
     assert.equal(nextRecoveryDeadlineMs({ leaseExpiresAt: 5_000 }, 1_000), 5_000 + SWEEP_INTERVAL_MS);
-    assert.equal(isReclaimable({ status: "COMPLETE" } as never, 1_000), false);
+    assert.equal(isReclaimable({ status: "COMPLETE", output: { result: { status: "READY_FOR_REVIEW" } } } as never, 1_000), false);
   });
 
   it("process waker is not a browser poll and is disabled on Vercel and in tests", () => {
@@ -461,8 +461,11 @@ describe("durable server runner", () => {
     assert.equal(models.slice(0, callsAtKill.length).join(","), callsAtKill.join(","));
     const pub = await getDurableRun(store, started.runId);
     assert.ok(pub?.lastProgressAt);
-    assert.ok(pub?.nextRecoveryDeadline);
+    assert.equal(pub?.status, "COMPLETE");
+    assert.equal(pub?.background, false);
+    assert.equal(pub?.stallReason, null);
     assert.equal(pub?.leaseExpiresAt, null);
+    assert.equal(pub?.nextRecoveryDeadline, "");
   });
 
   it("duplicate sweeper invocation skips while a lease is held", async () => {

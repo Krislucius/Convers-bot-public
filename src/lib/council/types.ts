@@ -315,7 +315,7 @@ export type ProjectQualitySummary = {
 export type RunDiagnostics = {
   runId: string;
   generation: number;
-  stage: "PREPARING" | "ROUND_1" | "ROUND_2" | "SYNTHESIS" | "COMPLETE" | "CANCELLED";
+  stage: "PREPARING" | "ROUND_1" | "ROUND_2" | "SYNTHESIS" | "FINALIZING" | "COMPLETE" | "CANCELLED";
   status: TaskStatus;
   startedAt: string;
   stageStartedAt: string;

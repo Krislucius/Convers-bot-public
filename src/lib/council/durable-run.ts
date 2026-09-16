@@ -23,7 +23,7 @@ import { PROVIDER_ATTEMPTS } from "./provider-error.ts";
 import type { PreflightReport } from "./start-preflight.ts";
 import type { ModelHealth } from "./model-health.ts";
 import { diagnoseInternalStage, type StallStage } from "./pacing.ts";
-import { decideDurableWrite, exclusiveRunState, hasPersistedSynthesis } from "./terminal.ts";
+import { decideDurableWrite, exclusiveRunState, hasPersistedSynthesis, needsFinalization } from "./terminal.ts";
 
 export const DURABLE_LEASE_MS = 90_000;
 export const DURABLE_TICK_BUDGET_MS = 25_000;
@@ -38,6 +38,7 @@ export const DURABLE_STATUSES = [
   "ROUND_1",
   "ROUND_2",
   "SYNTHESIS",
+  "FINALIZING",
   "COMPLETE",
   "FAILED",
   "CANCELLED",
@@ -147,7 +148,7 @@ export type DurableRunPublic = {
   snapshot: CouncilRunSnapshot;
   responses: AgentResponse[];
   output: RunCouncilOutput | null;
-  background: true;
+  background: boolean;
   cancelRequested: boolean;
   currentMemberId?: string | null;
   currentRequestStartedAt?: string | null;
@@ -214,7 +215,7 @@ export function taskStatusFor(status: DurableStatus, stage: DurableStage): TaskS
   if (status === "COMPLETE") return "COMPLETE";
   if (status === "FAILED") return "FAILED";
   if (status === "CANCELLED") return "CANCELLED";
-  if (status === "SYNTHESIS" || stage === "SYNTHESIS") return "SYNTHESIS";
+  if (status === "FINALIZING" || stage === "FINALIZING" || status === "SYNTHESIS" || stage === "SYNTHESIS") return "SYNTHESIS";
   if (status === "ROUND_2" || stage === "ROUND_2") return "COUNCIL_ROUND_2";
   if (status === "ROUND_1" || stage === "ROUND_1") return "COUNCIL_ROUND_1";
   return "PREPARING";
@@ -250,16 +251,42 @@ export function leaseHeld(row: DurableRunRow, nowMs: number, owner?: string): bo
 }
 
 export function canClaimLease(row: DurableRunRow, nowMs: number, owner: string): boolean {
-  if (isTerminalStatus(row.status) && !row.cancelRequested) return false;
-  if (isTerminalStatus(row.status) && row.status !== "CANCELLED") return false;
-  if (isTerminalStatus(row.status)) return false;
+  const heal = needsFinalization({
+    status: row.status,
+    output: row.output,
+    responses: row.responses,
+    mode: row.frozenInput?.task?.mode,
+    artifact: row.output?.artifact ?? null,
+  });
+  if (isTerminalStatus(row.status) && !heal) return false;
   if (!leaseHeld(row, nowMs, owner)) return true;
   return false;
 }
 
 export function isReclaimable(row: DurableRunRow, nowMs: number): boolean {
-  if (isTerminalStatus(row.status)) return false;
+  const heal = needsFinalization({
+    status: row.status,
+    output: row.output,
+    responses: row.responses,
+    mode: row.frozenInput?.task?.mode,
+    artifact: row.output?.artifact ?? null,
+  });
+  if (isTerminalStatus(row.status) && !heal) return false;
   return canClaimLease(row, nowMs, `sweep-${nowMs}`);
+}
+
+export function sealTerminalRow(row: DurableRunRow, status: "COMPLETE" | "FAILED" | "CANCELLED", now: string): void {
+  row.status = status;
+  if (status === "COMPLETE") row.stage = "COMPLETE";
+  if (status === "CANCELLED") row.stage = "CANCELLED";
+  row.completedAt = row.completedAt ?? now;
+  row.leaseOwner = null;
+  row.leaseExpiresAt = null;
+  row.cursor.phase = status;
+  row.cursor.stallReason = null;
+  row.cursor.internalStage = status;
+  row.cursor.currentMemberId = null;
+  row.cursor.currentRequestStartedAt = null;
 }
 
 export function leaseExpiresAtIso(ms: number | null | undefined): string | null {
@@ -278,51 +305,67 @@ export function nextRecoveryDeadlineMs(
 
 export function toPublic(row: DurableRunRow, nowMs = Date.now()): DurableRunPublic {
   const responses = row.responses.length ? row.responses : (row.output?.responses ?? []);
-  const deadline = nextRecoveryDeadlineMs(row, nowMs);
-  const leaseIsHeld = leaseHeld(row, nowMs);
-  const preflightDone = Boolean(row.cursor.accessOk && row.cursor.catalogOk);
-  const providerCallsStarted = (row.cursor.councilCalls ?? 0) > 0 || Boolean(row.cursor.lastProviderResponseAt);
-  const internalStage = leaseIsHeld
-    ? "LEASE_WAIT"
-    : row.cursor.internalStage ||
-      diagnoseInternalStage({
-        failed: row.status === "FAILED",
-        terminal: isTerminalStatus(row.status),
-        leaseHeld: leaseIsHeld,
-        preflightDone,
-        providerCallsStarted,
-        queued: row.status === "QUEUED" || row.cursor.phase === "QUEUED",
-      });
+  const heal = needsFinalization({
+    status: row.status,
+    output: row.output,
+    responses: row.responses,
+    mode: row.frozenInput.task.mode,
+    artifact: row.output?.artifact ?? null,
+  });
   const terminal = exclusiveRunState({
     status: row.status,
     snapshotStatus: row.snapshot.status,
-    hasSynthesis: hasPersistedSynthesis({
-      status: row.status,
-      output: row.output,
-      responses: row.responses,
-      mode: row.frozenInput.task.mode,
-      artifact: row.output?.artifact ?? null,
-    }),
+    hasSynthesis: Boolean(row.output?.result),
     result: row.output?.result ?? null,
-    hasArtifact: Boolean(row.output?.artifact),
+    hasArtifact: Boolean(row.output?.artifact && row.output?.result),
   });
-  const publicStatus = terminal ?? row.status;
-  const taskStatus = terminal ?? taskStatusFor(row.status, row.stage);
+  const sealed = Boolean(terminal) && !heal;
+  const deadline = sealed ? nowMs : nextRecoveryDeadlineMs(row, nowMs);
+  const preflightDone = Boolean(row.cursor.accessOk && row.cursor.catalogOk);
+  const providerCallsStarted = (row.cursor.councilCalls ?? 0) > 0 || Boolean(row.cursor.lastProviderResponseAt);
+  const internalStage = sealed
+    ? String(terminal)
+    : heal
+      ? "FINALIZING"
+      : row.cursor.internalStage ||
+        diagnoseInternalStage({
+          failed: row.status === "FAILED",
+          terminal: sealed,
+          leaseHeld: false,
+          preflightDone,
+          providerCallsStarted,
+          queued: row.status === "QUEUED" || row.cursor.phase === "QUEUED",
+        });
+  const publicStatus = sealed ? (terminal ?? row.status) : heal ? "FINALIZING" : row.status;
+  const taskStatus = sealed
+    ? (terminal ?? taskStatusFor(row.status, row.stage))
+    : heal
+      ? "SYNTHESIS"
+      : taskStatusFor(row.status, row.stage);
+  const publicStage = sealed
+    ? terminal === "COMPLETE"
+      ? "COMPLETE"
+      : terminal === "CANCELLED"
+        ? "CANCELLED"
+        : row.stage
+    : heal
+      ? "FINALIZING"
+      : row.stage;
   const snapshot: CouncilRunSnapshot = {
     ...row.snapshot,
     status: taskStatus,
-    stage: terminal === "COMPLETE" ? "COMPLETE" : terminal === "CANCELLED" ? "CANCELLED" : row.snapshot.stage,
-    lastWakeAt: row.lastWakeAt,
-    leaseExpiresAt: leaseExpiresAtIso(row.leaseExpiresAt),
-    nextRecoveryDeadline: new Date(deadline).toISOString(),
-    currentMemberId: row.cursor.currentMemberId,
-    currentModelId: row.cursor.currentModelId,
-    currentRequestStartedAt: row.cursor.currentRequestStartedAt,
+    stage: publicStage === "QUEUED" ? "PREPARING" : publicStage,
+    lastWakeAt: sealed ? null : row.lastWakeAt,
+    leaseExpiresAt: sealed ? null : leaseExpiresAtIso(row.leaseExpiresAt),
+    nextRecoveryDeadline: sealed ? null : new Date(deadline).toISOString(),
+    currentMemberId: sealed ? null : row.cursor.currentMemberId,
+    currentModelId: sealed ? null : row.cursor.currentModelId,
+    currentRequestStartedAt: sealed ? null : row.cursor.currentRequestStartedAt,
     lastProviderResponseAt: row.cursor.lastProviderResponseAt,
     lastProviderHttpStatus: row.cursor.lastProviderHttpStatus,
     lastProgressAt: row.lastProgressAt,
     internalStage,
-    stallReason: row.cursor.stallReason,
+    stallReason: sealed ? null : row.cursor.stallReason,
     preflight: row.cursor.preflight ?? row.snapshot.preflight ?? null,
     requestBudget: {
       used: row.cursor.requestUsed,
@@ -338,13 +381,13 @@ export function toPublic(row: DurableRunRow, nowMs = Date.now()): DurableRunPubl
     taskId: row.taskId,
     generation: row.generation,
     status: publicStatus,
-    stage: terminal === "COMPLETE" ? "COMPLETE" : terminal === "CANCELLED" ? "CANCELLED" : row.stage,
+    stage: publicStage === "QUEUED" ? "PREPARING" : publicStage,
     taskStatus,
     startedAt: row.startedAt,
     lastProgressAt: row.lastProgressAt,
-    lastWakeAt: row.lastWakeAt,
-    leaseExpiresAt: leaseExpiresAtIso(row.leaseExpiresAt),
-    nextRecoveryDeadline: new Date(deadline).toISOString(),
+    lastWakeAt: sealed ? null : row.lastWakeAt,
+    leaseExpiresAt: sealed ? null : leaseExpiresAtIso(row.leaseExpiresAt),
+    nextRecoveryDeadline: sealed ? "" : new Date(deadline).toISOString(),
     message: row.snapshot.message || row.error || "",
     provider: row.provider,
     members: row.members,
@@ -355,13 +398,13 @@ export function toPublic(row: DurableRunRow, nowMs = Date.now()): DurableRunPubl
     snapshot,
     responses,
     output: row.output,
-    background: true,
+    background: !sealed,
     cancelRequested: row.cancelRequested,
-    currentMemberId: row.cursor.currentMemberId,
-    currentRequestStartedAt: row.cursor.currentRequestStartedAt,
+    currentMemberId: sealed ? null : row.cursor.currentMemberId,
+    currentRequestStartedAt: sealed ? null : row.cursor.currentRequestStartedAt,
     lastProviderResponseAt: row.cursor.lastProviderResponseAt,
     internalStage,
-    stallReason: row.cursor.stallReason,
+    stallReason: sealed ? null : row.cursor.stallReason,
   };
 }
 

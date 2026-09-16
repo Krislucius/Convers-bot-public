@@ -5,7 +5,12 @@ import { exclusiveRunState } from "@/lib/council/terminal";
 import { indexSelectedRepositories } from "@/lib/evidence/repo-index";
 import { normalizeUiLanguage, type UiLanguage } from "./locale.ts";
 import { prepareTaskText, type PreparedTaskText } from "./task-text.ts";
-import { localizeDecisionRecord, type LocalizedDecisionView } from "./result-localize.ts";
+import {
+  localizeCouncilNarrative,
+  localizeDecisionRecord,
+  type LocalizedDecisionView,
+  type LocalizedNarrative,
+} from "./result-localize.ts";
 
 export const prepareTaskInput = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
@@ -28,40 +33,56 @@ export const saveUiLanguage = createServerFn({ method: "POST" })
 export const localizeTaskResult = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .validator((data: { taskId: string; language: UiLanguage }) => data)
-  .handler(async ({ context, data }): Promise<{ view: LocalizedDecisionView | null; language: UiLanguage }> => {
-    const language = normalizeUiLanguage(data.language);
-    const { translateWithXai } = await import("./translate");
-    const mod = await import("@/lib/council/account.server");
-    const snapshot = await mod.loadSnapshot(context.userId);
-    const task = snapshot.tasks.find((row) => row.id === data.taskId) ?? null;
-    const result = snapshot.results.find((row) => row.taskId === data.taskId) ?? null;
-    if (!task) return { view: null, language };
-    const terminal = exclusiveRunState({
-      status: task.status,
-      taskStatus: task.status,
-      result,
-    });
-    const record = deriveDecisionRecord({
-      mode: task.mode,
-      runStatus: terminal === "COMPLETE" || terminal === "FAILED" || terminal === "CANCELLED" ? terminal : null,
-      result,
-      implementation: indexSelectedRepositories({
-        files: snapshot.projectFiles.filter(
-          (file) => file.projectId === task.projectId && (task.selectedFileIds ?? []).includes(file.id),
-        ),
-        designMentions: [
-          task.canonicalTaskEn || task.prompt,
-          snapshot.artifacts.find((row) => row.taskId === task.id || row.id === task.candidateArtifactId)?.content ?? "",
-          ...snapshot.context
-            .filter((row) => row.projectId === task.projectId && row.kind !== "RAW_HISTORY")
-            .map((row) => row.content),
-        ],
-      }),
-    });
-    const cached = result ? await mod.loadResultLocalization(context.userId, data.taskId) : null;
-    const out = await localizeDecisionRecord(record, language, cached, translateWithXai);
-    if (language === "ru" && out.translated && out.cache) {
-      await mod.saveResultLocalization(context.userId, data.taskId, out.cache);
-    }
-    return { view: out.view, language };
-  });
+  .handler(
+    async ({
+      context,
+      data,
+    }): Promise<{ view: LocalizedDecisionView | null; narrative: LocalizedNarrative | null; language: UiLanguage }> => {
+      const language = normalizeUiLanguage(data.language);
+      const { translateWithXai } = await import("./translate");
+      const mod = await import("@/lib/council/account.server");
+      const snapshot = await mod.loadSnapshot(context.userId);
+      const task = snapshot.tasks.find((row) => row.id === data.taskId) ?? null;
+      const result = snapshot.results.find((row) => row.taskId === data.taskId) ?? null;
+      const responses = snapshot.responses.filter((row) => row.taskId === data.taskId);
+      if (!task) return { view: null, narrative: null, language };
+      const terminal = exclusiveRunState({
+        status: task.status,
+        taskStatus: task.status,
+        result,
+      });
+      const record = deriveDecisionRecord({
+        mode: task.mode,
+        runStatus: terminal === "COMPLETE" || terminal === "FAILED" || terminal === "CANCELLED" ? terminal : null,
+        result,
+        implementation: indexSelectedRepositories({
+          files: snapshot.projectFiles.filter(
+            (file) => file.projectId === task.projectId && (task.selectedFileIds ?? []).includes(file.id),
+          ),
+          designMentions: [
+            task.canonicalTaskEn || task.prompt,
+            snapshot.artifacts.find((row) => row.taskId === task.id || row.id === task.candidateArtifactId)?.content ?? "",
+            ...snapshot.context
+              .filter((row) => row.projectId === task.projectId && row.kind !== "RAW_HISTORY")
+              .map((row) => row.content),
+          ],
+        }),
+      });
+      const cached = result ? await mod.loadResultLocalization(context.userId, data.taskId) : null;
+      const out = await localizeDecisionRecord(record, language, cached, translateWithXai);
+      const narrativeOut = await localizeCouncilNarrative(
+        result,
+        responses,
+        language,
+        cached?.narrative ?? null,
+        translateWithXai,
+      );
+      if (language === "ru" && out.cache) {
+        await mod.saveResultLocalization(context.userId, data.taskId, {
+          ...out.cache,
+          narrative: narrativeOut.cache ?? out.cache.narrative,
+        });
+      }
+      return { view: out.view, narrative: narrativeOut.view, language };
+    },
+  );

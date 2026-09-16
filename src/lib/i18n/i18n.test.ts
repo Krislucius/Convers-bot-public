@@ -7,6 +7,7 @@ import {
   applyRuCache,
   canonicalDisplayHash,
   citationsUnchanged,
+  localizeCouncilNarrative,
   localizeDecisionRecord,
   localizeDecisionRecordStatic,
 } from "./result-localize.ts";
@@ -203,6 +204,17 @@ describe("language switch contract", () => {
     assert.equal(t("record.notCompleted", "ru"), "Что не сделано");
     assert.equal(t("record.implementation", "ru"), "Состояние реализации");
     assert.equal(t("record.outcome", "ru"), "Итог");
+    assert.equal(t("fold.modelPosition", "ru"), "Позиция модели");
+    assert.equal(t("fold.crossReview", "ru"), "Перекрёстный разбор");
+    assert.equal(t("fold.finalFinding", "ru"), "Итоговый вывод");
+    assert.equal(t("fold.originalEn", "ru"), "Оригинал на английском");
+    assert.equal(t("fold.alternatives", "ru"), "Альтернативы");
+    assert.equal(t("fold.disagreements", "ru"), "Разногласия");
+    assert.equal(t("fold.corrections", "ru"), "Предложенные правки");
+    assert.equal(t("fold.resolvedIssues", "ru"), "Снятые замечания");
+    assert.equal(t("fold.openFollowups", "ru"), "Открытые хвосты");
+    assert.equal(t("operator.working", "ru"), "СОВЕТ РАБОТАЕТ");
+    assert.equal(t("operator.complete", "ru"), "СОВЕТ ЗАВЕРШЁН");
     assert.equal(en.nextAction, "RUN_REVIEW");
     assert.equal(ru.nextAction, "RUN_REVIEW");
     assert.deepEqual(en.implementationState.map((row) => row.status), ru.implementationState.map((row) => row.status));
@@ -213,5 +225,84 @@ describe("language switch contract", () => {
     assert.equal(normalizeUiLanguage("en"), "en");
     assert.equal(normalizeUiLanguage("ru"), "ru");
     assert.equal(normalizeUiLanguage("de"), "en");
+  });
+
+  it("RU narrative is a display cache and does not rerun Council", async () => {
+    const result = {
+      taskId: "t",
+      status: "READY_FOR_REVIEW",
+      consensus: ["ok"],
+      disagreements: ["clock split"],
+      blockers: [],
+      recommendation: "review the artifact",
+      agentPositions: { m1: "keep inventory clock" },
+      synthesisRaw: '{"status":"READY_FOR_REVIEW"}',
+      synthesizerProposedStatus: "READY_FOR_REVIEW",
+      finalEnforcedStatus: "READY_FOR_REVIEW",
+      reconciledStatus: "READY_FOR_REVIEW",
+      verdictOverride: false,
+      overrideReason: null,
+      decision: "ready",
+      rationale: "evidence holds",
+      dissent: [],
+      reviewVerdict: null,
+      alternatives: [],
+      evidence: [],
+      risks: [],
+      issues: ["P1 document the swap"],
+      proposedCorrections: [],
+      resolvedIssues: ["P0 clock split is closed"],
+      unresolvedIssues: ["P1 document the swap"],
+      citations: ["INV:clock"],
+      failedAgents: [],
+    };
+    const responses = [
+      {
+        id: "r1",
+        taskId: "t",
+        memberId: "m1",
+        agent: "m1",
+        role: "LEAD_REASONER",
+        round: 1,
+        stage: "ROUND_1",
+        model: "test",
+        dispatchedModelId: "test",
+        provider: "openrouter",
+        promptSnapshot: "",
+        responseText: "POSITION keep inventory clock",
+        structured: null,
+        inputTokens: 1,
+        cachedInputTokens: 0,
+        outputTokens: 1,
+        reasoningTokens: 0,
+        cost: 0,
+        requestId: "r1",
+        latencyMs: 1,
+        attempt: 1,
+        error: null,
+        contextManifestId: null,
+        contextHash: null,
+        runId: "run-1",
+      },
+    ];
+    let calls = 0;
+    const counting: TranslateFn = async ({ text }) => {
+      calls += 1;
+      return `RU:${text}`;
+    };
+    const first = await localizeCouncilNarrative(result as never, responses as never, "ru", null, counting);
+    assert.equal(first.translated, true);
+    assert.match(first.view.round1.m1, /^RU:/);
+    assert.match(first.view.recommendation, /^RU:/);
+    assert.equal(first.view.locale, "ru");
+    const before = calls;
+    const second = await localizeCouncilNarrative(result as never, responses as never, "ru", first.cache, counting);
+    assert.equal(second.translated, false);
+    assert.equal(second.view.fromCache, true);
+    assert.equal(calls, before);
+    const en = await localizeCouncilNarrative(result as never, responses as never, "en", first.cache, counting);
+    assert.equal(en.translated, false);
+    assert.equal(en.view.recommendation, "review the artifact");
+    assert.equal(en.view.round1.m1, "POSITION keep inventory clock");
   });
 });

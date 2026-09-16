@@ -1,5 +1,7 @@
 import type { DecisionRecord } from "../council/decision.ts";
-import { actionLabel, statusLabel, t } from "./catalog.ts";
+import type { AgentResponse, CouncilResult } from "../council/types.ts";
+import { isSynthesisResponse, responseMemberId } from "../council/agents.ts";
+import { actionLabel, localizeErrorMessage, statusLabel, t } from "./catalog.ts";
 import type { UiLanguage } from "./locale.ts";
 import { extractCitations } from "./preserve.ts";
 import { translateOrThrow, type TranslateFn } from "./translate.ts";
@@ -114,7 +116,30 @@ export type CachedRuLocalization = {
   userActions: string[];
   userDecisions: string[];
   nextActionWhy: string;
+  narrative?: CachedNarrative;
 };
+
+export type CachedNarrative = {
+  sourceHash: string;
+  recommendation: string;
+  synthesis: string;
+  decision: string;
+  rationale: string;
+  disagreements: string[];
+  issues: string[];
+  proposedCorrections: string[];
+  resolvedIssues: string[];
+  unresolvedIssues: string[];
+  alternatives: string[];
+  dissent: string[];
+  risks: string[];
+  positions: Record<string, string>;
+  round1: Record<string, string>;
+  round2: Record<string, string>;
+  errors: Record<string, string>;
+};
+
+export type LocalizedNarrative = CachedNarrative & { locale: UiLanguage; fromCache: boolean };
 
 function staticText(en: string, table: Record<string, string>): string {
   return table[en] ?? en;
@@ -261,3 +286,132 @@ export function citationsUnchanged(original: string, localized: string): boolean
 export function translatingLabel(locale: UiLanguage): string {
   return t("record.translating", locale);
 }
+
+export function narrativeSourceHash(result: CouncilResult | null, responses: AgentResponse[]): string {
+  return fnv1a(
+    JSON.stringify({
+      recommendation: result?.recommendation ?? "",
+      synthesis: result?.synthesisRaw ?? "",
+      decision: result?.decision ?? "",
+      rationale: result?.rationale ?? "",
+      disagreements: result?.disagreements ?? [],
+      issues: result?.issues ?? [],
+      positions: result?.agentPositions ?? {},
+      rounds: responses.map((row) => ({
+        id: row.id,
+        member: responseMemberId(row),
+        stage: row.stage ?? row.round,
+        text: row.responseText,
+        error: row.error,
+      })),
+    }),
+  );
+}
+
+function emptyNarrative(hash: string): CachedNarrative {
+  return {
+    sourceHash: hash,
+    recommendation: "",
+    synthesis: "",
+    decision: "",
+    rationale: "",
+    disagreements: [],
+    issues: [],
+    proposedCorrections: [],
+    resolvedIssues: [],
+    unresolvedIssues: [],
+    alternatives: [],
+    dissent: [],
+    risks: [],
+    positions: {},
+    round1: {},
+    round2: {},
+    errors: {},
+  };
+}
+
+export function englishNarrative(result: CouncilResult | null, responses: AgentResponse[]): LocalizedNarrative {
+  const hash = narrativeSourceHash(result, responses);
+  const round1: Record<string, string> = {};
+  const round2: Record<string, string> = {};
+  const errors: Record<string, string> = {};
+  for (const row of responses) {
+    const member = responseMemberId(row);
+    if (isSynthesisResponse(row)) continue;
+    if (row.error) errors[`${member}:${row.stage ?? row.round}`] = row.error;
+    if (row.stage === "ROUND_1" || row.round === 1) round1[member] = row.responseText;
+    if (row.stage === "ROUND_2" || row.round === 2) round2[member] = row.responseText;
+  }
+  return {
+    sourceHash: hash,
+    recommendation: result?.recommendation ?? "",
+    synthesis: result?.synthesisRaw ?? "",
+    decision: result?.decision ?? "",
+    rationale: result?.rationale ?? "",
+    disagreements: result?.disagreements ?? [],
+    issues: result?.issues ?? [],
+    proposedCorrections: result?.proposedCorrections ?? [],
+    resolvedIssues: result?.resolvedIssues ?? [],
+    unresolvedIssues: result?.unresolvedIssues ?? [],
+    alternatives: result?.alternatives ?? [],
+    dissent: result?.dissent ?? [],
+    risks: result?.risks ?? [],
+    positions: result?.agentPositions ?? {},
+    round1,
+    round2,
+    errors,
+    locale: "en",
+    fromCache: true,
+  };
+}
+
+export async function localizeCouncilNarrative(
+  result: CouncilResult | null,
+  responses: AgentResponse[],
+  locale: UiLanguage,
+  cache: CachedNarrative | null | undefined,
+  translate: TranslateFn,
+): Promise<{ view: LocalizedNarrative; cache: CachedNarrative | null; translated: boolean }> {
+  const english = englishNarrative(result, responses);
+  if (locale !== "ru") {
+    return { view: english, cache: cache ?? null, translated: false };
+  }
+  if (cache && cache.sourceHash === english.sourceHash) {
+    return { view: { ...cache, locale: "ru", fromCache: true }, cache, translated: false };
+  }
+  const next: CachedNarrative = emptyNarrative(english.sourceHash);
+  next.recommendation = await translateFree(english.recommendation, translate);
+  next.synthesis = await translateFree(english.synthesis, translate);
+  next.decision = await translateFree(english.decision, translate);
+  next.rationale = await translateFree(english.rationale, translate);
+  next.disagreements = await Promise.all(english.disagreements.map((row) => translateFree(row, translate)));
+  next.issues = await Promise.all(english.issues.map((row) => translateFree(row, translate)));
+  next.proposedCorrections = await Promise.all(english.proposedCorrections.map((row) => translateFree(row, translate)));
+  next.resolvedIssues = await Promise.all(english.resolvedIssues.map((row) => translateFree(row, translate)));
+  next.unresolvedIssues = await Promise.all(english.unresolvedIssues.map((row) => translateFree(row, translate)));
+  next.alternatives = await Promise.all(english.alternatives.map((row) => translateFree(row, translate)));
+  next.dissent = await Promise.all(english.dissent.map((row) => translateFree(row, translate)));
+  next.risks = await Promise.all(english.risks.map((row) => translateFree(row, translate)));
+  const positions: Record<string, string> = {};
+  for (const [key, value] of Object.entries(english.positions)) {
+    positions[key] = await translateFree(value, translate);
+  }
+  next.positions = positions;
+  const round1: Record<string, string> = {};
+  for (const [key, value] of Object.entries(english.round1)) {
+    round1[key] = await translateFree(value, translate);
+  }
+  next.round1 = round1;
+  const round2: Record<string, string> = {};
+  for (const [key, value] of Object.entries(english.round2)) {
+    round2[key] = await translateFree(value, translate);
+  }
+  next.round2 = round2;
+  const errors: Record<string, string> = {};
+  for (const [key, value] of Object.entries(english.errors)) {
+    errors[key] = localizeErrorMessage(value, "ru");
+  }
+  next.errors = errors;
+  return { view: { ...next, locale: "ru", fromCache: false }, cache: next, translated: true };
+}
+

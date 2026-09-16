@@ -1,13 +1,13 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { AgentCard } from "@/components/agent-card";
-import { PreflightPanel } from "@/components/preflight-panel";
 import { ArtifactPanel, ContextManifestPanel } from "@/components/context-manifest-panel";
 import { CouncilFold } from "@/components/council-fold";
 import { DecisionRecordPanel } from "@/components/decision-record";
-import { CouncilRunPanel, CouncilRunMeter } from "@/components/council-run-panel";
+import { CouncilProgressPanel } from "@/components/council-progress";
+import { CouncilRunPanel } from "@/components/council-run-panel";
 import { CollapsibleText } from "@/components/collapsible-text";
-import { Crumb, DangerButton, GhostButton, Page, PageHeader, Panel, PrimaryButton, StatusPill } from "@/components/council-ui";
+import { PresentedText } from "@/components/presented-text";
+import { Crumb, GhostButton, Page, PageHeader, PrimaryButton, StatusPill } from "@/components/council-ui";
 import { ImplementationPacketPanel } from "@/components/implementation-packet-panel";
 import { OpLogPanel } from "@/components/op-log";
 import { isSynthesisResponse, responseMemberId } from "@/lib/council/agents";
@@ -34,16 +34,28 @@ import type { DurableRunPublic } from "@/lib/council/durable-run";
 import { type CouncilRunSnapshot } from "@/lib/council/run-control";
 import { councilPreflight } from "@/lib/council/task-mode";
 import { exclusiveRunState } from "@/lib/council/terminal";
+import { hasTaskVerdict, kindKey, operatorKind } from "@/lib/council/operator-status";
 import { useSession } from "@/lib/council/session";
 import type { AgentKey, AgentProgress } from "@/lib/council/types";
 import type { EvidencePipelineResult } from "@/lib/evidence/pipeline-cache";
 import { formatCouncilOpLog, formatExceptionLog, formatOpLog } from "@/lib/op-log";
+import { localizeTaskResult } from "@/lib/i18n/api";
+import { englishNarrative, type LocalizedNarrative } from "@/lib/i18n/result-localize";
 import { useI18n } from "@/lib/i18n/provider";
 
 export const Route = createFileRoute("/t/$taskId")({ component: TaskPage });
 
 
-const RUNNING = new Set(["PREPARING", "COUNCIL_ROUND_1", "COUNCIL_ROUND_2", "SYNTHESIS"]);
+const RUNNING = new Set([
+  "QUEUED",
+  "PREPARING",
+  "COUNCIL_ROUND_1",
+  "COUNCIL_ROUND_2",
+  "ROUND_1",
+  "ROUND_2",
+  "SYNTHESIS",
+  "FINALIZING",
+]);
 const STARTABLE = new Set(["CREATED", "FAILED", "CANCELLED"]);
 
 function ListBlock({ title, rows }: { title: string; rows: string[] }) {
@@ -86,7 +98,7 @@ function TaskPage() {
   const { taskId } = Route.useParams();
   const store = useStore();
   const { config, creds, setProvider } = useSession();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const task = store.tasks.find((t) => t.id === taskId);
   const project = store.projects.find((p) => p.id === task?.projectId);
   const context = store.context.filter((c) => c.projectId === task?.projectId);
@@ -107,6 +119,7 @@ function TaskPage() {
   );
   const [activeRunId, setActiveRunId] = useState(task?.diagnostics?.run?.runId ?? "");
   const [confirmRestart, setConfirmRestart] = useState(false);
+  const [narrative, setNarrative] = useState<LocalizedNarrative | null>(null);
   const runGen = useRef(0);
   const applyPublicRef = useRef<(run: DurableRunPublic) => void>(() => undefined);
 
@@ -139,6 +152,26 @@ function TaskPage() {
     };
   }, [taskId, busy, task?.status, activeRunId]);
 
+  useEffect(() => {
+    if (locale !== "ru") {
+      setNarrative(englishNarrative(result, allResponses));
+      return;
+    }
+    if (!taskId || (!result && allResponses.length === 0)) {
+      setNarrative(null);
+      return;
+    }
+    let cancelled = false;
+    void localizeTaskResult({ data: { taskId, language: "ru" } })
+      .then((out) => {
+        if (!cancelled && out.narrative) setNarrative(out.narrative);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [taskId, locale, result, allResponses.length]);
+
   if (!task || !project) {
     return (
       <Page>
@@ -161,7 +194,17 @@ function TaskPage() {
     hasSynthesis: Boolean(result),
     hasArtifact: Boolean(result && artifact),
   });
-  const isRunning = !terminal && (busy || RUNNING.has(task.status));
+  const opKind = operatorKind({ terminal, hasVerdict: hasTaskVerdict(result) });
+  const finished =
+    terminal === "FAILED" ||
+    terminal === "CANCELLED" ||
+    (terminal === "COMPLETE" && hasTaskVerdict(result));
+  const isRunning =
+    !finished &&
+    (busy ||
+      RUNNING.has(task.status) ||
+      task.diagnostics?.run?.stage === "FINALIZING" ||
+      (terminal === "COMPLETE" && !hasTaskVerdict(result)));
   const persistedStage = task.diagnostics?.run?.stage ?? stage;
   const persistedAgents = task.diagnostics?.run?.agents ?? agentState;
   const members = task.selectedModels?.length ? task.selectedModels : config.members;
@@ -294,7 +337,7 @@ function TaskPage() {
     });
     setBusy(true);
     setConfirmRestart(false);
-    setMsg("Queued on the server. Running in background.");
+    setMsg(t("operator.queued"));
     setStage("PREPARING");
     setAgentState(waitingAgents);
     try {
@@ -429,16 +472,17 @@ function TaskPage() {
         <div className="flex flex-col items-end gap-3">
           <div className="flex flex-col items-end gap-1">
             <p className="m-0 text-xs font-semibold tracking-widest text-muted uppercase">{t("task.run")}</p>
-            <StatusPill status={terminal ?? task.status} />
+            <StatusPill
+              status={opKind === "COMPLETE" ? "COMPLETE" : opKind === "ERROR" ? "FAILED" : opKind === "STOPPED" ? "CANCELLED" : "RUNNING"}
+              label={t(kindKey(opKind))}
+            />
           </div>
-          <div className="flex flex-col items-end gap-1">
-            <p className="m-0 text-xs font-semibold tracking-widest text-muted uppercase">{t("task.verdict")}</p>
-            {result ? (
-              <StatusPill status={result.reconciledStatus ?? result.finalEnforcedStatus ?? result.status} />
-            ) : (
-              <span className="text-sm text-faint">{t("status.none")}</span>
-            )}
-          </div>
+          {hasTaskVerdict(result) ? (
+            <div className="flex flex-col items-end gap-1">
+              <p className="m-0 text-xs font-semibold tracking-widest text-muted uppercase">{t("task.verdict")}</p>
+              <StatusPill status={result!.reconciledStatus ?? result!.finalEnforcedStatus ?? result!.status} />
+            </div>
+          ) : null}
         </div>
       </header>
 
@@ -476,90 +520,26 @@ function TaskPage() {
       />
 
       {isRunning ? (
-        <Panel>
-          <p className="mb-1 text-xs font-semibold tracking-widest text-muted uppercase">Running in background</p>
-          <h2 className="font-display mb-2 text-xl">Council is running on the server</h2>
-          <p className="text-muted">{msg || task.diagnostics?.run?.message || "Queued…"}</p>
-          {task.diagnostics?.run?.stallReason ? (
-            <p className="mt-2 mb-0 text-sm text-warn">
-              STALL {task.diagnostics.run.stallReason}
-              {task.diagnostics.run.currentMemberId ? ` · member ${task.diagnostics.run.currentMemberId}` : ""}
-              {task.diagnostics.run.currentModelId ? ` · ${task.diagnostics.run.currentModelId}` : ""}
-            </p>
-          ) : task.diagnostics?.run?.internalStage ? (
-            <p className="mt-2 mb-0 text-sm text-muted">
-              stage {task.diagnostics.run.internalStage}
-              {task.diagnostics.run.currentMemberId ? ` · member ${task.diagnostics.run.currentMemberId}` : ""}
-              {task.diagnostics.run.currentModelId ? ` · ${task.diagnostics.run.currentModelId}` : ""}
-            </p>
-          ) : null}
-          <p className="mt-2 mb-0 text-sm text-muted">
-            You can close this page, reload, or sign out. This run keeps going until it finishes or you Stop it.
-          </p>
-          <p className="mt-3 mb-0 text-sm tabular-nums">
-            Started {task.diagnostics?.run?.startedAt ?? "just now"}
-            {" · "}
-            last progress {task.diagnostics?.run?.updatedAt ?? task.diagnostics?.run?.stageStartedAt ?? "pending"}
-          </p>
-          <p className="mt-1 mb-0 text-xs tabular-nums text-faint">
-            last wake {task.diagnostics?.run?.lastWakeAt ?? "pending"}
-            {" · "}
-            lease {task.diagnostics?.run?.leaseExpiresAt ?? "none"}
-            {" · "}
-            next recovery {task.diagnostics?.run?.nextRecoveryDeadline ?? "pending"}
-          </p>
-          <div className="mt-3">
-            <CouncilRunMeter
-              provider={providerName(task.diagnostics?.run?.provider ?? task.provider ?? config.provider)}
-              used={task.diagnostics?.run?.requestBudget?.used ?? 0}
-              limit={task.diagnostics?.run?.requestBudget?.limit ?? callLimit}
-              costUsd={task.diagnostics?.run?.costUsd ?? task.totalCostUsd}
-              billing={
-                (task.diagnostics?.run?.provider ?? task.provider ?? config.provider) === "nanogpt"
-                  ? billingLabel(task.diagnostics?.run?.nanogptBilling ?? task.nanogptBilling ?? config.nanogptBilling)
-                  : null
-              }
-            />
-            {task.diagnostics?.run?.requestBudget ? (
-              <p className="mt-1 mb-0 font-mono text-xs tabular-nums text-faint">
-                preflight {task.diagnostics.run.requestBudget.preflightCalls ?? 0}
-                {" · "}council {task.diagnostics.run.requestBudget.councilCalls ?? 0}
-                {" · "}retries {task.diagnostics.run.requestBudget.retries ?? 0}
-              </p>
-            ) : null}
-          </div>
-          <PreflightPanel report={task.diagnostics?.run?.preflight} />
-          <p className="mt-3 mb-1 text-xs font-semibold tracking-widest text-muted uppercase">{persistedStage}</p>
-          <p className="m-0 mb-3 text-xs text-faint">
-            Stage started {task.diagnostics?.run?.stageStartedAt ?? "just now"}
-            {task.diagnostics?.run?.updatedAt ? ` · updated ${task.diagnostics.run.updatedAt}` : ""}
-          </p>
-          <ul className="m-0 grid list-none gap-2 p-0 sm:grid-cols-3">
-            {agentList.map(([agent, label]) => (
-              <AgentCard key={agent} label={label} progress={persistedAgents[agent] ?? agentState[agent]} />
-            ))}
-          </ul>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <DangerButton type="button" onClick={onStop}>
-              Stop
-            </DangerButton>
-            <GhostButton type="button" onClick={onRestart}>
-              Restart
-            </GhostButton>
-          </div>
-          {confirmRestart ? (
-            <p className="mt-3 mb-0 rounded-md bg-subtle px-3 py-3 text-sm text-muted">
-              Restart starts a new Council run and may incur new API cost.{" "}
-              <button type="button" className="font-semibold text-fg underline" onClick={onRestart}>
-                Confirm restart
-              </button>
-              {" · "}
-              <button type="button" className="text-muted underline" onClick={() => setConfirmRestart(false)}>
-                Keep running
-              </button>
-            </p>
-          ) : null}
-        </Panel>
+        <CouncilProgressPanel
+          terminal={terminal}
+          result={result}
+          snapshot={task.diagnostics?.run}
+          members={members}
+          agents={persistedAgents}
+          stage={persistedStage}
+          message={msg || task.diagnostics?.run?.message || ""}
+          providerLabel={providerName(task.diagnostics?.run?.provider ?? task.provider ?? config.provider)}
+          billing={
+            (task.diagnostics?.run?.provider ?? task.provider ?? config.provider) === "nanogpt"
+              ? billingLabel(task.diagnostics?.run?.nanogptBilling ?? task.nanogptBilling ?? config.nanogptBilling)
+              : null
+          }
+          callLimit={callLimit}
+          confirmRestart={confirmRestart}
+          onStop={onStop}
+          onRestart={onRestart}
+          onCancelRestart={() => setConfirmRestart(false)}
+        />
       ) : null}
 
       {showReports ? (
@@ -584,13 +564,13 @@ function TaskPage() {
       ) : null}
       {showReports && confirmRestart ? (
         <p className="mt-3 mb-0 rounded-md bg-subtle px-3 py-3 text-sm text-muted">
-          Restart starts a new Council run and may incur new API cost.{" "}
+          {t("operator.restartConfirm")}{" "}
           <button type="button" className="font-semibold text-fg underline" onClick={onRestart}>
-            Confirm restart
+            {t("operator.confirmRestart")}
           </button>
           {" · "}
           <button type="button" className="text-muted underline" onClick={() => setConfirmRestart(false)}>
-            Keep this result
+            {t("operator.keepResult")}
           </button>
         </p>
       ) : null}
@@ -602,7 +582,7 @@ function TaskPage() {
             implementation.conflict
               ? "REPOSITORY_SOURCE_CONFLICT"
               : implementation.missingRepository
-                ? "no repository selected"
+                ? t("fold.noRepository")
                 : `${implementation.filesIndexed} files · ${implementation.indexerVersion}`
           }
         >
@@ -628,55 +608,55 @@ function TaskPage() {
       {packet ? <ImplementationPacketPanel packet={packet} /> : null}
 
       {result ? (
-        <CouncilFold title="Verdict details" summary="recommendation, issues, evidence, model positions">
+        <CouncilFold title={t("fold.finalFinding")} summary={t("fold.positions")}>
           {result.decision ? (
             <>
-              <h3 className="mt-0 text-sm font-semibold tracking-widest text-muted uppercase">Decision</h3>
-              <CollapsibleText text={result.decision} />
+              <h3 className="mt-0 text-sm font-semibold tracking-widest text-muted uppercase">{t("record.outcome")}</h3>
+              <PresentedText original={result.decision} localized={narrative?.decision} />
               {result.rationale ? (
                 <>
-                  <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">Rationale</h3>
-                  <CollapsibleText text={result.rationale} />
+                  <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">{t("record.why")}</h3>
+                  <PresentedText original={result.rationale} localized={narrative?.rationale} />
                 </>
               ) : null}
-              <ListBlock title="Alternatives" rows={result.alternatives} />
-              <ListBlock title="Dissent" rows={result.dissent} />
-              <ListBlock title="Risks" rows={result.risks} />
+              <ListBlock title={t("fold.alternatives")} rows={narrative?.alternatives ?? result.alternatives} />
+              <ListBlock title={t("fold.dissent")} rows={narrative?.dissent ?? result.dissent} />
+              <ListBlock title={t("fold.risks")} rows={narrative?.risks ?? result.risks} />
             </>
           ) : null}
           <h3 className={`${result.decision ? "mt-4" : "mt-0"} text-sm font-semibold tracking-widest text-muted uppercase`}>
-            Main recommendation
+            {t("record.recommendations")}
           </h3>
-          <CollapsibleText text={result.recommendation || "—"} />
-          <ListBlock title="Disagreements" rows={result.disagreements} />
-          <ListBlock title="Issues" rows={result.issues} />
-          <ListBlock title="Proposed corrections" rows={result.proposedCorrections} />
-          <ListBlock title="Resolved issues" rows={result.resolvedIssues} />
-          <ListBlock title="Open follow-ups" rows={result.unresolvedIssues} />
+          <PresentedText original={result.recommendation || "—"} localized={narrative?.recommendation} />
+          <ListBlock title={t("fold.disagreements")} rows={narrative?.disagreements ?? result.disagreements} />
+          <ListBlock title={t("fold.issues")} rows={narrative?.issues ?? result.issues} />
+          <ListBlock title={t("fold.corrections")} rows={narrative?.proposedCorrections ?? result.proposedCorrections} />
+          <ListBlock title={t("fold.resolvedIssues")} rows={narrative?.resolvedIssues ?? result.resolvedIssues} />
+          <ListBlock title={t("fold.openFollowups")} rows={narrative?.unresolvedIssues ?? result.unresolvedIssues} />
           {result.issueLedger ? (
             <>
               <ListBlock
-                title="Issue ledger — open"
+                title={t("fold.ledgerOpen")}
                 rows={result.issueLedger.unresolved.map((row) => `${row.issueId} · ${row.severity} · ${row.text}`)}
               />
               <ListBlock
-                title="Issue ledger — resolved"
+                title={t("fold.ledgerResolved")}
                 rows={result.issueLedger.resolved.map((row) => `${row.issueId} · ${row.severity} · ${row.text}`)}
               />
               <ListBlock
-                title="Issue ledger — rejected"
+                title={t("fold.ledgerRejected")}
                 rows={result.issueLedger.rejected.map((row) => `${row.issueId} · ${row.severity} · ${row.text}`)}
               />
               <ListBlock
-                title="Issue ledger — accepted as patch"
+                title={t("fold.ledgerPatch")}
                 rows={result.issueLedger.acceptedAsPatch.map((row) => `${row.issueId} · ${row.severity} · ${row.text}`)}
               />
             </>
           ) : null}
-          <ListBlock title="Citations" rows={result.citations} />
+          <ListBlock title={t("fold.citations")} rows={result.citations} />
           {result.evidence.length ? (
             <>
-              <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">Evidence</h3>
+              <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">{t("fold.evidence")}</h3>
               <ul className="max-h-log overflow-auto">
                 {result.evidence.map((row) => (
                   <li key={row.claim} className="break-words">
@@ -688,14 +668,19 @@ function TaskPage() {
             </>
           ) : null}
           <div className="mt-4">
-            <h3 className="mt-0 text-sm font-semibold tracking-widest text-muted uppercase">Model positions</h3>
+            <h3 className="mt-0 text-sm font-semibold tracking-widest text-muted uppercase">{t("fold.modelPosition")}</h3>
             <dl className="m-0 grid gap-3">
               {agentList.map(([key, label]) => (
                 <div key={key}>
                   <dt className="text-xs tracking-wider text-faint uppercase">{label}</dt>
                   <dd className="m-0">
-                    <CollapsibleText
-                      text={positionForMember(result.agentPositions, key, members)}
+                    <PresentedText
+                      original={positionForMember(result.agentPositions, key, members)}
+                      localized={
+                        narrative?.positions
+                          ? positionForMember(narrative.positions, key, members)
+                          : null
+                      }
                       defaultCollapsed
                     />
                   </dd>
@@ -723,44 +708,48 @@ function TaskPage() {
           );
           const recorded = Boolean(r1 || r2);
           return (
-            <CouncilFold key={key} title={heading} summary={recorded ? "recorded" : "not run yet"}>
-              <h3 className="mt-0 text-sm font-semibold tracking-widest text-muted uppercase">Round 1</h3>
+            <CouncilFold key={key} title={heading} summary={recorded ? t("agent.recorded") : t("task.noneRecorded")}>
+              <h3 className="mt-0 text-sm font-semibold tracking-widest text-muted uppercase">{t("fold.modelPosition")}</h3>
               {r1 ? (
                 r1.error ? (
-                  <p className="text-danger">{r1.error}</p>
+                  <p className="text-danger">{narrative?.errors?.[`${key}:${r1.stage ?? r1.round}`] ?? r1.error}</p>
                 ) : (
-                  <CollapsibleText text={r1.responseText} defaultCollapsed />
+                  <PresentedText original={r1.responseText} localized={narrative?.round1?.[key]} defaultCollapsed />
                 )
               ) : (
-                <p className="text-muted">Not run yet.</p>
+                <p className="text-muted">{t("task.noneRecorded")}</p>
               )}
-              <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">Round 2</h3>
+              <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">{t("fold.crossReview")}</h3>
               {r2 ? (
                 r2.error ? (
-                  <p className="text-danger">{r2.error}</p>
+                  <p className="text-danger">{narrative?.errors?.[`${key}:${r2.stage ?? r2.round}`] ?? r2.error}</p>
                 ) : (
-                  <CollapsibleText text={r2.responseText} defaultCollapsed />
+                  <PresentedText original={r2.responseText} localized={narrative?.round2?.[key]} defaultCollapsed />
                 )
               ) : (
-                <p className="text-muted">Not run yet.</p>
+                <p className="text-muted">{t("task.noneRecorded")}</p>
               )}
             </CouncilFold>
           );
         })}
 
         <CouncilFold
-          title="Raw synthesis"
-          summary={synth?.responseText || result?.synthesisRaw ? "recorded" : "not available"}
+          title={t("fold.rawSynthesis")}
+          summary={synth?.responseText || result?.synthesisRaw ? t("agent.recorded") : t("task.noneRecorded")}
         >
           {synth?.responseText || result?.synthesisRaw ? (
-            <CollapsibleText text={synth?.responseText || result?.synthesisRaw || ""} defaultCollapsed />
+            <PresentedText
+              original={synth?.responseText || result?.synthesisRaw || ""}
+              localized={narrative?.synthesis}
+              defaultCollapsed
+            />
           ) : (
-            <p className="m-0 text-muted">Not available.</p>
+            <p className="m-0 text-muted">{t("task.noneRecorded")}</p>
           )}
         </CouncilFold>
 
         <CouncilFold
-          title="Technical metadata"
+          title={t("fold.technical")}
           summary={
             task.totalCostUsd != null
               ? `${task.totalCostUsd.toFixed(4)} USD · ${task.totalLatencyMs ?? "—"} ms`

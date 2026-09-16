@@ -200,3 +200,12 @@ Only ACTIVE rows define current architecture.
 - RATIONALE: CREATE previously presented APPROVED as if reconstruction were an accepted implementation. Architecture/history evidence was being read as proof that code exists.
 - SUPERSEDES: none (tightens CREATE / packet / Decision Record semantics from ADR-006 and ADR-021)
 - AFFECTED_MODULES: council.issues, council.decision, council.protocol, council.packet, context.repository-index, context.evidence-ledger, i18n.locale, ui.task, files.ingest
+
+## ADR-023
+
+- DECISION: Operator-facing Council status is one of WORKING, COMPLETE, STOPPED, ERROR, with live stages PREPARE, PROBE, ROUND_1, ROUND_2, SYNTHESIS, FINALIZE. Lease/stall/recovery internals stay under Technical details and are never the primary status. After a reconcilable synthesis the run enters FINALIZING, writes the Decision Record and verdict, then COMPLETE (or FAILED if verdict generation fails). COMPLETE requires `final_verdict`. A persisted synthesis cannot remain RUNNING. Interrupted terminal transitions are healed on the next tick or sweeper reclaim. RU UI shows a cached translation of the same canonical English Council results; switching language never reruns Council.
+- STATUS: ACTIVE
+- ARCHITECTURE_REVISION: CB-ARCH-20260908-002
+- RATIONALE: Operators could see members DONE and synthesis recorded while the run still showed RUNNING / LEASE_WAIT / no verdict. That is a product defect, not an expected durable-runner state.
+- SUPERSEDES: none (tightens operator UX and terminal finalization from ADR-019 and ADR-022)
+- AFFECTED_MODULES: council.durable-runner, council.terminal, ui.task, i18n.locale, council.decision

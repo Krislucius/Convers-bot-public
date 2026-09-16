@@ -19,6 +19,7 @@ import {
   type DurableStore,
 } from "./durable-run.ts";
 import { CouncilCancelled } from "./run-control.ts";
+import { needsFinalization } from "./terminal.ts";
 
 export type StartDurableRunInput = {
   userId: string;
@@ -218,7 +219,14 @@ export async function tickDurableRun(
   if (!claimed) {
     const latest = await store.get(opts.runId);
     if (!latest) return { public: null, skipped: true, reason: "MISSING", terminal: true, didProviderCall: false };
-    if (isTerminalStatus(latest.status)) {
+    const heal = needsFinalization({
+      status: latest.status,
+      output: latest.output,
+      responses: latest.responses,
+      mode: latest.frozenInput.task.mode,
+      artifact: latest.output?.artifact ?? null,
+    });
+    if (isTerminalStatus(latest.status) && !heal) {
       return { public: toPublic(latest), skipped: true, reason: "TERMINAL", terminal: true, didProviderCall: false };
     }
     return { public: toPublic(latest), skipped: true, reason: "LEASE_HELD", terminal: false, didProviderCall: false };
