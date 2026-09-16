@@ -1241,7 +1241,7 @@ export async function runCouncil(input: {
       parsed.evidence = sanitizeEvidenceLabels(parsed.evidence, packedCitations).labels;
     }
     let packet: ImplementationPacket | null = null;
-    if (mode === "CREATE" && artifact && gated.status === "APPROVED") {
+    if (mode === "REVIEW" && artifact && (gated.status === "APPROVED" || parsed.reviewVerdict === "PASS")) {
       packet = buildImplementationPacket({
         project: input.project,
         task: input.task,

@@ -39,6 +39,7 @@ export type LedgerEntry = {
   citation: string;
   extractorFingerprint: string;
   kind: "EVIDENCE";
+  evidenceClass?: "DESIGN_EVIDENCE" | "IMPLEMENTATION_EVIDENCE";
 };
 
 export type CachedExtraction = {
@@ -125,4 +126,10 @@ export type EvidenceManifest = {
   chunkCount: number;
   cacheHits: number;
   processedChunks: number;
+  repositoryHash?: string | null;
+  repositoryIndexerVersion?: string | null;
+  filesIndexed?: number;
+  implementationClaims?: Array<{ claim: string; citation: string }>;
+  repositoryCitations?: string[];
+  repositoryConflict?: "REPOSITORY_SOURCE_CONFLICT" | null;
 };

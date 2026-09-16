@@ -1,13 +1,16 @@
 import { stripFindingDecor, unresolvedBlockers } from "./issues.ts";
 import { isTaskMode, normalizeTaskMode } from "./task-mode.ts";
 import type { CouncilResult, CouncilStatus, TaskMode } from "./types.ts";
+import type { ImplementationReport, ImplementationRow } from "../evidence/repo-index.ts";
 
 export const NEXT_ACTIONS = [
+  "RUN_REVIEW",
+  "CREATE_PATCH",
+  "RUN_DECIDE",
+  "ADD_REPOSITORY_EVIDENCE",
+  "ADD_EVIDENCE",
   "ACCEPT",
-  "CREATE PATCH",
-  "RUN REVIEW",
-  "RUN DECIDE",
-  "REQUEST MORE EVIDENCE",
+  "NO_ACTION",
 ] as const;
 
 export type NextAction = (typeof NEXT_ACTIONS)[number];
@@ -35,11 +38,18 @@ export type DecisionResolved = {
 export type DecisionRecord = {
   runStatus: RunStatus | null;
   verdict: CouncilStatus | null;
+  summary: string;
   conclusion: string;
   why: string;
+  completed: string[];
+  notCompleted: string[];
   agreed: string[];
+  implementationState: ImplementationRow[];
   blockers: DecisionBlocker[];
   resolved: DecisionResolved[];
+  recommendations: string[];
+  required: string[];
+  userActions: string[];
   userDecisions: string[];
   nextAction: NextAction | null;
   nextActionWhy: string;
@@ -113,32 +123,53 @@ export function nextActionFor(input: {
   runStatus: RunStatus | null;
   verdict: CouncilStatus | null;
   result: CouncilResult | null;
+  implementation?: ImplementationReport | null;
 }): { action: NextAction | null; why: string } {
   if (!input.verdict || !input.result) {
     return { action: null, why: "Council did not produce a task verdict." };
   }
+  const impl = input.implementation ?? null;
+  if (impl?.conflict === "REPOSITORY_SOURCE_CONFLICT") {
+    return {
+      action: "ADD_REPOSITORY_EVIDENCE",
+      why: "Selected repository snapshots conflict. Choose one authoritative source tree.",
+    };
+  }
   if (input.verdict === "USER_DECISION_REQUIRED") {
-    return { action: "RUN DECIDE", why: "An operator choice is required before work can continue." };
+    return { action: "RUN_DECIDE", why: "An operator choice is required before work can continue." };
   }
   if (input.verdict === "BLOCKED") {
     if (isEvidenceGap(input.result)) {
-      return { action: "REQUEST MORE EVIDENCE", why: "Unresolved P0 depends on missing or conflicted evidence." };
+      return { action: "ADD_EVIDENCE", why: "Unresolved P0 depends on missing or conflicted evidence." };
     }
-    return { action: "CREATE PATCH", why: "Unresolved P0 must be fixed before the result can be accepted." };
+    return { action: "CREATE_PATCH", why: "Unresolved P0 must be fixed before the result can be accepted." };
   }
   if (input.verdict === "PATCH") {
-    return { action: "CREATE PATCH", why: "A material fix is required; no P0 remains." };
+    return { action: "CREATE_PATCH", why: "A material fix is required; no P0 remains." };
+  }
+  if (input.verdict === "READY_FOR_REVIEW") {
+    if (impl?.missingRepository) {
+      return {
+        action: "ADD_REPOSITORY_EVIDENCE",
+        why: "The candidate is ready for review. Attach an authoritative repository to verify implementation.",
+      };
+    }
+    return { action: "RUN_REVIEW", why: "The reconstructed artifact is ready for a REVIEW Council." };
   }
   if (input.mode === "CREATE") {
-    return { action: "RUN REVIEW", why: "The reconstructed artifact is ready for a REVIEW Council." };
+    return { action: "RUN_REVIEW", why: "The reconstructed artifact is ready for a REVIEW Council." };
   }
-  return { action: "ACCEPT", why: "No unresolved blocking issues remain." };
+  if (input.verdict === "APPROVED") {
+    return { action: "ACCEPT", why: "No unresolved blocking issues remain." };
+  }
+  return { action: "NO_ACTION", why: "No further Council action is required." };
 }
 
 export function deriveDecisionRecord(input: {
   mode: TaskMode | string;
   runStatus: RunStatus | null;
   result: CouncilResult | null;
+  implementation?: ImplementationReport | null;
 }): DecisionRecord {
   const mode = isTaskMode(input.mode) ? input.mode : normalizeTaskMode(input.mode);
   const result =
@@ -146,6 +177,7 @@ export function deriveDecisionRecord(input: {
   const verdict = result?.reconciledStatus ?? result?.finalEnforcedStatus ?? result?.status ?? null;
   const ledger = result?.issueLedger ?? null;
   const p0 = ledger && verdict === "BLOCKED" ? unresolvedBlockers(ledger, mode) : [];
+  const impl = input.implementation ?? null;
 
   const blockers: DecisionBlocker[] = p0.map((issue) => ({
     issueId: issue.issueId,
@@ -186,10 +218,18 @@ export function deriveDecisionRecord(input: {
     }
   }
 
-  const agreed = unique([
+  const completed = unique([
     ...(result?.consensus ?? []),
     result?.recommendation ? firstSentence(result.recommendation) : "",
     ...resolved.filter((row) => row.disposition === "RESOLVED").map((row) => row.title),
+  ]).slice(0, 7);
+
+  const notCompleted = unique([
+    ...(result?.unresolvedIssues ?? []),
+    ...(impl?.gaps ?? []),
+    ...(impl?.rows ?? [])
+      .filter((row) => row.status === "DESIGNED_ONLY" || row.status === "PARTIAL" || row.status === "UNKNOWN")
+      .map((row) => `${row.module}: ${row.status}`),
   ]).slice(0, 7);
 
   const userDecisions =
@@ -212,11 +252,15 @@ export function deriveDecisionRecord(input: {
   } else if (verdict === "USER_DECISION_REQUIRED") {
     why = "A choice remains that only the operator can make.";
     conclusion = firstSentence(result?.decision || result?.recommendation || "") || "Council needs an operator choice.";
+  } else if (verdict === "READY_FOR_REVIEW") {
+    why = "A deterministic candidate artifact was produced. This is not final approval.";
+    conclusion =
+      firstSentence(result?.recommendation ?? "") || "The reconstructed artifact is ready for REVIEW.";
   } else if (verdict === "APPROVED") {
     why = "No unresolved blocking issues remain.";
     conclusion =
       firstSentence(result?.recommendation ?? "") ||
-      (mode === "CREATE" ? "The reconstructed artifact is accepted." : "The candidate is accepted.");
+      (mode === "REVIEW" ? "The candidate is accepted." : "The reconstructed artifact is accepted.");
   } else if (input.runStatus === "FAILED") {
     why = "Council failed before synthesis.";
     conclusion = "No task verdict — Council did not finish.";
@@ -225,16 +269,50 @@ export function deriveDecisionRecord(input: {
     conclusion = "No task verdict — Council was cancelled.";
   }
 
-  const next = nextActionFor({ mode, runStatus: input.runStatus, verdict, result });
+  const implementationState: ImplementationRow[] = impl?.rows?.length
+    ? impl.rows
+    : [
+        {
+          module: "repository",
+          status: "UNKNOWN",
+          evidence: "No repository evidence selected.",
+          citations: [],
+        },
+      ];
+
+  const recommendations = unique([
+    ...(result?.proposedCorrections ?? []).map((row) => shortTitle(row)),
+    ...(impl?.recommendations ?? []),
+  ]).slice(0, 7);
+
+  const required = unique([
+    ...blockers.map((row) => row.title),
+    ...(verdict === "PATCH" ? (result?.proposedCorrections ?? []).map((row) => shortTitle(row)) : []),
+    ...(impl?.required ?? []),
+  ]).slice(0, 7);
+
+  const userActions = unique([
+    ...userDecisions,
+    ...(impl?.conflict === "REPOSITORY_SOURCE_CONFLICT" ? ["Select one authoritative repository snapshot."] : []),
+  ]).slice(0, 7);
+
+  const next = nextActionFor({ mode, runStatus: input.runStatus, verdict, result, implementation: impl });
 
   return {
     runStatus: input.runStatus,
     verdict,
+    summary: conclusion,
     conclusion,
     why,
-    agreed: agreed.slice(0, 7),
+    completed,
+    notCompleted,
+    agreed: completed,
+    implementationState,
     blockers,
     resolved,
+    recommendations,
+    required,
+    userActions,
     userDecisions,
     nextAction: next.action,
     nextActionWhy: next.why,

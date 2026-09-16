@@ -455,6 +455,7 @@ function isEmptyFindingLine(text: string): boolean {
 
 function asCouncilStatus(value: unknown): CouncilStatus | null {
   const text = String(value ?? "").toUpperCase();
+  if (text === "READY_FOR_REVIEW") return "READY_FOR_REVIEW";
   if (text === "APPROVED" || text === "PASS") return "APPROVED";
   if (text === "PATCH") return "PATCH";
   if (text === "BLOCKED") return "BLOCKED";
@@ -759,9 +760,11 @@ export function completeOutput(
   const resolvedTexts = [...ledger.resolved, ...ledger.rejected].map((row) => row.text);
   const reconciled = gated.reconciledStatus ?? gated.status;
   const packet =
-    extras?.packet && reconciled === "APPROVED"
-      ? { ...extras.packet, blockers: [...gated.blockers] }
-      : null;
+    task.mode === "CREATE"
+      ? null
+      : extras?.packet && (reconciled === "APPROVED" || reviewVerdict === "PASS")
+        ? { ...extras.packet, blockers: [...gated.blockers] }
+        : null;
   const result: CouncilResult = {
     taskId: task.id,
     status: reconciled,

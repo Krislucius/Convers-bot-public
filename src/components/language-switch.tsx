@@ -13,7 +13,7 @@ export function LanguageSwitch({ className = "" }: { className?: string }) {
     <div
       role="group"
       aria-label={t("nav.language")}
-      className={`inline-flex min-h-11 items-center rounded-full border border-line bg-subtle px-1 ${className}`}
+      className={`inline-flex min-h-11 shrink-0 items-center rounded-full border border-line bg-subtle px-1 ${className}`}
     >
       <button
         type="button"

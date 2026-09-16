@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { authMiddleware } from "@/lib/auth/middleware";
 import { deriveDecisionRecord } from "@/lib/council/decision";
 import { exclusiveRunState } from "@/lib/council/terminal";
+import { indexSelectedRepositories } from "@/lib/evidence/repo-index";
 import { normalizeUiLanguage, type UiLanguage } from "./locale.ts";
 import { prepareTaskText, type PreparedTaskText } from "./task-text.ts";
 import { localizeDecisionRecord, type LocalizedDecisionView } from "./result-localize.ts";
@@ -44,6 +45,18 @@ export const localizeTaskResult = createServerFn({ method: "POST" })
       mode: task.mode,
       runStatus: terminal === "COMPLETE" || terminal === "FAILED" || terminal === "CANCELLED" ? terminal : null,
       result,
+      implementation: indexSelectedRepositories({
+        files: snapshot.projectFiles.filter(
+          (file) => file.projectId === task.projectId && (task.selectedFileIds ?? []).includes(file.id),
+        ),
+        designMentions: [
+          task.canonicalTaskEn || task.prompt,
+          snapshot.artifacts.find((row) => row.taskId === task.id || row.id === task.candidateArtifactId)?.content ?? "",
+          ...snapshot.context
+            .filter((row) => row.projectId === task.projectId && row.kind !== "RAW_HISTORY")
+            .map((row) => row.content),
+        ],
+      }),
     });
     const cached = result ? await mod.loadResultLocalization(context.userId, data.taskId) : null;
     const out = await localizeDecisionRecord(record, language, cached, translateWithXai);

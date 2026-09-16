@@ -322,8 +322,8 @@ describe("CREATE artifact synthesis", () => {
       },
     };
     const gated = applyGate(parsed!, [alt as never], "CREATE");
-    assert.equal(gated.status, "APPROVED");
-    assert.equal(gated.reason, null);
+    assert.equal(gated.status, "READY_FOR_REVIEW");
+    assert.match(gated.reason ?? "", /not final approval/i);
     assert.equal(gated.blockers.some((row) => /Hierarchical Decoupling/i.test(row)), false);
     const screenshot = applyGate(parsed!, [
       {
@@ -338,11 +338,10 @@ describe("CREATE artifact synthesis", () => {
         },
       } as never,
     ], "CREATE");
-    assert.equal(screenshot.status, "APPROVED");
-    assert.equal(screenshot.reason, null);
+    assert.equal(screenshot.status, "READY_FOR_REVIEW");
     assert.equal(screenshot.blockers.length, 0);
     const inferred = applyGate(parsed!, [alt as never], "not-a-mode");
-    assert.equal(inferred.status, "APPROVED");
+    assert.equal(inferred.status, "READY_FOR_REVIEW");
   });
 
   it("REVIEW unresolved P1 without P0 is PATCH not BLOCKED", () => {

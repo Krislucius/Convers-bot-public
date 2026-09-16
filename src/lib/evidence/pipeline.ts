@@ -6,6 +6,7 @@ import { chunkSelectedSources } from "./chunk.ts";
 import { extractChunks, memoryCache } from "./extract.ts";
 import { cacheFingerprint, extractorFingerprint } from "./hash.ts";
 import { packEvidence } from "./pack.ts";
+import { indexSelectedRepositories, type ImplementationReport } from "./repo-index.ts";
 import { CHUNKER_VERSION, COVERAGE_COMPLETE_MEANING, OMITTED_PERSIST_MAX, PACKER_VERSION } from "./types.ts";
 import type {
   CacheStore,
@@ -116,6 +117,7 @@ export function runEvidencePipeline(input: {
   coverage: CoverageReport;
   pack: PackResult;
   manifest: EvidenceManifest;
+  implementation: ImplementationReport;
 } {
   const cache = input.cache ?? memoryCache();
   const chats = resolveChatsForRun(input.project.id, input.task.selectedChatSourceIds, input.chatSources);
@@ -198,6 +200,21 @@ export function runEvidencePipeline(input: {
   if (!assertEvidenceNonCanonical(entries)) {
     throw new Error("Ledger evidence must stay non-canonical.");
   }
+  for (const entry of entries) {
+    if (!entry.evidenceClass) entry.evidenceClass = "DESIGN_EVIDENCE";
+  }
+
+  const implementation = indexSelectedRepositories({
+    files,
+    designMentions: [
+      input.project.name,
+      input.project.description,
+      input.task.prompt,
+      input.candidateText ?? "",
+      ...input.frozen.map((row) => row.content),
+      ...entries.map((row) => row.claim),
+    ],
+  });
 
   const pack = packEvidence({
     project: input.project,
@@ -245,9 +262,15 @@ export function runEvidencePipeline(input: {
     chunkCount: chunks.length,
     cacheHits,
     processedChunks: audit.chunksProcessed,
+    repositoryHash: implementation.repositoryHash,
+    repositoryIndexerVersion: implementation.indexerVersion,
+    filesIndexed: implementation.filesIndexed,
+    implementationClaims: implementation.claims.map((row) => ({ claim: row.claim, citation: row.citation })),
+    repositoryCitations: implementation.citations,
+    repositoryConflict: implementation.conflict,
   };
 
-  return { chunks, entries, coverage, pack, manifest };
+  return { chunks, entries, coverage, pack, manifest, implementation };
 }
 
 export function coverageBlocksCouncil(coverage: CoverageReport): string | null {

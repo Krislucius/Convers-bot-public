@@ -628,6 +628,7 @@ function mapFile(row: Record<string, unknown>): ProjectFile {
     kind: asString(row.kind) as FileKind,
     extractedText: asString(row.extracted_text),
     members: asJson(row.members, []),
+    sourceTree: asJson(row.source_tree, null),
     notes: asString(row.notes),
     sizeBytes: asNum(row.size_bytes) ?? 0,
     characterCount: asNum(row.character_count) ?? 0,
@@ -1216,13 +1217,20 @@ export async function persistDeleteChat(userId: string, chatId: string, tasks: T
 
 async function insertFileRow(userId: string, file: ProjectFile) {
   const sql = await getSql();
+  const sourceTree = file.sourceTree?.length
+    ? file.sourceTree.slice(0, 1500).map((row) => ({
+        path: row.path,
+        bytes: row.bytes,
+        text: row.text.length > 24_000 ? `${row.text.slice(0, 24_000)}\n` : row.text,
+      }))
+    : null;
   await sql`
     insert into project_files (
-      id, user_id, project_id, filename, kind, extracted_text, members, notes, size_bytes,
+      id, user_id, project_id, filename, kind, extracted_text, members, source_tree, notes, size_bytes,
       character_count, estimated_tokens, include_in_memory, created_at
     ) values (
       ${file.id}, ${userId}, ${file.projectId}, ${file.filename}, ${file.kind}, ${file.extractedText},
-      ${jsonParam(file.members) ?? "[]"}::jsonb, ${file.notes}, ${file.sizeBytes}, ${file.characterCount},
+      ${jsonParam(file.members) ?? "[]"}::jsonb, ${jsonParam(sourceTree)}::jsonb, ${file.notes}, ${file.sizeBytes}, ${file.characterCount},
       ${file.estimatedTokens}, ${file.includeInMemory}, ${file.createdAt}
     )
     on conflict (id) do update set
@@ -1230,6 +1238,7 @@ async function insertFileRow(userId: string, file: ProjectFile) {
       kind = excluded.kind,
       extracted_text = excluded.extracted_text,
       members = excluded.members,
+      source_tree = excluded.source_tree,
       notes = excluded.notes,
       size_bytes = excluded.size_bytes,
       character_count = excluded.character_count,

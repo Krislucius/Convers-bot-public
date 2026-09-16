@@ -81,11 +81,11 @@ describe("decision record", () => {
     assert.equal(blockerWhyIsNormalized(record), true);
     assert.equal(record.blockers.some((row) => row.why.includes("ForwardFlowForecaster")), false);
     assert.equal(record.blockers.some((row) => /this entire paragraph/i.test(row.why)), false);
-    assert.equal(record.nextAction, "CREATE PATCH");
+    assert.equal(record.nextAction, "CREATE_PATCH");
     assert.match(record.why, /Unresolved P0/);
   });
 
-  it("P0 raised then resolved is APPROVED with the issue under RESOLVED", () => {
+  it("P0 raised then resolved is READY_FOR_REVIEW with the issue under RESOLVED", () => {
     const gated = applyGate(
       parsed("APPROVED", { resolved_issues: ["clock split invariant break"] }),
       [
@@ -97,14 +97,14 @@ describe("decision record", () => {
       ],
       "CREATE",
     );
-    assert.equal(gated.status, "APPROVED");
+    assert.equal(gated.status, "READY_FOR_REVIEW");
     const out = completeOutput(createTask, [], parsed("APPROVED", { resolved_issues: ["clock split invariant break"] }), gated);
     const record = deriveDecisionRecord({ mode: "CREATE", runStatus: "COMPLETE", result: out.result });
-    assert.equal(record.verdict, "APPROVED");
+    assert.equal(record.verdict, "READY_FOR_REVIEW");
     assert.equal(record.blockers.length, 0);
     assert.ok(record.resolved.some((row) => /clock split/i.test(row.title)));
-    assert.equal(record.nextAction, "RUN REVIEW");
-    assert.match(record.why, /No unresolved blocking issues/);
+    assert.equal(record.nextAction, "RUN_REVIEW");
+    assert.match(record.why, /not final approval/i);
   });
 
   it("conflicting reviewers without P0 do not BLOCK", () => {
@@ -119,12 +119,12 @@ describe("decision record", () => {
     assert.notEqual(gated.status, "BLOCKED");
     const out = completeOutput(createTask, [], parsed("APPROVED", { disagreements: ["Which clock owns the fill stream?"] }), gated);
     const record = deriveDecisionRecord({ mode: "CREATE", runStatus: "COMPLETE", result: out.result });
-    assert.equal(record.verdict, "APPROVED");
+    assert.equal(record.verdict, "READY_FOR_REVIEW");
     assert.equal(record.blockers.length, 0);
     assert.equal(record.userDecisions.length, 0);
   });
 
-  it("no blockers is APPROVED with 3–7 agreed points", () => {
+  it("no blockers is READY_FOR_REVIEW with 3–7 completed points", () => {
     const synth = parsed("APPROVED", {
       consensus: [
         "Keep buy and sell clocks distinct.",
@@ -136,10 +136,10 @@ describe("decision record", () => {
     const gated = applyGate(synth, [row("gpt", { P0_BLOCKERS: "none", REMAINING_P0: "none" })], "CREATE");
     const out = completeOutput(createTask, [], synth, gated);
     const record = deriveDecisionRecord({ mode: "CREATE", runStatus: "COMPLETE", result: out.result });
-    assert.equal(record.verdict, "APPROVED");
+    assert.equal(record.verdict, "READY_FOR_REVIEW");
     assert.equal(record.blockers.length, 0);
     assert.ok(record.agreed.length >= 3 && record.agreed.length <= 7);
-    assert.equal(record.nextAction, "RUN REVIEW");
+    assert.equal(record.nextAction, "RUN_REVIEW");
   });
 
   it("USER_DECISION_REQUIRED lists only operator questions", () => {
@@ -174,7 +174,7 @@ describe("decision record", () => {
     } as CouncilResult;
     const record = deriveDecisionRecord({ mode: "DECIDE", runStatus: "COMPLETE", result });
     assert.equal(record.verdict, "USER_DECISION_REQUIRED");
-    assert.equal(record.nextAction, "RUN DECIDE");
+    assert.equal(record.nextAction, "RUN_DECIDE");
     assert.ok(record.userDecisions.length >= 1);
     assert.equal(record.blockers.length, 0);
   });
@@ -226,7 +226,7 @@ describe("decision record", () => {
     assert.equal(out.task.status, "COMPLETE");
     assert.equal(record.verdict, "PATCH");
     assert.equal(record.blockers.length, 0);
-    assert.equal(record.nextAction, "CREATE PATCH");
+    assert.equal(record.nextAction, "CREATE_PATCH");
     assert.match(record.why, /material fix/i);
   });
 
@@ -266,5 +266,43 @@ describe("decision record", () => {
     assert.equal(record.nextAction, null);
     assert.equal(record.blockers.length, 0);
     assert.match(record.conclusion, /did not finish/);
+  });
+
+  it("CREATE without a repository recommends ADD_REPOSITORY_EVIDENCE", () => {
+    const gated = applyGate(parsed("APPROVED"), [row("gpt", { P0_BLOCKERS: "none", REMAINING_P0: "none" })], "CREATE");
+    const out = completeOutput(createTask, [], parsed("APPROVED"), gated);
+    const record = deriveDecisionRecord({
+      mode: "CREATE",
+      runStatus: "COMPLETE",
+      result: out.result,
+      implementation: {
+        indexerVersion: "repo-indexer-v1",
+        repositoryHash: null,
+        snapshots: [],
+        filesIndexed: 0,
+        coverage: { modules: 1, verified: 0, unverified: 0, partial: 0, designedOnly: 0, unknown: 1 },
+        rows: [{ module: "payments.gateway", status: "UNKNOWN", evidence: "No repository evidence selected.", citations: [] }],
+        claims: [],
+        citations: [],
+        gaps: ["payments.gateway: UNKNOWN"],
+        recommendations: ["Attach a source zip to verify implementation independently of design evidence."],
+        required: [],
+        missingRepository: true,
+        conflict: null,
+      },
+    });
+    assert.equal(record.verdict, "READY_FOR_REVIEW");
+    assert.equal(record.nextAction, "ADD_REPOSITORY_EVIDENCE");
+    assert.equal(record.implementationState[0]?.status, "UNKNOWN");
+    assert.equal(record.userActions.length, 0);
+  });
+
+  it("CREATE USER_DECISION_REQUIRED maps to RUN_DECIDE", () => {
+    const gated = applyGate(parsed("USER_DECISION_REQUIRED", { disagreements: ["Which clock owns fills?"] }), [], "CREATE");
+    const out = completeOutput(createTask, [], parsed("USER_DECISION_REQUIRED", { disagreements: ["Which clock owns fills?"] }), gated);
+    const record = deriveDecisionRecord({ mode: "CREATE", runStatus: "COMPLETE", result: out.result });
+    assert.equal(record.verdict, "USER_DECISION_REQUIRED");
+    assert.equal(record.nextAction, "RUN_DECIDE");
+    assert.ok(record.userActions.length >= 1);
   });
 });

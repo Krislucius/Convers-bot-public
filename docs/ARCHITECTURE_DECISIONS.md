@@ -191,3 +191,12 @@ Only ACTIVE rows define current architecture.
 - RATIONALE: Operators work in Russian or English. Council reasoning must remain one canonical English record so verdicts, evidence, and packets stay comparable.
 - SUPERSEDES: none
 - AFFECTED_MODULES: i18n.locale, account.persistence, ui.task, ui.settings, council.decision
+
+## ADR-022
+
+- DECISION: CREATE verdicts are READY_FOR_REVIEW, USER_DECISION_REQUIRED, or BLOCKED. CREATE never maps to APPROVED or PATCH. READY_FOR_REVIEW means a deterministic candidate artifact exists and no unresolved P0 blocks review; it is not final approval. An Implementation Packet is emitted only after REVIEW PASS. Selected source archives are indexed independently of the Council packing budget. Design/chat ledger rows are DESIGN_EVIDENCE. Repository index claims are IMPLEMENTATION_EVIDENCE. Implementation status is VERIFIED_IMPLEMENTED, IMPLEMENTED_UNVERIFIED, PARTIAL, DESIGNED_ONLY, or UNKNOWN. Conflicting selected snapshots return REPOSITORY_SOURCE_CONFLICT and are not merged. The canonical Decision Record (verdict, summary, completed, not_completed, implementation_state, blockers, resolved, recommendations, required, user_actions, next_action) is the default completed-run view. RU UI translates that record without rerunning Council.
+- STATUS: ACTIVE
+- ARCHITECTURE_REVISION: CB-ARCH-20260908-002
+- RATIONALE: CREATE previously presented APPROVED as if reconstruction were an accepted implementation. Architecture/history evidence was being read as proof that code exists.
+- SUPERSEDES: none (tightens CREATE / packet / Decision Record semantics from ADR-006 and ADR-021)
+- AFFECTED_MODULES: council.issues, council.decision, council.protocol, council.packet, context.repository-index, context.evidence-ledger, i18n.locale, ui.task, files.ingest

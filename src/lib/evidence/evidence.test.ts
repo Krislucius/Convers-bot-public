@@ -775,3 +775,30 @@ describe("packer performance and pipeline cache", () => {
     assert.equal(prepared, reused);
   });
 });
+
+describe("repository implementation on the evidence pipeline", () => {
+  it("classifies chat claims as DESIGN_EVIDENCE and indexes selected zips separately", () => {
+    const zip = file("repo", "export function charge() { return 1 }");
+    zip.kind = "ZIP";
+    zip.filename = "app.zip";
+    zip.members = ["src/lib/payments.ts", "src/lib/payments.test.ts"];
+    zip.sourceTree = [
+      { path: "src/lib/payments.ts", text: "export function charge() { return 1; }\n", bytes: 40 },
+      { path: "src/lib/payments.test.ts", text: "import { charge } from './payments.ts';\n", bytes: 40 },
+    ];
+    const result = runEvidencePipeline({
+      project,
+      task: task({ selectedChatSourceIds: ["c1"], selectedFileIds: ["repo"] }),
+      frozen: [],
+      chatSources: [chat("c1", "design", "payments.gateway should charge through src/lib/payments.ts")],
+      historyMessages: [message("c1", 1, "payments.gateway should charge through src/lib/payments.ts")],
+      projectFiles: [zip],
+    });
+    assert.ok(result.entries.every((row) => row.evidenceClass === "DESIGN_EVIDENCE"));
+    assert.equal(result.implementation.indexerVersion, "repo-indexer-v1");
+    assert.equal(result.manifest.repositoryIndexerVersion, "repo-indexer-v1");
+    assert.ok((result.manifest.filesIndexed ?? 0) >= 1);
+    assert.equal(result.implementation.claims.every((row) => row.evidenceClass === "IMPLEMENTATION_EVIDENCE"), true);
+    assert.equal(result.pack.text.includes("[REPO:"), false);
+  });
+});

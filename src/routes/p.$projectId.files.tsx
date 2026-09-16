@@ -38,6 +38,7 @@ function FilesPage() {
         kind: parsed.kind,
         extractedText: parsed.extractedText,
         members: parsed.members,
+        sourceTree: parsed.sourceTree,
         notes: parsed.notes,
         sizeBytes: parsed.sizeBytes,
         characterCount: parsed.characterCount,

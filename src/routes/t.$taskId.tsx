@@ -13,6 +13,7 @@ import { OpLogPanel } from "@/components/op-log";
 import { isSynthesisResponse, responseMemberId } from "@/lib/council/agents";
 import { deriveCouncilReports } from "@/lib/council/reports";
 import { deriveDecisionRecord } from "@/lib/council/decision";
+import { indexSelectedRepositories } from "@/lib/evidence/repo-index";
 import { runCredsFromReady, isStaleDisconnectError } from "@/lib/council/orchestrate";
 import { providerName } from "@/lib/council/providers";
 import { billingLabel } from "@/lib/council/nano-billing";
@@ -380,10 +381,21 @@ function TaskPage() {
     members: members.map((row) => ({ memberId: row.memberId, label: memberLabel(row), role: row.role })),
     running: isRunning,
   });
+  const implementation = indexSelectedRepositories({
+    files: store.projectFiles.filter(
+      (file) => file.projectId === task.projectId && (task.selectedFileIds ?? []).includes(file.id),
+    ),
+    designMentions: [
+      task.canonicalTaskEn || task.prompt,
+      artifact?.content ?? "",
+      ...context.filter((row) => row.kind !== "RAW_HISTORY").map((row) => row.content),
+    ],
+  });
   const decision = deriveDecisionRecord({
     mode: task.mode,
     runStatus: terminal === "COMPLETE" || terminal === "FAILED" || terminal === "CANCELLED" ? terminal : null,
     result,
+    implementation,
   });
   const showReports = !isRunning && Boolean(terminal || result || showPartial);
   const failedMemberCount = reports.technical.members.filter((row) => row.outcome === "failed").length;
@@ -581,6 +593,35 @@ function TaskPage() {
             Keep this result
           </button>
         </p>
+      ) : null}
+
+      {showReports ? (
+        <CouncilFold
+          title={t("fold.repository")}
+          summary={
+            implementation.conflict
+              ? "REPOSITORY_SOURCE_CONFLICT"
+              : implementation.missingRepository
+                ? "no repository selected"
+                : `${implementation.filesIndexed} files · ${implementation.indexerVersion}`
+          }
+        >
+          <p className="mt-0 mb-2 font-mono text-xs break-all text-faint">
+            hash {implementation.repositoryHash ?? "none"} · indexer {implementation.indexerVersion}
+            {implementation.conflict ? ` · ${implementation.conflict}` : ""}
+          </p>
+          <ul className="m-0 grid list-none gap-2 p-0">
+            {implementation.rows.map((row) => (
+              <li key={row.module} className="rounded-md bg-bg px-3 py-2 text-sm">
+                <StatusPill status={row.status} label={t(`impl.${row.status}`)} /> {row.module}
+                <span className="mt-1 block text-xs text-muted">{row.evidence}</span>
+                {row.citations.length ? (
+                  <span className="mt-1 block font-mono text-xs break-all text-faint">{row.citations.join(" · ")}</span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </CouncilFold>
       ) : null}
 
       {artifact ? <ArtifactPanel artifact={artifact} /> : null}

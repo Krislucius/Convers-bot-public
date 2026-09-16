@@ -74,6 +74,7 @@ export function evaluateProject(input: {
     }),
   );
   const pass = rows.filter((row) => row.taskVerdict === "APPROVED").length;
+  const readyForReview = rows.filter((row) => row.taskVerdict === "READY_FOR_REVIEW").length;
   const patch = rows.filter((row) => row.taskVerdict === "PATCH").length;
   const blocked = rows.filter((row) => row.taskVerdict === "BLOCKED").length;
   const userDecision = rows.filter((row) => row.taskVerdict === "USER_DECISION_REQUIRED").length;
@@ -85,6 +86,7 @@ export function evaluateProject(input: {
     taskCount: rows.length,
     executionFailed,
     approvedOrPass: pass,
+    readyForReview,
     patch,
     blocked,
     userDecision,
@@ -98,6 +100,7 @@ export function evaluateProject(input: {
 
 export function displayVerdict(verdict: ReviewVerdict | null, status: string): string {
   if (verdict === "PASS" || (!verdict && status === "APPROVED")) return "APPROVED";
+  if (status === "READY_FOR_REVIEW") return "READY_FOR_REVIEW";
   if (verdict === "PATCH" || status === "PATCH") return "PATCH";
   if (verdict === "BLOCKED" || status === "BLOCKED") return "BLOCKED";
   if (status === "USER_DECISION_REQUIRED") return "USER_DECISION_REQUIRED";

@@ -44,7 +44,7 @@ export type AgentProgress = {
   httpStatus?: number | null;
 };
 
-export type CouncilStatus = "APPROVED" | "PATCH" | "BLOCKED" | "USER_DECISION_REQUIRED";
+export type CouncilStatus = "APPROVED" | "READY_FOR_REVIEW" | "PATCH" | "BLOCKED" | "USER_DECISION_REQUIRED";
 
 export type ReviewVerdict = "PASS" | "PATCH" | "BLOCKED";
 
@@ -169,6 +169,7 @@ export type ProjectFile = {
   kind: FileKind;
   extractedText: string;
   members: string[];
+  sourceTree?: Array<{ path: string; text: string; bytes: number }> | null;
   notes: string;
   sizeBytes: number;
   characterCount: number;
@@ -300,6 +301,7 @@ export type ProjectQualitySummary = {
   taskCount: number;
   executionFailed: number;
   approvedOrPass: number;
+  readyForReview: number;
   patch: number;
   blocked: number;
   userDecision: number;

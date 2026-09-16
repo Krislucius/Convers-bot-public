@@ -7,6 +7,7 @@ import { aggregateTelemetry } from "./protocol.ts";
 import { classifyErrorClass, providerFailure } from "./provider-error.ts";
 import type { Completion, ProviderCreds, Task } from "./types.ts";
 import type { EvidencePipelineResult } from "../evidence/pipeline-cache.ts";
+import { indexSelectedRepositories } from "../evidence/repo-index.ts";
 
 const five = ensureMembers([
   { role: "LEAD_REASONER", modelId: "openai/gpt-a", label: "A", family: "openai" },
@@ -107,6 +108,7 @@ const pipeline: EvidencePipelineResult = {
     cacheHits: 0,
     processedChunks: 0,
   },
+  implementation: indexSelectedRepositories({ files: [] }),
 };
 
 function completion(model: string, extras: Partial<Completion> = {}): Completion {

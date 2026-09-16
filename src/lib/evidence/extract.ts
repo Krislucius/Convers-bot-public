@@ -33,6 +33,15 @@ export function parseCitation(citation: string): {
       fileSpan: { start: Number(file[2]), end: Number(file[3]) },
     };
   }
+  const repo = citation.match(/^\[REPO:([^:\]]+):([^:\]]*?):(\d+)-(\d+)@([a-f0-9]+)\]$/i);
+  if (repo) {
+    return {
+      sourceKind: "FILE",
+      sourceId: repo[1] ?? "",
+      messageSeq: null,
+      fileSpan: { start: Number(repo[3]), end: Number(repo[4]) },
+    };
+  }
   return null;
 }
 
@@ -61,6 +70,7 @@ export function extractChunk(chunk: EvidenceChunk): LedgerEntry[] {
       citation: citationFor(chunk),
       extractorFingerprint: fingerprint,
       kind: "EVIDENCE",
+      evidenceClass: "DESIGN_EVIDENCE",
     });
   }
   return entries;

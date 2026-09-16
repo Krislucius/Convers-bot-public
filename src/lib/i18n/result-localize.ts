@@ -20,6 +20,8 @@ const STATIC_WHY: Record<string, string> = {
   "Council failed before synthesis.": "Совет завершился сбоем до синтеза.",
   "The run was cancelled before synthesis.": "Запуск отменён до синтеза.",
   "Council did not produce a task verdict.": "Совет не вынес вердикт по задаче.",
+  "A deterministic candidate artifact was produced. This is not final approval.":
+    "Собран детерминированный кандидат-артефакт. Это ещё не окончательное принятие.",
 };
 
 const STATIC_CONCLUSION: Record<string, string> = {
@@ -30,6 +32,7 @@ const STATIC_CONCLUSION: Record<string, string> = {
   "The reconstructed artifact is accepted.": "Восстановленный артефакт принят.",
   "The candidate is accepted.": "Кандидат принят.",
   "No task verdict — Council was cancelled.": "Вердикта нет — Совет отменён.",
+  "The reconstructed artifact is ready for REVIEW.": "Восстановленный артефакт готов к REVIEW.",
 };
 
 const STATIC_NEXT_WHY: Record<string, string> = {
@@ -40,6 +43,11 @@ const STATIC_NEXT_WHY: Record<string, string> = {
   "A material fix is required; no P0 remains.": "Нужна существенная доработка; P0 больше нет.",
   "The reconstructed artifact is ready for a REVIEW Council.": "Восстановленный артефакт готов к Совету REVIEW.",
   "No unresolved blocking issues remain.": "Неснятых блокирующих замечаний нет.",
+  "The candidate is ready for review. Attach an authoritative repository to verify implementation.":
+    "Кандидат готов к review. Приложите авторитетный репозиторий, чтобы проверить реализацию.",
+  "Selected repository snapshots conflict. Choose one authoritative source tree.":
+    "Выбранные снимки репозитория конфликтуют. Оставьте один авторитетный исходный код.",
+  "No further Council action is required.": "Дальнейших действий Совета не требуется.",
 };
 
 const P0_WHY_EN = "Unresolved P0. Acceptance requires this issue to be resolved or rejected.";
@@ -59,9 +67,18 @@ export function canonicalDisplayHash(record: DecisionRecord): string {
     JSON.stringify({
       runStatus: record.runStatus,
       verdict: record.verdict,
+      summary: record.summary,
       conclusion: record.conclusion,
       why: record.why,
+      completed: record.completed,
+      notCompleted: record.notCompleted,
       agreed: record.agreed,
+      implementationState: record.implementationState.map((row) => ({
+        module: row.module,
+        status: row.status,
+        evidence: row.evidence,
+        citations: row.citations,
+      })),
       blockers: record.blockers.map((row) => ({
         issueId: row.issueId,
         title: row.title,
@@ -71,6 +88,9 @@ export function canonicalDisplayHash(record: DecisionRecord): string {
         resolveCondition: row.resolveCondition,
       })),
       resolved: record.resolved,
+      recommendations: record.recommendations,
+      required: record.required,
+      userActions: record.userActions,
       userDecisions: record.userDecisions,
       nextAction: record.nextAction,
       nextActionWhy: record.nextActionWhy,
@@ -80,11 +100,18 @@ export function canonicalDisplayHash(record: DecisionRecord): string {
 
 export type CachedRuLocalization = {
   sourceHash: string;
+  summary: string;
   conclusion: string;
   why: string;
+  completed: string[];
+  notCompleted: string[];
   agreed: string[];
+  implementationEvidence: Array<{ module: string; evidence: string }>;
   blockers: Array<{ issueId: string; title: string; why: string; resolveCondition: string }>;
   resolved: Array<{ issueId: string; title: string; reason: string }>;
+  recommendations: string[];
+  required: string[];
+  userActions: string[];
   userDecisions: string[];
   nextActionWhy: string;
 };
@@ -105,6 +132,7 @@ export function localizeDecisionRecordStatic(record: DecisionRecord, locale: UiL
   }
   return {
     ...record,
+    summary: staticText(record.summary, STATIC_CONCLUSION),
     conclusion: staticText(record.conclusion, STATIC_CONCLUSION),
     why: staticText(record.why, STATIC_WHY),
     nextActionWhy: staticText(record.nextActionWhy, STATIC_NEXT_WHY),
@@ -122,11 +150,19 @@ export function localizeDecisionRecordStatic(record: DecisionRecord, locale: UiL
 export function applyRuCache(record: DecisionRecord, cache: CachedRuLocalization): LocalizedDecisionView {
   const byIssue = new Map(cache.blockers.map((row) => [row.issueId, row]));
   const resolvedBy = new Map(cache.resolved.map((row) => [row.issueId, row]));
+  const implBy = new Map((cache.implementationEvidence ?? []).map((row) => [row.module, row.evidence]));
   return {
     ...record,
+    summary: cache.summary ?? cache.conclusion,
     conclusion: cache.conclusion,
     why: cache.why,
+    completed: cache.completed ?? cache.agreed,
+    notCompleted: cache.notCompleted ?? record.notCompleted,
     agreed: cache.agreed,
+    implementationState: record.implementationState.map((row) => ({
+      ...row,
+      evidence: implBy.get(row.module) ?? row.evidence,
+    })),
     blockers: record.blockers.map((row) => {
       const hit = byIssue.get(row.issueId);
       return {
@@ -144,6 +180,9 @@ export function applyRuCache(record: DecisionRecord, cache: CachedRuLocalization
         reason: hit?.reason ?? row.reason,
       };
     }),
+    recommendations: cache.recommendations ?? record.recommendations,
+    required: cache.required ?? record.required,
+    userActions: cache.userActions ?? record.userActions,
     userDecisions: cache.userDecisions,
     nextActionWhy: cache.nextActionWhy,
     verdictLabel: record.verdict ? statusLabel(record.verdict, "ru") : null,
@@ -179,9 +218,18 @@ export async function localizeDecisionRecord(
   const staticView = localizeDecisionRecordStatic(record, "ru");
   const next: CachedRuLocalization = {
     sourceHash: hash,
+    summary: await translateFree(record.summary || record.conclusion, translate),
     conclusion: await translateFree(record.conclusion, translate),
     why: staticView.why,
+    completed: await Promise.all((record.completed.length ? record.completed : record.agreed).map((row) => translateFree(row, translate))),
+    notCompleted: await Promise.all(record.notCompleted.map((row) => translateFree(row, translate))),
     agreed: await Promise.all(record.agreed.map((row) => translateFree(row, translate))),
+    implementationEvidence: await Promise.all(
+      record.implementationState.map(async (row) => ({
+        module: row.module,
+        evidence: await translateFree(row.evidence, translate),
+      })),
+    ),
     blockers: await Promise.all(
       record.blockers.map(async (row) => ({
         issueId: row.issueId,
@@ -197,6 +245,9 @@ export async function localizeDecisionRecord(
         reason: await translateFree(row.reason, translate),
       })),
     ),
+    recommendations: await Promise.all(record.recommendations.map((row) => translateFree(row, translate))),
+    required: await Promise.all(record.required.map((row) => translateFree(row, translate))),
+    userActions: await Promise.all(record.userActions.map((row) => translateFree(row, translate))),
     userDecisions: await Promise.all(record.userDecisions.map((row) => translateFree(row, translate))),
     nextActionWhy: staticView.nextActionWhy,
   };

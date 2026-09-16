@@ -10,6 +10,7 @@ describe("parseProjectFile", () => {
     assert.equal(parsed.filename, "notes.md");
     assert.match(parsed.extractedText, /BuyFlow/);
     assert.equal(parsed.characterCount, parsed.extractedText.length);
+    assert.deepEqual(parsed.sourceTree, []);
   });
 
   it("keeps extracted text above the old 200k preview cap", async () => {

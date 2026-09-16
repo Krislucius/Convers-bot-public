@@ -120,7 +120,7 @@ describe("issue normalization", () => {
       ],
       "CREATE",
     );
-    assert.equal(gated.status, "APPROVED");
+    assert.equal(gated.status, "READY_FOR_REVIEW");
     assert.equal(gated.blockers.length, 0);
     assert.equal(
       gated.ledger.unresolved.some((item) => /legacy_3|none --- none/i.test(item.text)),
@@ -148,7 +148,7 @@ describe("issue normalization", () => {
       ],
       "CREATE",
     );
-    assert.equal(gated.status, "APPROVED");
+    assert.equal(gated.status, "READY_FOR_REVIEW");
     assert.equal(gated.blockers.length, 0);
     assert.equal(/\bBLOCKED\b/.test(gated.reason ?? ""), false);
   });
@@ -208,8 +208,8 @@ describe("final verdict reconciliation", () => {
       ],
       "CREATE",
     );
-    assert.equal(gated.status, "APPROVED");
-    assert.equal(gated.reconciledStatus, "APPROVED");
+    assert.equal(gated.status, "READY_FOR_REVIEW");
+    assert.equal(gated.reconciledStatus, "READY_FOR_REVIEW");
     assert.equal(gated.proposedStatus, "APPROVED");
     assert.equal(gated.blockers.length, 0);
     assert.ok(gated.ledger.resolved.some((item) => /clock split/i.test(item.text)));
@@ -272,7 +272,7 @@ describe("final verdict reconciliation", () => {
     assert.ok(gated.ledger.resolved.some((item) => /clock split/i.test(item.text)));
   });
 
-  it("CREATE reconstruction-only P1 stays APPROVED if synthesizer APPROVED", () => {
+  it("CREATE reconstruction-only P1 stays READY_FOR_REVIEW if synthesizer APPROVED", () => {
     const synth = parsed("APPROVED", {
       artifact: { type: "ARCHITECTURE", title: "v1", version: "1.0", content: "# reconstructed", evidenceLabels: [] },
     });
@@ -288,16 +288,16 @@ describe("final verdict reconciliation", () => {
       ],
       "CREATE",
     );
-    assert.equal(gated.status, "APPROVED");
-    assert.equal(gated.reason, null);
+    assert.equal(gated.status, "READY_FOR_REVIEW");
+    assert.match(gated.reason ?? "", /not final approval/i);
     assert.equal(gated.blockers.length, 0);
   });
 
-  it("CREATE proposed BLOCKED/PATCH with no unresolved P0/P1 becomes APPROVED", () => {
+  it("CREATE proposed BLOCKED/PATCH with no unresolved P0/P1 becomes READY_FOR_REVIEW", () => {
     const blocked = applyGate(parsed("BLOCKED", { blockers: ["none"] }), [], "CREATE");
-    assert.equal(blocked.status, "APPROVED");
+    assert.equal(blocked.status, "READY_FOR_REVIEW");
     const patch = applyGate(parsed("PATCH"), [], "CREATE");
-    assert.equal(patch.status, "APPROVED");
+    assert.equal(patch.status, "READY_FOR_REVIEW");
   });
 
   it("REVIEW unresolved P1 without P0 is PATCH not BLOCKED", () => {
@@ -343,6 +343,29 @@ describe("final verdict reconciliation", () => {
     assert.equal(gated.status, "BLOCKED");
     assert.notEqual(gated.reconciledStatus, "DONE");
     assert.notEqual(gated.status, "COMPLETE");
+  });
+
+  it("CREATE with no unresolved P0 is READY_FOR_REVIEW not APPROVED", () => {
+    const gated = applyGate(parsed("APPROVED"), [row("gpt", { P0_BLOCKERS: "none", REMAINING_P0: "none" })], "CREATE");
+    assert.equal(gated.status, "READY_FOR_REVIEW");
+    assert.notEqual(gated.status, "APPROVED");
+    const out = completeOutput(createTask, [], parsed("APPROVED"), gated);
+    assert.equal(out.result?.status, "READY_FOR_REVIEW");
+    assert.equal(out.packet, null);
+  });
+
+  it("CREATE USER_DECISION_REQUIRED is preserved", () => {
+    const gated = applyGate(parsed("USER_DECISION_REQUIRED", { disagreements: ["pick venue"] }), [], "CREATE");
+    assert.equal(gated.status, "USER_DECISION_REQUIRED");
+  });
+
+  it("CREATE insufficient required evidence is BLOCKED", () => {
+    const gated = applyGate(
+      parsed("APPROVED", { unresolved_issues: ["required invariant source is missing"] }),
+      [row("gpt", { P0_BLOCKERS: "required invariant source is missing", REMAINING_P0: "required invariant source is missing" })],
+      "CREATE",
+    );
+    assert.equal(gated.status, "BLOCKED");
   });
 });
 
@@ -432,14 +455,14 @@ describe("terminal run state is singular", () => {
     } as ImplementationPacket;
     const out = completeOutput(createTask, [], synth, gated, { artifact, packet });
     assert.equal(out.task.status, "COMPLETE");
-    assert.equal(out.result?.status, "APPROVED");
+    assert.equal(out.result?.status, "READY_FOR_REVIEW");
     assert.ok(out.artifact);
-    assert.ok(out.packet);
-    assert.deepEqual(out.packet?.blockers, []);
+    assert.equal(out.packet, null);
     assert.equal(canPersistArtifact("COMPLETE"), true);
     assert.equal(canPersistArtifact("CANCELLED"), false);
     assert.equal(canPersistArtifact("FAILED"), false);
     assert.equal(canPersistPacket("COMPLETE", "APPROVED"), true);
+    assert.equal(canPersistPacket("COMPLETE", "READY_FOR_REVIEW"), false);
     assert.equal(canPersistPacket("COMPLETE", "BLOCKED"), false);
     assert.equal(canPersistPacket("CANCELLED", "APPROVED"), false);
     assert.equal(consistentFinalOutput(out).ok, true);

@@ -10,8 +10,9 @@ export function QualitySummary({ summary }: { summary: ProjectQualitySummary }) 
     <Panel>
       <p className="mb-1 text-xs font-semibold tracking-widest text-muted uppercase">{t("quality.evaluation")}</p>
       <h2 className="font-display mb-3 text-lg">{t("quality.title")}</h2>
-      <dl className="m-0 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      <dl className="m-0 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
         <Stat label={t("quality.executionFailed")} value={String(summary.executionFailed)} />
+        <Stat label={t("quality.readyForReview")} value={String(summary.readyForReview)} />
         <Stat label={t("status.APPROVED")} value={String(summary.approvedOrPass)} />
         <Stat label={t("status.PATCH")} value={String(summary.patch)} />
         <Stat label={t("status.BLOCKED")} value={String(summary.blocked)} />

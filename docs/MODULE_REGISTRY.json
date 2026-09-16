@@ -447,6 +447,27 @@
       ]
     },
     {
+      "module_id": "context.repository-index",
+      "status": "ACTIVE",
+      "implementation_path": "src/lib/evidence/repo-index.ts",
+      "architecture_revision": "CB-ARCH-20260908-002",
+      "responsibilities": [
+        "unpack and hash selected source archives",
+        "inventory source files modules symbols tests migrations",
+        "ignore vendor and build artifacts",
+        "classify VERIFIED_IMPLEMENTED IMPLEMENTED_UNVERIFIED PARTIAL DESIGNED_ONLY UNKNOWN",
+        "DESIGN_EVIDENCE never proves implementation",
+        "REPOSITORY_SOURCE_CONFLICT when selected snapshots differ",
+        "repository citations [REPO:path:symbol:lines@hash]"
+      ],
+      "dependencies": [
+        "files.ingest",
+        "context.evidence-ledger",
+        "council.decision"
+      ],
+      "supersedes": []
+    },
+    {
       "module_id": "council.packet",
       "status": "ACTIVE",
       "implementation_path": "src/lib/council/packet.ts",

@@ -126,11 +126,11 @@ describe("dual council reports", () => {
       ],
       "CREATE",
     );
-    assert.equal(gated.status, "APPROVED");
+    assert.equal(gated.status, "READY_FOR_REVIEW");
     assert.equal(gated.blockers.length, 0);
     const out = completeOutput(createTask, [], synth, gated, { artifact, failedAgents: [kimi] });
     assert.equal(out.task.status, "COMPLETE");
-    assert.equal(out.result?.status, "APPROVED");
+    assert.equal(out.result?.status, "READY_FOR_REVIEW");
     const agents: Partial<Record<string, AgentProgress>> = {
       [kimi]: { state: "FAILED", attempt: 3, maxAttempts: 3, error: "moonshotai/kimi-k2 failed in ROUND_1: timeout class TIMEOUT attempt 3/3 (retries exhausted). No response within 120s." },
       [qwen]: { state: "DONE", attempt: 1, maxAttempts: 3, error: null },

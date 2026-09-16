@@ -1000,7 +1000,7 @@ function finalize(row: DurableRunRow, now: string): DurableRunRow {
     parsed.evidence = sanitizeEvidenceLabels(parsed.evidence, packedCitations).labels;
   }
   let packet: ImplementationPacket | null = null;
-  if (mode === "CREATE" && artifact && gated.status === "APPROVED") {
+  if (mode === "REVIEW" && artifact && (gated.status === "APPROVED" || parsed.reviewVerdict === "PASS")) {
     packet = buildImplementationPacket({
       project: frozen.project,
       task: frozen.task,

@@ -113,7 +113,8 @@ export function StatusPill({ status, label }: { status: TaskStatus | CouncilStat
     status === "IMPORTED" ||
     status === "CACHE_HIT" ||
     status === "DONE" ||
-    status === "VERIFIED"
+    status === "VERIFIED" ||
+    status === "VERIFIED_IMPLEMENTED"
       ? "text-ok"
       : status === "FAILED" ||
           status === "BLOCKED" ||
@@ -131,7 +132,10 @@ export function StatusPill({ status, label }: { status: TaskStatus | CouncilStat
             status === "PREPARING" ||
             status === "WAITING" ||
             status === "RUNNING" ||
-            status === "CANCELLED"
+            status === "CANCELLED" ||
+            status === "DESIGNED_ONLY" ||
+            status === "IMPLEMENTED_UNVERIFIED" ||
+            status === "UNKNOWN"
           ? "text-warn"
           : status === "ARCHIVED"
             ? "text-faint"

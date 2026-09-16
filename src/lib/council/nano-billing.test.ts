@@ -28,6 +28,7 @@ import { runCouncil } from "./orchestrate.ts";
 import type { CouncilMember } from "./members.ts";
 import type { ProviderCreds, Task } from "./types.ts";
 import type { EvidencePipelineResult } from "../evidence/pipeline-cache.ts";
+import { indexSelectedRepositories } from "../evidence/repo-index.ts";
 
 const SUB_MODELS = [
   { id: "openai/gpt-5", name: "GPT-5", context_length: 200000 },
@@ -384,6 +385,7 @@ const pipeline: EvidencePipelineResult = {
     cacheHits: 0,
     processedChunks: 0,
   },
+  implementation: indexSelectedRepositories({ files: [] }),
 };
 
 const task: Task = {

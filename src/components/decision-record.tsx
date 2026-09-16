@@ -2,14 +2,18 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Panel, StatusPill } from "@/components/council-ui";
 import type { DecisionBlocker, DecisionRecord, DecisionResolved, NextAction } from "@/lib/council/decision";
 import type { TechnicalReport } from "@/lib/council/reports";
+import type { ImplementationRow } from "@/lib/evidence/repo-index";
 import { localizeTaskResult } from "@/lib/i18n/api";
 import { localizeDecisionRecordStatic, type LocalizedDecisionView } from "@/lib/i18n/result-localize";
 import { useI18n } from "@/lib/i18n/provider";
 
 function nextActionTone(action: NextAction): string {
   if (action === "ACCEPT") return "APPROVED";
-  if (action === "CREATE PATCH") return "PATCH";
-  if (action === "RUN DECIDE" || action === "REQUEST MORE EVIDENCE") return "USER_DECISION_REQUIRED";
+  if (action === "CREATE_PATCH") return "PATCH";
+  if (action === "RUN_DECIDE" || action === "ADD_EVIDENCE" || action === "ADD_REPOSITORY_EVIDENCE") {
+    return "USER_DECISION_REQUIRED";
+  }
+  if (action === "RUN_REVIEW") return "READY_FOR_REVIEW";
   return "PREPARING";
 }
 
@@ -17,6 +21,7 @@ function recordAccent(verdict: DecisionRecord["verdict"]): string {
   if (verdict === "BLOCKED") return "border-l-4 border-l-danger";
   if (verdict === "PATCH" || verdict === "USER_DECISION_REQUIRED") return "border-l-4 border-l-warn";
   if (verdict === "APPROVED") return "border-l-4 border-l-ok";
+  if (verdict === "READY_FOR_REVIEW") return "border-l-4 border-l-line-strong";
   return "border-l-4 border-l-line-strong";
 }
 
@@ -53,6 +58,44 @@ function ResolvedRow({ row }: { row: DecisionResolved }) {
   );
 }
 
+function TextList({ rows, empty }: { rows: string[]; empty: string }) {
+  if (!rows.length) return <p className="m-0 text-sm text-muted">{empty}</p>;
+  return (
+    <ul className="m-0 grid list-none gap-2 p-0">
+      {rows.map((row) => (
+        <li key={row} className="rounded-md bg-subtle px-3 py-2 text-sm break-words text-fg">
+          {row}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function ImplementationList({
+  rows,
+  t,
+}: {
+  rows: ImplementationRow[];
+  t: (key: string) => string;
+}) {
+  return (
+    <ul className="m-0 grid list-none gap-2 p-0">
+      {rows.map((row) => (
+        <li key={row.module} className="rounded-md bg-subtle px-3 py-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-mono text-sm text-fg">{row.module}</span>
+            <StatusPill status={row.status} label={t(`impl.${row.status}`)} />
+          </div>
+          <p className="m-0 mt-2 text-sm text-muted">{row.evidence}</p>
+          {row.citations.length ? (
+            <p className="m-0 mt-2 font-mono text-xs break-all text-faint">{row.citations.join(" · ")}</p>
+          ) : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function DecisionRecordPanel({
   record,
   run,
@@ -86,6 +129,8 @@ export function DecisionRecordPanel({
     <div className="grid gap-4">
       <Panel className={recordAccent(view.verdict)}>
         <p className="mb-1 text-xs font-semibold tracking-widest text-muted uppercase">{t("record.title")}</p>
+
+        <h3 className="mt-0 mb-2 text-xs font-semibold tracking-widest text-muted uppercase">{t("record.outcome")}</h3>
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <span className="text-xs font-semibold tracking-widest text-muted uppercase">{t("task.run")}</span>
           <StatusPill status={view.runStatus ?? "CREATED"} />
@@ -96,23 +141,17 @@ export function DecisionRecordPanel({
             <span className="text-sm text-faint">{t("status.none")}</span>
           )}
         </div>
-        <h2 className="font-display m-0 text-2xl text-balance">{view.conclusion}</h2>
+        <h2 className="font-display m-0 text-2xl text-balance">{view.summary || view.conclusion}</h2>
+        <p className="m-0 mt-2 max-w-measure text-sm text-muted">{view.why}</p>
 
-        <h3 className="mt-5 mb-2 text-xs font-semibold tracking-widest text-muted uppercase">{t("record.why")}</h3>
-        <p className="m-0 max-w-measure text-sm text-muted">{view.why}</p>
+        <h3 className="mt-5 mb-2 text-xs font-semibold tracking-widest text-muted uppercase">{t("record.completed")}</h3>
+        <TextList rows={view.completed.length ? view.completed : view.agreed} empty={t("task.noneRecorded")} />
 
-        <h3 className="mt-5 mb-2 text-xs font-semibold tracking-widest text-muted uppercase">{t("record.agreed")}</h3>
-        {view.agreed.length ? (
-          <ul className="m-0 grid list-none gap-2 p-0">
-            {view.agreed.map((row) => (
-              <li key={row} className="rounded-md bg-subtle px-3 py-2 text-sm break-words text-fg">
-                {row}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="m-0 text-sm text-muted">{t("task.noneRecorded")}</p>
-        )}
+        <h3 className="mt-5 mb-2 text-xs font-semibold tracking-widest text-muted uppercase">{t("record.notCompleted")}</h3>
+        <TextList rows={view.notCompleted} empty={t("record.noneIdentified")} />
+
+        <h3 className="mt-5 mb-2 text-xs font-semibold tracking-widest text-muted uppercase">{t("record.implementation")}</h3>
+        <ImplementationList rows={view.implementationState} t={t} />
 
         <h3 className="mt-5 mb-2 text-xs font-semibold tracking-widest text-muted uppercase">{t("record.blockers")}</h3>
         {view.blockers.length ? (
@@ -122,21 +161,20 @@ export function DecisionRecordPanel({
             ))}
           </ul>
         ) : (
-          <p className="m-0 text-sm text-muted">{t("record.none")}</p>
+          <p className="m-0 text-sm text-muted">{t("record.noBlockers")}</p>
         )}
 
-        {view.userDecisions.length ? (
-          <>
-            <h3 className="mt-5 mb-2 text-xs font-semibold tracking-widest text-muted uppercase">{t("record.userDecisions")}</h3>
-            <ul className="m-0 grid list-none gap-2 p-0">
-              {view.userDecisions.map((row) => (
-                <li key={row} className="rounded-md bg-subtle px-3 py-2 text-sm break-words text-fg">
-                  {row}
-                </li>
-              ))}
-            </ul>
-          </>
-        ) : null}
+        <h3 className="mt-5 mb-2 text-xs font-semibold tracking-widest text-muted uppercase">{t("record.recommendations")}</h3>
+        <TextList rows={view.recommendations} empty={t("record.none")} />
+
+        <h3 className="mt-5 mb-2 text-xs font-semibold tracking-widest text-muted uppercase">{t("record.required")}</h3>
+        <TextList rows={view.required} empty={t("record.noneRequired")} />
+
+        <h3 className="mt-5 mb-2 text-xs font-semibold tracking-widest text-muted uppercase">{t("record.userActions")}</h3>
+        <TextList
+          rows={view.userActions.length ? view.userActions : view.userDecisions}
+          empty={t("record.noUserAction")}
+        />
 
         <h3 className="mt-5 mb-2 text-xs font-semibold tracking-widest text-muted uppercase">{t("record.next")}</h3>
         {view.nextAction ? (
@@ -149,14 +187,16 @@ export function DecisionRecordPanel({
         )}
 
         {view.resolved.length ? (
-          <>
-            <h3 className="mt-5 mb-2 text-xs font-semibold tracking-widest text-muted uppercase">{t("record.resolved")}</h3>
-            <ul className="m-0 grid list-none gap-1 p-0">
+          <details className="mt-5">
+            <summary className="cursor-pointer text-xs font-semibold tracking-widest text-muted uppercase">
+              {t("record.resolved")}
+            </summary>
+            <ul className="mt-2 mb-0 grid list-none gap-1 p-0">
               {view.resolved.map((row) => (
                 <ResolvedRow key={`${row.issueId}-${row.disposition}`} row={row} />
               ))}
             </ul>
-          </>
+          </details>
         ) : null}
       </Panel>
 

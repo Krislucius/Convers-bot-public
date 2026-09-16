@@ -23,9 +23,9 @@ export function CouncilChrome({ account }: { account?: ReactNode }) {
           <Link to="/settings" className="text-sm text-fg no-underline hover:text-accent">
             {t("nav.settings")}
           </Link>
+          <LanguageSwitch />
         </nav>
         <div className="flex flex-wrap items-center gap-3">
-          <LanguageSwitch />
           {account}
           <Link
             to="/settings"

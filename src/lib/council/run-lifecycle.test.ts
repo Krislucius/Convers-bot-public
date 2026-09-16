@@ -15,6 +15,7 @@ import {
 } from "./run-control.ts";
 import type { AgentResponse, Completion, ProviderCreds, Task } from "./types.ts";
 import type { EvidencePipelineResult } from "../evidence/pipeline-cache.ts";
+import { indexSelectedRepositories } from "../evidence/repo-index.ts";
 
 const members: CouncilMember[] = ensureMembers([
   { role: "LEAD_REASONER", modelId: "openai/gpt-test", label: "GPT test", family: "openai" },
@@ -117,6 +118,7 @@ const pipeline: EvidencePipelineResult = {
     cacheHits: 0,
     processedChunks: 0,
   },
+  implementation: indexSelectedRepositories({ files: [] }),
 };
 
 function completion(agent: string): Completion {

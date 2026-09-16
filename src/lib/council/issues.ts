@@ -405,7 +405,8 @@ export function reconcileVerdict(input: {
   const blockerTexts = p0.map((row) => row.text);
   const acceptedPatches = input.ledger.acceptedAsPatch.filter((row) => row.severity !== "P4");
   const needsUser =
-    mode === "DECIDE" && (Boolean(input.disagreements?.length) || Boolean(input.conflictedEvidence) || proposed === "USER_DECISION_REQUIRED");
+    (mode === "DECIDE" && (Boolean(input.disagreements?.length) || Boolean(input.conflictedEvidence) || proposed === "USER_DECISION_REQUIRED")) ||
+    (mode === "CREATE" && proposed === "USER_DECISION_REQUIRED");
   let status: CouncilStatus = proposed;
   let reason: string | null = null;
 
@@ -417,6 +418,11 @@ export function reconcileVerdict(input: {
     if (proposed !== "USER_DECISION_REQUIRED") {
       reason = "Safety gate: DECIDE disagreements or CONFLICTED evidence require a user decision.";
     }
+  } else if (mode === "CREATE") {
+    status = "READY_FOR_REVIEW";
+    if (proposed !== "READY_FOR_REVIEW") {
+      reason = "CREATE produced a deterministic candidate. This is not final approval.";
+    }
   } else if (p1.length || (mode === "REVIEW" && (acceptedPatches.length || proposed === "PATCH"))) {
     status = mode === "DECIDE" ? "USER_DECISION_REQUIRED" : "PATCH";
     if (mode === "REVIEW" && proposed !== "PATCH") {
@@ -424,21 +430,23 @@ export function reconcileVerdict(input: {
         ? "Material fix required; unresolved P1 without P0 reconciles to PATCH."
         : "Safety gate: accepted non-P0 corrections reconcile to a patch.";
     }
-  } else if (mode === "CREATE" && (proposed === "BLOCKED" || proposed === "PATCH")) {
-    status = "APPROVED";
-    reason = "CREATE safety gate: no unresolved P0 findings remain; synthesizer cannot-accept is not the final verdict.";
   } else if (proposed === "BLOCKED") {
     status = "APPROVED";
     reason = "Safety gate: no unresolved P0 findings remain; synthesizer cannot-accept is not the final verdict.";
   } else if (proposed === "USER_DECISION_REQUIRED") {
     status = "USER_DECISION_REQUIRED";
   } else {
-    status = mode === "CREATE" ? "APPROVED" : proposed === "PATCH" && mode === "REVIEW" ? "PATCH" : proposed === "APPROVED" || proposed === "PATCH" ? proposed : "APPROVED";
-    if (mode === "CREATE" && proposed === "PATCH") status = "APPROVED";
+    status = proposed === "PATCH" && mode === "REVIEW" ? "PATCH" : proposed === "APPROVED" || proposed === "PATCH" || proposed === "READY_FOR_REVIEW" ? proposed : "APPROVED";
   }
 
   if (!p0.length && status === "BLOCKED") {
-    status = needsUser ? "USER_DECISION_REQUIRED" : p1.length && mode === "REVIEW" ? "PATCH" : "APPROVED";
+    status = needsUser
+      ? "USER_DECISION_REQUIRED"
+      : p1.length && mode === "REVIEW"
+        ? "PATCH"
+        : mode === "CREATE"
+          ? "READY_FOR_REVIEW"
+          : "APPROVED";
   }
 
   return {

@@ -35,14 +35,28 @@ const fakeTranslate: TranslateFn = async ({ text, to }) => {
 
 const approved: DecisionRecord = {
   runStatus: "COMPLETE",
-  verdict: "APPROVED",
-  conclusion: "The reconstructed artifact is accepted.",
-  why: "No unresolved blocking issues remain.",
+  verdict: "READY_FOR_REVIEW",
+  summary: "The reconstructed artifact is ready for REVIEW.",
+  conclusion: "The reconstructed artifact is ready for REVIEW.",
+  why: "A deterministic candidate artifact was produced. This is not final approval.",
+  completed: ["Keep inventory and matching clocks distinct."],
+  notCompleted: [],
   agreed: ["Keep inventory and matching clocks distinct."],
+  implementationState: [
+    {
+      module: "repository",
+      status: "UNKNOWN",
+      evidence: "No repository evidence selected.",
+      citations: [],
+    },
+  ],
   blockers: [],
   resolved: [],
+  recommendations: [],
+  required: [],
+  userActions: [],
   userDecisions: [],
-  nextAction: "RUN REVIEW",
+  nextAction: "RUN_REVIEW",
   nextActionWhy: "The reconstructed artifact is ready for a REVIEW Council.",
 };
 
@@ -54,6 +68,7 @@ describe("i18n catalog", () => {
   });
 
   it("uses natural Russian verdict labels", () => {
+    assert.equal(statusLabel("READY_FOR_REVIEW", "ru"), "ГОТОВО К REVIEW");
     assert.equal(statusLabel("APPROVED", "ru"), "ПРИНЯТО");
     assert.equal(statusLabel("PATCH", "ru"), "ТРЕБУЕТ ДОРАБОТКИ");
     assert.equal(statusLabel("BLOCKED", "ru"), "ЗАБЛОКИРОВАНО");
@@ -110,10 +125,10 @@ describe("result localization", () => {
   it("maps the same verdict in both languages without rerunning Council", async () => {
     const en = await localizeDecisionRecord(approved, "en", null, fakeTranslate);
     const ru = await localizeDecisionRecord(approved, "ru", null, fakeTranslate);
-    assert.equal(en.view.verdict, "APPROVED");
-    assert.equal(ru.view.verdict, "APPROVED");
-    assert.equal(en.view.verdictLabel, "APPROVED");
-    assert.equal(ru.view.verdictLabel, "ПРИНЯТО");
+    assert.equal(en.view.verdict, "READY_FOR_REVIEW");
+    assert.equal(ru.view.verdict, "READY_FOR_REVIEW");
+    assert.equal(en.view.verdictLabel, "READY FOR REVIEW");
+    assert.equal(ru.view.verdictLabel, "ГОТОВО К REVIEW");
     assert.equal(en.translated, false);
   });
 
@@ -121,8 +136,8 @@ describe("result localization", () => {
     const before = JSON.stringify(approved);
     const ru = await localizeDecisionRecord(approved, "ru", null, fakeTranslate);
     assert.equal(JSON.stringify(approved), before);
-    assert.equal(approved.verdict, "APPROVED");
-    assert.equal(approved.why, "No unresolved blocking issues remain.");
+    assert.equal(approved.verdict, "READY_FOR_REVIEW");
+    assert.equal(approved.why, "A deterministic candidate artifact was produced. This is not final approval.");
     assert.notEqual(ru.view.why, approved.why);
   });
 
@@ -152,7 +167,7 @@ describe("result localization", () => {
     assert.equal(calls, beforeCalls);
     assert.equal(canonicalDisplayHash(approved), first.cache?.sourceHash);
     const applied = applyRuCache(approved, first.cache!);
-    assert.equal(applied.verdict, "APPROVED");
+    assert.equal(applied.verdict, "READY_FOR_REVIEW");
   });
 });
 
@@ -164,6 +179,7 @@ describe("service vs JSON language", () => {
     assert.equal(t("service.modelDiscoveryComplete", "en"), "Model check finished");
     assert.equal(localizeErrorClass("TIMEOUT", "ru"), "Истекло время ожидания запроса.");
     assert.equal(localizeErrorMessage("Connection failed.", "ru"), "Подключение не удалось.");
+    assert.equal(t("action.RUN_REVIEW", "ru"), "ЗАПУСТИТЬ REVIEW");
     assert.equal(detectSourceLanguage("Hello world"), "en");
     assert.equal(detectSourceLanguage("Привет мир"), "ru");
   });
@@ -177,8 +193,19 @@ describe("language switch contract", () => {
     assert.equal(en.nextAction, ru.nextAction);
     assert.equal(en.locale, "en");
     assert.equal(ru.locale, "ru");
-    assert.equal(ru.verdictLabel, "ПРИНЯТО");
+    assert.equal(ru.verdictLabel, "ГОТОВО К REVIEW");
     assert.equal(ru.nextActionLabel, "ЗАПУСТИТЬ REVIEW");
+    assert.equal(t("record.noUserAction", "ru"), "Действия пользователя не требуются");
+    assert.equal(t("record.noneIdentified", "ru"), "Не выявлено");
+    assert.equal(t("record.noBlockers", "ru"), "Блокеров нет");
+    assert.equal(t("record.noneRequired", "ru"), "Не требуется");
+    assert.equal(t("record.completed", "ru"), "Что сделано");
+    assert.equal(t("record.notCompleted", "ru"), "Что не сделано");
+    assert.equal(t("record.implementation", "ru"), "Состояние реализации");
+    assert.equal(t("record.outcome", "ru"), "Итог");
+    assert.equal(en.nextAction, "RUN_REVIEW");
+    assert.equal(ru.nextAction, "RUN_REVIEW");
+    assert.deepEqual(en.implementationState.map((row) => row.status), ru.implementationState.map((row) => row.status));
   });
 
   it("defaults existing accounts to EN and accepts RU", () => {

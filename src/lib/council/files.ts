@@ -1,3 +1,5 @@
+import { isIgnoredRepoPath, isSourcePath } from "../evidence/repo-index.ts";
+
 export const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 export const MAX_EXTRACTED_CHARS = 200_000;
 export const MAX_ZIP_MEMBERS = 200;
@@ -13,6 +15,7 @@ export type ParsedProjectFile = {
   kind: FileKind;
   extractedText: string;
   members: string[];
+  sourceTree: Array<{ path: string; text: string; bytes: number }>;
   notes: string;
   sizeBytes: number;
   characterCount: number;
@@ -103,7 +106,12 @@ function findEocd(bytes: Uint8Array): number {
   throw new FileParseError("Not a valid zip archive.");
 }
 
-async function parseZip(bytes: Uint8Array): Promise<{ text: string; members: string[]; notes: string }> {
+async function parseZip(bytes: Uint8Array): Promise<{
+  text: string;
+  members: string[];
+  sourceTree: Array<{ path: string; text: string; bytes: number }>;
+  notes: string;
+}> {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const eocd = findEocd(bytes);
   const count = u16(view, eocd + 10);
@@ -114,6 +122,7 @@ async function parseZip(bytes: Uint8Array): Promise<{ text: string; members: str
   }
   const members: string[] = [];
   const chunks: string[] = [];
+  const sourceTree: Array<{ path: string; text: string; bytes: number }> = [];
   let skipped = 0;
   let offset = cdOffset;
   const cdEnd = Math.min(bytes.length, cdOffset + cdSize);
@@ -135,9 +144,11 @@ async function parseZip(bytes: Uint8Array): Promise<{ text: string; members: str
       continue;
     }
     members.push(safe);
-    if (!isTextishName(safe)) continue;
+    const wantDocs = isTextishName(safe);
+    const wantSource = isSourcePath(safe) && !isIgnoredRepoPath(safe);
+    if (!wantDocs && !wantSource) continue;
     if (uncompressed > MAX_MEMBER_BYTES || compressed > MAX_MEMBER_BYTES) {
-      chunks.push(`\n## ${safe}\n[skipped: member too large]`);
+      if (wantDocs) chunks.push(`\n## ${safe}\n[skipped: member too large]`);
       skipped += 1;
       continue;
     }
@@ -152,23 +163,30 @@ async function parseZip(bytes: Uint8Array): Promise<{ text: string; members: str
       if (method === 0) extracted = payload;
       else if (method === 8) extracted = await inflate(payload, "deflate-raw");
       else {
-        chunks.push(`\n## ${safe}\n[skipped: compression ${method} not supported]`);
+        if (wantDocs) chunks.push(`\n## ${safe}\n[skipped: compression ${method} not supported]`);
         continue;
       }
     } catch {
-      chunks.push(`\n## ${safe}\n[skipped: could not decompress]`);
+      if (wantDocs) chunks.push(`\n## ${safe}\n[skipped: could not decompress]`);
       continue;
     }
-    if (safe.toLowerCase().endsWith(".pdf")) {
-      chunks.push(`\n## ${safe}\n${extractPdfText(extracted)}`);
-    } else {
-      chunks.push(`\n## ${safe}\n${decodeUtf8(extracted)}`);
+    if (wantDocs) {
+      if (safe.toLowerCase().endsWith(".pdf")) {
+        chunks.push(`\n## ${safe}\n${extractPdfText(extracted)}`);
+      } else {
+        chunks.push(`\n## ${safe}\n${decodeUtf8(extracted)}`);
+      }
+    }
+    if (wantSource && !safe.toLowerCase().endsWith(".pdf")) {
+      const text = decodeUtf8(extracted);
+      const clipped = text.length > 24_000 ? `${text.slice(0, 24_000)}\n` : text;
+      sourceTree.push({ path: safe, text: clipped, bytes: text.length });
     }
   }
   const notes = skipped
     ? `Listed ${members.length} members. ${skipped} skipped (path, size, or type). Zip members are never executed.`
     : `Listed ${members.length} members. Zip members are never executed.`;
-  return { text: chunks.join("\n").trim(), members, notes };
+  return { text: chunks.join("\n").trim(), members, sourceTree, notes };
 }
 
 function pdfUnescape(value: string): string {
@@ -235,6 +253,7 @@ export async function parseProjectFile(bytes: Uint8Array, filename: string): Pro
   if (!kind) throw new FileParseError("Upload .zip, .pdf, or .md files.");
   let extractedText = "";
   let members: string[] = [];
+  let sourceTree: Array<{ path: string; text: string; bytes: number }> = [];
   let notes = "Extracted text is untrusted evidence.";
   if (kind === "MD") {
     extractedText = decodeUtf8(bytes);
@@ -246,6 +265,7 @@ export async function parseProjectFile(bytes: Uint8Array, filename: string): Pro
     const zip = await parseZip(bytes);
     extractedText = zip.text;
     members = zip.members;
+    sourceTree = zip.sourceTree;
     notes = zip.notes;
   }
   return {
@@ -253,6 +273,7 @@ export async function parseProjectFile(bytes: Uint8Array, filename: string): Pro
     kind,
     extractedText,
     members,
+    sourceTree,
     notes,
     sizeBytes: bytes.byteLength,
     characterCount: extractedText.length,
