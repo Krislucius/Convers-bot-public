@@ -20,6 +20,7 @@ import {
   shouldAcceptDurableWrite,
 } from "./durable-run.ts";
 import { exclusiveRunState } from "./terminal.ts";
+import { operatorRecordJson } from "./operator-record.ts";
 import {
   driveDurableRun,
   getDurableRun,
@@ -87,6 +88,7 @@ function completion(model: string, extra = ""): Completion {
         alternatives: [],
         evidence: [],
         risks: [],
+        operator_record: operatorRecordJson(),
       })
     : `POSITION\n${model} ok\nP0_BLOCKERS\nnone\nP1_ARCHITECTURE\nnone\nP2_CORRECTNESS\nnone\nP3_ROBUSTNESS\nnone\nP4_IMPROVEMENTS\nnone\nRECOMMENDATION\ngo`;
   return {

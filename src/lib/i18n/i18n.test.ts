@@ -52,11 +52,13 @@ const approved: DecisionRecord = {
     },
   ],
   blockers: [],
+  blockerNotes: [],
   resolved: [],
   recommendations: [],
   required: [],
   userActions: [],
   userDecisions: [],
+  implementationNotes: [],
   nextAction: "RUN_REVIEW",
   nextActionWhy: "The reconstructed artifact is ready for a REVIEW Council.",
 };
@@ -77,6 +79,12 @@ describe("i18n catalog", () => {
     assert.equal(t("label.functionBlockers", "ru"), "ФУНКЦИОНАЛЬНЫЕ БЛОКЕРЫ");
     assert.equal(t("label.workflowBlockers", "ru"), "БЛОКЕРЫ WORKFLOW");
     assert.equal(statusLabel("APPROVED", "en"), "APPROVED");
+    assert.equal(t("task.delete", "en"), "Delete");
+    assert.equal(t("task.delete", "ru"), "Удалить");
+    assert.equal(
+      localizeErrorMessage("Synthesis failed: JSON schema invalid — /status: required", "ru"),
+      "Синтез не прошёл проверку JSON-схемы — /status: required",
+    );
   });
 });
 
@@ -204,6 +212,13 @@ describe("language switch contract", () => {
     assert.equal(t("record.notCompleted", "ru"), "Что не сделано");
     assert.equal(t("record.implementation", "ru"), "Состояние реализации");
     assert.equal(t("record.outcome", "ru"), "Итог");
+    assert.equal(t("record.blockers", "ru"), "В чём затык");
+    assert.equal(t("record.recommendations", "ru"), "Рекомендовано");
+    assert.equal(t("record.required", "ru"), "Требуется");
+    assert.equal(t("record.userActions", "ru"), "Действия пользователя");
+    assert.equal(t("record.next", "ru"), "Следующий шаг");
+    assert.equal(t("follow.CREATE_PATCH", "ru"), "Откроет новую задачу CREATE, чтобы Совет выполнил свой же следующий шаг. Пока ничего не замораживается.");
+    assert.equal(t("action.CREATE_PATCH", "ru"), "СОЗДАТЬ ПАТЧ");
     assert.equal(t("fold.modelPosition", "ru"), "Позиция модели");
     assert.equal(t("fold.crossReview", "ru"), "Перекрёстный разбор");
     assert.equal(t("fold.finalFinding", "ru"), "Итоговый вывод");

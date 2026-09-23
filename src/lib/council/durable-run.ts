@@ -58,6 +58,7 @@ export type DurableCursor = {
   retries: number;
   completedKeys: string[];
   synthIndex: number;
+  synthRepairs: number;
   tokenIn: number;
   tokenOut: number;
   latencyMs: number;
@@ -74,6 +75,20 @@ export type DurableCursor = {
   internalStage: StallStage | string;
   stallReason: string | null;
   modelHealth: Record<string, ModelHealth>;
+  evidenceSnapshotId?: string | null;
+  packedEvidenceHash?: string | null;
+  sourceStates?: Array<{
+    fileId: string;
+    filename: string;
+    kind: string;
+    sourceStatus: "EXTRACTED" | "PARTIAL" | "NO_TEXT" | "FAILED";
+    language: "ru" | "en" | "mixed" | "unknown";
+    pages: number | null;
+    chunks: number;
+    characters: number;
+    extractionMethod: string;
+    sourceHash: string;
+  }>;
 };
 
 export type DurableFrozenInput = {
@@ -179,6 +194,7 @@ export function emptyCursor(): DurableCursor {
     retries: 0,
     completedKeys: [],
     synthIndex: 0,
+    synthRepairs: 0,
     tokenIn: 0,
     tokenOut: 0,
     latencyMs: 0,

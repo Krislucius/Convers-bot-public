@@ -1,14 +1,15 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { FormEvent, useMemo, useState } from "react";
+import { Trash2 } from "lucide-react";
 import { SourcePicker } from "@/components/source-picker";
 import { FilePicker } from "@/components/file-picker";
 import { QualitySummary } from "@/components/quality-summary";
-import { Field, Panel, PrimaryButton, TextArea, TextInput } from "@/components/council-ui";
+import { DangerButton, Field, GhostButton, Panel, PrimaryButton, TextArea, TextInput } from "@/components/council-ui";
 import { evaluateProject } from "@/lib/council/evaluate";
-import { createTask, useStore } from "@/lib/council/store";
+import { createTask, deleteTask, useStore } from "@/lib/council/store";
 import { useSession } from "@/lib/council/session";
 import { TASK_MODES, defaultRequiresHistorical } from "@/lib/council/task-mode";
-import type { TaskMode } from "@/lib/council/types";
+import type { Task, TaskMode, TaskQualityRow } from "@/lib/council/types";
 import { memoryChatIds } from "@/lib/history/provenance";
 import { prepareTaskInput } from "@/lib/i18n/api";
 import { useI18n } from "@/lib/i18n/provider";
@@ -96,32 +97,7 @@ function TasksPage() {
           <ul className="m-0 grid list-none gap-3 p-0">
             {tasks.map((task) => {
               const qualityRow = quality.rows.find((row) => row.taskId === task.id);
-              return (
-              <li key={task.id}>
-                <Link
-                  to="/t/$taskId"
-                  params={{ taskId: task.id }}
-                  className="grid gap-1 rounded-md border border-line bg-subtle p-4 no-underline hover:border-line-strong"
-                >
-                  <strong className="break-words">{task.originalTitle || task.title}</strong>
-                  <span className="text-muted">
-                    {task.mode} · {t("task.run")} {qualityRow?.runStatus ?? task.status}
-                    {" · "}
-                    {t("task.verdict")}{" "}
-                    {qualityRow?.taskVerdict ?? t("status.none")}
-                  </span>
-                  <span className="text-xs text-faint">
-                    {task.selectedChatSourceIds.length === 1
-                      ? t("task.chatsSelected", { count: task.selectedChatSourceIds.length })
-                      : t("task.chatsSelectedPlural", { count: task.selectedChatSourceIds.length })}
-                    {" · "}
-                    {task.selectedFileIds.length === 1
-                      ? t("task.filesSelected", { count: task.selectedFileIds.length })
-                      : t("task.filesSelectedPlural", { count: task.selectedFileIds.length })}
-                  </span>
-                </Link>
-              </li>
-              );
+              return <TaskRow key={task.id} task={task} qualityRow={qualityRow} />;
             })}
           </ul>
         )}
@@ -209,5 +185,61 @@ function TasksPage() {
         </form>
       </Panel>
     </>
+  );
+}
+
+function TaskRow({ task, qualityRow }: { task: Task; qualityRow?: TaskQualityRow }) {
+  const { t } = useI18n();
+  const [confirm, setConfirm] = useState(false);
+  return (
+    <li className="rounded-md border border-line bg-subtle">
+      <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
+        <Link
+          to="/t/$taskId"
+          params={{ taskId: task.id }}
+          className="grid min-w-0 flex-1 gap-1 no-underline hover:opacity-90"
+        >
+          <strong className="break-words text-fg">{task.originalTitle || task.title}</strong>
+          <span className="text-muted">
+            {task.mode} · {t("task.run")} {qualityRow?.runStatus ?? task.status}
+            {" · "}
+            {t("task.verdict")} {qualityRow?.taskVerdict ?? t("status.none")}
+          </span>
+          <span className="text-xs text-faint">
+            {task.selectedChatSourceIds.length === 1
+              ? t("task.chatsSelected", { count: task.selectedChatSourceIds.length })
+              : t("task.chatsSelectedPlural", { count: task.selectedChatSourceIds.length })}
+            {" · "}
+            {task.selectedFileIds.length === 1
+              ? t("task.filesSelected", { count: task.selectedFileIds.length })
+              : t("task.filesSelectedPlural", { count: task.selectedFileIds.length })}
+          </span>
+        </Link>
+        {confirm ? (
+          <div className="grid min-w-0 gap-2 sm:max-w-60">
+            <p className="m-0 text-sm text-danger">{t("task.deleteConfirm")}</p>
+            <div className="flex flex-wrap gap-2">
+              <DangerButton type="button" onClick={() => deleteTask(task.id)}>
+                <Trash2 className="size-4" aria-hidden="true" />
+                {t("task.deleteYes")}
+              </DangerButton>
+              <GhostButton type="button" onClick={() => setConfirm(false)}>
+                {t("task.deleteCancel")}
+              </GhostButton>
+            </div>
+          </div>
+        ) : (
+          <DangerButton
+            type="button"
+            className="w-full shrink-0 sm:w-auto"
+            onClick={() => setConfirm(true)}
+            aria-label={t("task.delete")}
+          >
+            <Trash2 className="size-4" aria-hidden="true" />
+            {t("task.delete")}
+          </DangerButton>
+        )}
+      </div>
+    </li>
   );
 }

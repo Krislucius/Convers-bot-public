@@ -29,6 +29,7 @@ import type { CouncilMember } from "./members.ts";
 import type { ProviderCreds, Task } from "./types.ts";
 import type { EvidencePipelineResult } from "../evidence/pipeline-cache.ts";
 import { indexSelectedRepositories } from "../evidence/repo-index.ts";
+import { operatorRecordJson } from "./operator-record.ts";
 
 const SUB_MODELS = [
   { id: "openai/gpt-5", name: "GPT-5", context_length: 200000 },
@@ -386,6 +387,18 @@ const pipeline: EvidencePipelineResult = {
     processedChunks: 0,
   },
   implementation: indexSelectedRepositories({ files: [] }),
+  common: {
+    evidenceSnapshotId: "ev_fixture",
+    packedEvidenceHash: "hash",
+    taskCanonical: "",
+    chatCount: 0,
+    fileCount: 0,
+    coverageStatus: "COMPLETE",
+    sourceStates: [],
+    packedCitations: [],
+    memberContext: "INVARIANTS\nnone",
+    parity: "PASS",
+  },
 };
 
 const task: Task = {
@@ -448,6 +461,7 @@ describe("Council billing freeze", () => {
                   decision: "keep",
                   rationale: "one billing mode",
                   dissent: [],
+                  operator_record: operatorRecordJson(),
                 }),
                 model: opts.model,
                 inputTokens: 8,

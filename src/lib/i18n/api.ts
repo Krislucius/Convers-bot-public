@@ -8,6 +8,7 @@ import { prepareTaskText, type PreparedTaskText } from "./task-text.ts";
 import {
   localizeCouncilNarrative,
   localizeDecisionRecord,
+  localizeDecisionRecordStatic,
   type LocalizedDecisionView,
   type LocalizedNarrative,
 } from "./result-localize.ts";
@@ -37,7 +38,12 @@ export const localizeTaskResult = createServerFn({ method: "POST" })
     async ({
       context,
       data,
-    }): Promise<{ view: LocalizedDecisionView | null; narrative: LocalizedNarrative | null; language: UiLanguage }> => {
+    }): Promise<{
+      view: LocalizedDecisionView | null;
+      narrative: LocalizedNarrative | null;
+      language: UiLanguage;
+      error?: string | null;
+    }> => {
       const language = normalizeUiLanguage(data.language);
       const { translateWithXai } = await import("./translate");
       const mod = await import("@/lib/council/account.server");
@@ -45,7 +51,7 @@ export const localizeTaskResult = createServerFn({ method: "POST" })
       const task = snapshot.tasks.find((row) => row.id === data.taskId) ?? null;
       const result = snapshot.results.find((row) => row.taskId === data.taskId) ?? null;
       const responses = snapshot.responses.filter((row) => row.taskId === data.taskId);
-      if (!task) return { view: null, narrative: null, language };
+      if (!task) return { view: null, narrative: null, language, error: null };
       const terminal = exclusiveRunState({
         status: task.status,
         taskStatus: task.status,
@@ -69,20 +75,36 @@ export const localizeTaskResult = createServerFn({ method: "POST" })
         }),
       });
       const cached = result ? await mod.loadResultLocalization(context.userId, data.taskId) : null;
-      const out = await localizeDecisionRecord(record, language, cached, translateWithXai);
-      const narrativeOut = await localizeCouncilNarrative(
-        result,
-        responses,
-        language,
-        cached?.narrative ?? null,
-        translateWithXai,
-      );
+      let out: Awaited<ReturnType<typeof localizeDecisionRecord>>;
+      let narrativeOut: Awaited<ReturnType<typeof localizeCouncilNarrative>>;
+      try {
+        out = await localizeDecisionRecord(record, language, cached, translateWithXai);
+        narrativeOut = await localizeCouncilNarrative(
+          result,
+          responses,
+          language,
+          cached?.narrative ?? null,
+          translateWithXai,
+        );
+      } catch {
+        return {
+          view: language === "ru" ? localizeDecisionRecordStatic(record, "ru") : null,
+          narrative: null,
+          language,
+          error: "TRANSLATION_FAILED",
+        };
+      }
       if (language === "ru" && out.cache) {
         await mod.saveResultLocalization(context.userId, data.taskId, {
           ...out.cache,
           narrative: narrativeOut.cache ?? out.cache.narrative,
         });
       }
-      return { view: out.view, narrative: narrativeOut.view, language };
+      return {
+        view: out.view,
+        narrative: narrativeOut.view,
+        language,
+        error: out.failed ? "TRANSLATION_FAILED" : null,
+      };
     },
   );

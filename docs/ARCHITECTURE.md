@@ -79,6 +79,7 @@ Applied migrations (basename order):
 14. `0014_provider_credentials.sql` — `account_settings.provider_credentials` (fingerprint / last4 / last validation per provider). Secrets in `nanogpt_key` / `openrouter_key` / `openrusrouter_key` are encrypted at rest.
 15. `0015_i18n.sql` — `account_settings.ui_language` (default `en`); `tasks.original_task`, `canonical_task_en`, `source_language`, `original_title`; `council_results.localized_ru` display cache. Canonical Council artifacts stay English.
 16. `0016_repository_index.sql` — `project_files.source_tree` for authoritative repository snapshots. Implementation classification is not packed into the Council token budget.
+17. `0017_evidence_snapshot.sql` — persisted file `SOURCE_STATUS` (language, pages, chunks, extraction method, source hash). The Common Evidence Packet id and packed hash live on the context-manifest payload, not a second evidence table.
 
 `migrations/auth/` is a template copy. Appliers do not descend into subdirectories.
 

@@ -6,10 +6,11 @@ import { FilePicker } from "@/components/file-picker";
 import { EvidenceCoveragePanel } from "@/components/evidence-coverage";
 import { Panel, PrimaryButton, StatusPill } from "@/components/council-ui";
 import { CONTEXT_TOKEN_LIMIT, estimateCouncilRun } from "@/lib/council/protocol";
-import { attemptLimit, expectedSuccessfulCalls, memberLabel, type CouncilMember } from "@/lib/council/members";
+import { attemptLimit, expectedSuccessfulCalls, type CouncilMember } from "@/lib/council/members";
 import { PROVIDER_IDS, PROVIDERS, providerName } from "@/lib/council/providers";
 import { patchTask } from "@/lib/council/store";
 import { councilPreflight } from "@/lib/council/task-mode";
+import type { RunComposition } from "@/lib/council/blueprint";
 import type { Artifact, ContextItem, Project, ProjectFile, ProviderId, Task } from "@/lib/council/types";
 import { coverageBlocksCouncil } from "@/lib/evidence/pipeline";
 import { cachedEvidencePipeline, type EvidencePipelineResult } from "@/lib/evidence/pipeline-cache";
@@ -68,6 +69,7 @@ export function CouncilRunPanel({
   onProviderChange,
   projectFiles,
   billing,
+  composition,
 }: {
   project: Project;
   task: Task;
@@ -86,7 +88,9 @@ export function CouncilRunPanel({
   onProviderChange?: (provider: ProviderId) => void;
   projectFiles?: ProjectFile[];
   billing?: string | null;
+  composition: RunComposition;
 }) {
+  const { t } = useI18n();
   const candidate = artifacts.find((row) => row.id === task.candidateArtifactId) ?? null;
   const pipeline = cachedEvidencePipeline({
     project,
@@ -97,31 +101,32 @@ export function CouncilRunPanel({
     projectFiles: projectFiles ?? [],
     candidateText: candidate ? `# ${candidate.title} v${candidate.version}\n\n${candidate.content}` : null,
   });
-  const ctx = pipeline.pack.ok ? pipeline.pack.text : "";
-  const memberCount = members.length || 3;
+  const ctx = pipeline.pack.ok ? pipeline.common?.memberContext || pipeline.pack.text : "";
+  const memberCount = composition.members.length || members.length || 3;
   const expected = expectedSuccessfulCalls(memberCount);
   const limit = attemptLimit(memberCount);
   const estimate = estimateCouncilRun(ctx, maxCostUsd, memberCount);
   const precheck = councilPreflight({ task, artifacts });
   const coverageError = coverageBlocksCouncil(pipeline.coverage);
   const budgetError = pipeline.pack.ok ? null : "Mandatory context exceeds the Council token budget.";
-  const selectionError = members.length < 2 ? "Select at least 2 Council models in API Settings." : null;
-  const canPay = ready && precheck.ok && !busy && !coverageError && !budgetError && !selectionError;
+  const parityOk = pipeline.common?.parity === "PASS";
+  const canPay = ready && precheck.ok && !busy && !coverageError && !budgetError && composition.readyToRun && parityOk;
+  const shownMembers = composition.members.length ? composition.members : members;
   const audit = pipeline.manifest.audit;
   const selectedFiles = (task.selectedFileIds ?? []).length;
   const ledgerSummary = ledgerFoldLabelFromManifest(pipeline.manifest);
 
   return (
     <Panel>
-      <p className="mb-1 text-xs font-semibold tracking-widest text-muted uppercase">Council run</p>
+      <p className="mb-1 text-xs font-semibold tracking-widest text-muted uppercase">{t("run.setup")}</p>
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        <h2 className="font-display m-0 text-xl">Council setup</h2>
+        <h2 className="font-display m-0 text-xl">{t("run.setup")}</h2>
         <StatusPill status={task.mode} />
         {task.requiresHistoricalContext ? <span className="text-xs text-faint">historical context required</span> : null}
       </div>
 
       <fieldset className="mb-4 grid gap-2">
-        <legend className="text-sm font-medium text-muted">API Provider</legend>
+        <legend className="text-sm font-medium text-muted">{t("run.providerPick")}</legend>
         <div className="flex flex-wrap gap-2">
           {PROVIDER_IDS.map((id) => {
             const selected = id === provider;
@@ -189,25 +194,59 @@ export function CouncilRunPanel({
       {budgetError ? (
         <p className="mt-3 mb-0 rounded-md border border-danger bg-subtle px-3 py-3 text-sm text-danger">{budgetError}</p>
       ) : null}
-      {selectionError ? (
-        <p className="mt-3 mb-0 rounded-md border border-danger bg-subtle px-3 py-3 text-sm text-danger">{selectionError}</p>
-      ) : null}
+      {parityOk ? (
+        <div className="mt-4 rounded-md border border-line bg-subtle px-3 py-3">
+          <p className="m-0 text-sm font-semibold tracking-widest text-ok">{t("parity.title")}</p>
+          <dl className="m-0 mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
+            <Stat label={t("parity.chats")} value={String(pipeline.common.chatCount)} />
+            <Stat label={t("parity.files")} value={String(pipeline.common.fileCount)} />
+            <Stat label={t("parity.pdf")} value={pdfStatus(pipeline.common.sourceStates, t)} />
+            <Stat label={t("parity.pages")} value={String(pipeline.common.sourceStates.reduce((sum, row) => sum + (row.pages ?? 0), 0))} />
+            <Stat label={t("parity.chunks")} value={String(pipeline.common.sourceStates.reduce((sum, row) => sum + row.chunks, 0) || audit.chunksProcessed)} />
+            <Stat label={t("parity.coverage")} value={pipeline.common.coverageStatus} />
+          </dl>
+          <p className="mt-2 mb-0 font-mono text-xs text-ok">{t("parity.pass")}</p>
+        </div>
+      ) : (
+        <p className="mt-3 mb-0 rounded-md border border-danger bg-subtle px-3 py-3 text-sm text-danger">COMMON_EVIDENCE_PARITY=FAIL</p>
+      )}
+
+      <div className="mt-4">
+        <h3 className="font-display mt-0 mb-2 text-lg">{t("run.composition")}</h3>
+        {composition.failure === "PROVIDER_CANNOT_ASSEMBLE" ? (
+          <p className="mt-0 mb-2 rounded-md border border-danger bg-subtle px-3 py-3 text-sm text-danger">
+            {t("run.providerCannot")}
+            {composition.match?.missingRoles.length ? ` ${t("run.missingRoles")}: ${composition.match.missingRoles.map((role) => t(`role.${role}`)).join(", ")}` : ""}
+          </p>
+        ) : null}
+        {composition.failure === "PROVIDER_CATALOG_REQUIRED" ? (
+          <p className="mt-0 mb-2 rounded-md border border-warn bg-subtle px-3 py-3 text-sm text-warn">{t("run.catalogRequired")}</p>
+        ) : null}
+        <ul className="m-0 grid list-none gap-1 p-0 text-sm">
+          {shownMembers.map((row) => (
+            <li key={`${row.role}-${row.modelId}`}>
+              {t(`role.${row.role}`)} → {row.label}
+            </li>
+          ))}
+        </ul>
+        <p className="mt-2 mb-0 text-xs text-faint">{t("run.oneProvider")}</p>
+      </div>
 
       <div className="sticky top-0 z-10 mt-4 border-y border-line bg-elevated py-3">
         {ready ? (
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="min-w-0">
-              <p className="m-0 text-ok">Council Ready</p>
+              <p className="m-0 text-ok">{t("run.ready")}</p>
               <ul className="m-0 flex list-none flex-wrap gap-3 p-0 text-sm">
-                {members.map((row) => (
+                {shownMembers.map((row) => (
                   <li key={row.modelId} className="inline-flex items-center gap-1.5">
-                    <Check className="size-4 text-ok" aria-hidden="true" /> {memberLabel(row)}
+                    <Check className="size-4 text-ok" aria-hidden="true" /> {t(`role.${row.role}`)} · {row.label}
                   </li>
                 ))}
               </ul>
             </div>
             <PrimaryButton type="button" className="w-full sm:w-auto" disabled={!canPay} onClick={() => onRun(pipeline)}>
-              Run Council
+              {t("run.start")}
             </PrimaryButton>
           </div>
         ) : (
@@ -276,6 +315,18 @@ export function CouncilRunPanel({
       </div>
     </Panel>
   );
+}
+
+function pdfStatus(
+  states: Array<{ kind: string; sourceStatus: "EXTRACTED" | "PARTIAL" | "NO_TEXT" | "FAILED" }>,
+  translate: (key: string) => string,
+): string {
+  const pdfs = states.filter((row) => row.kind === "PDF");
+  if (!pdfs.length) return translate("parity.none");
+  if (pdfs.some((row) => row.sourceStatus === "FAILED")) return translate("parity.failed");
+  if (pdfs.some((row) => row.sourceStatus === "NO_TEXT")) return translate("parity.noText");
+  if (pdfs.some((row) => row.sourceStatus === "PARTIAL")) return translate("parity.partial");
+  return translate("parity.extracted");
 }
 
 function Stat({ label, value, warn = false }: { label: string; value: string; warn?: boolean }) {

@@ -51,6 +51,8 @@ export type DecisionRecord = {
   required: string[];
   userActions: string[];
   userDecisions: string[];
+  implementationNotes: string[];
+  blockerNotes: string[];
   nextAction: NextAction | null;
   nextActionWhy: string;
 };
@@ -178,6 +180,7 @@ export function deriveDecisionRecord(input: {
   const ledger = result?.issueLedger ?? null;
   const p0 = ledger && verdict === "BLOCKED" ? unresolvedBlockers(ledger, mode) : [];
   const impl = input.implementation ?? null;
+  const op = result?.operatorRecord ?? null;
 
   const blockers: DecisionBlocker[] = p0.map((issue) => ({
     issueId: issue.issueId,
@@ -218,19 +221,27 @@ export function deriveDecisionRecord(input: {
     }
   }
 
-  const completed = unique([
-    ...(result?.consensus ?? []),
-    result?.recommendation ? firstSentence(result.recommendation) : "",
-    ...resolved.filter((row) => row.disposition === "RESOLVED").map((row) => row.title),
-  ]).slice(0, 7);
+  const completed = unique(
+    op?.completed.length
+      ? op.completed
+      : [
+          ...(result?.consensus ?? []),
+          result?.recommendation ? firstSentence(result.recommendation) : "",
+          ...resolved.filter((row) => row.disposition === "RESOLVED").map((row) => row.title),
+        ],
+  ).slice(0, 7);
 
-  const notCompleted = unique([
-    ...(result?.unresolvedIssues ?? []),
-    ...(impl?.gaps ?? []),
-    ...(impl?.rows ?? [])
-      .filter((row) => row.status === "DESIGNED_ONLY" || row.status === "PARTIAL" || row.status === "UNKNOWN")
-      .map((row) => `${row.module}: ${row.status}`),
-  ]).slice(0, 7);
+  const notCompleted = unique(
+    op?.notCompleted.length
+      ? op.notCompleted
+      : [
+          ...(result?.unresolvedIssues ?? []),
+          ...(impl?.gaps ?? []),
+          ...(impl?.rows ?? [])
+            .filter((row) => row.status === "DESIGNED_ONLY" || row.status === "PARTIAL" || row.status === "UNKNOWN")
+            .map((row) => `${row.module}: ${row.status}`),
+        ],
+  ).slice(0, 7);
 
   const userDecisions =
     verdict === "USER_DECISION_REQUIRED"
@@ -269,6 +280,10 @@ export function deriveDecisionRecord(input: {
     conclusion = "No task verdict — Council was cancelled.";
   }
 
+  if (op?.summary) {
+    conclusion = op.summary;
+  }
+
   const implementationState: ImplementationRow[] = impl?.rows?.length
     ? impl.rows
     : [
@@ -280,23 +295,39 @@ export function deriveDecisionRecord(input: {
         },
       ];
 
-  const recommendations = unique([
-    ...(result?.proposedCorrections ?? []).map((row) => shortTitle(row)),
-    ...(impl?.recommendations ?? []),
-  ]).slice(0, 7);
+  const recommendations = unique(
+    op?.recommended.length
+      ? op.recommended
+      : [
+          ...(result?.proposedCorrections ?? []).map((row) => shortTitle(row)),
+          ...(impl?.recommendations ?? []),
+        ],
+  ).slice(0, 7);
 
-  const required = unique([
-    ...blockers.map((row) => row.title),
-    ...(verdict === "PATCH" ? (result?.proposedCorrections ?? []).map((row) => shortTitle(row)) : []),
-    ...(impl?.required ?? []),
-  ]).slice(0, 7);
+  const required = unique(
+    op?.required.length
+      ? op.required
+      : [
+          ...blockers.map((row) => row.title),
+          ...(verdict === "PATCH" ? (result?.proposedCorrections ?? []).map((row) => shortTitle(row)) : []),
+          ...(impl?.required ?? []),
+        ],
+  ).slice(0, 7);
 
-  const userActions = unique([
-    ...userDecisions,
-    ...(impl?.conflict === "REPOSITORY_SOURCE_CONFLICT" ? ["Select one authoritative repository snapshot."] : []),
-  ]).slice(0, 7);
+  const userActions = unique(
+    op?.userActions.length
+      ? op.userActions
+      : [
+          ...userDecisions,
+          ...(impl?.conflict === "REPOSITORY_SOURCE_CONFLICT" ? ["Select one authoritative repository snapshot."] : []),
+        ],
+  ).slice(0, 7);
 
   const next = nextActionFor({ mode, runStatus: input.runStatus, verdict, result, implementation: impl });
+  const blockerNotes = unique(
+    op?.blockers.length ? op.blockers : blockers.map((row) => row.title),
+  ).slice(0, 7);
+
 
   return {
     runStatus: input.runStatus,
@@ -308,14 +339,16 @@ export function deriveDecisionRecord(input: {
     notCompleted,
     agreed: completed,
     implementationState,
+    implementationNotes: unique(op?.implementation ?? []).slice(0, 7),
     blockers,
+    blockerNotes,
     resolved,
     recommendations,
     required,
     userActions,
     userDecisions,
     nextAction: next.action,
-    nextActionWhy: next.why,
+    nextActionWhy: op?.nextStep || next.why,
   };
 }
 

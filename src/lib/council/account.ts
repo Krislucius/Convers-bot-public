@@ -170,3 +170,12 @@ export const persistAccountDeleteFile = createServerFn({ method: "POST" })
     await mod.persistDeleteFile(context.userId, data.fileId, data.tasks);
     return { ok: true };
   });
+
+export const persistAccountDeleteTask = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .validator((data: { taskId: string }) => data)
+  .handler(async ({ context, data }) => {
+    const mod = await import("./account.server");
+    await mod.persistDeleteTask(context.userId, data.taskId);
+    return { ok: true };
+  });

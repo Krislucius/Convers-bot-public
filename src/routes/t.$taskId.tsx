@@ -1,25 +1,25 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { ArtifactPanel, ContextManifestPanel } from "@/components/context-manifest-panel";
-import { CouncilFold } from "@/components/council-fold";
+import { ContextManifestPanel } from "@/components/context-manifest-panel";
 import { DecisionRecordPanel } from "@/components/decision-record";
 import { CouncilProgressPanel } from "@/components/council-progress";
+import { CouncilResultView } from "@/components/council-result-view";
 import { CouncilRunPanel } from "@/components/council-run-panel";
 import { CollapsibleText } from "@/components/collapsible-text";
-import { PresentedText } from "@/components/presented-text";
 import { Crumb, GhostButton, Page, PageHeader, PrimaryButton, StatusPill } from "@/components/council-ui";
-import { ImplementationPacketPanel } from "@/components/implementation-packet-panel";
 import { OpLogPanel } from "@/components/op-log";
-import { isSynthesisResponse, responseMemberId } from "@/lib/council/agents";
+import { isSynthesisResponse } from "@/lib/council/agents";
 import { deriveCouncilReports } from "@/lib/council/reports";
-import { deriveDecisionRecord } from "@/lib/council/decision";
+import { deriveDecisionRecord, type NextAction } from "@/lib/council/decision";
 import { indexSelectedRepositories } from "@/lib/evidence/repo-index";
-import { runCredsFromReady, isStaleDisconnectError } from "@/lib/council/orchestrate";
-import { providerName } from "@/lib/council/providers";
+import { resolveRunComposition } from "@/lib/council/blueprint";
+import { isStaleDisconnectError } from "@/lib/council/orchestrate";
+import { providerName, slotFor } from "@/lib/council/providers";
 import { billingLabel } from "@/lib/council/nano-billing";
 import { attemptLimit, memberLabel } from "@/lib/council/members";
 import {
   applyCouncilOutput,
+  executeFollowOn,
   getStoreSnapshot,
   markTaskCancelled,
   markTaskFailed,
@@ -58,46 +58,11 @@ const RUNNING = new Set([
 ]);
 const STARTABLE = new Set(["CREATED", "FAILED", "CANCELLED"]);
 
-function ListBlock({ title, rows }: { title: string; rows: string[] }) {
-  const { t } = useI18n();
-  return (
-    <>
-      <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">{title}</h3>
-      {rows.length ? (
-        <ul className="max-h-log overflow-auto">
-          {rows.map((row) => (
-            <li key={row} className="break-words">
-              {row}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="text-muted">{t("task.noneRecorded")}</p>
-      )}
-    </>
-  );
-}
-
-function positionForMember(
-  positions: Record<string, string>,
-  memberId: string,
-  members: Array<{ memberId: string; role: string }>,
-): string {
-  const direct = positions[memberId] || positions[memberId.toLowerCase()];
-  if (direct) return direct;
-  const member = members.find((row) => row.memberId === memberId);
-  if (!member) return "—";
-  const sameRole = members.filter((row) => row.role === member.role);
-  if (sameRole.length === 1) {
-    return positions[member.role] || positions[member.role.toLowerCase()] || "—";
-  }
-  return "—";
-}
-
 function TaskPage() {
   const { taskId } = Route.useParams();
+  const navigate = useNavigate();
   const store = useStore();
-  const { config, creds, setProvider } = useSession();
+  const { config } = useSession();
   const { t, locale } = useI18n();
   const task = store.tasks.find((t) => t.id === taskId);
   const project = store.projects.find((p) => p.id === task?.projectId);
@@ -120,6 +85,8 @@ function TaskPage() {
   const [activeRunId, setActiveRunId] = useState(task?.diagnostics?.run?.runId ?? "");
   const [confirmRestart, setConfirmRestart] = useState(false);
   const [narrative, setNarrative] = useState<LocalizedNarrative | null>(null);
+  const [followBusy, setFollowBusy] = useState(false);
+  const [acceptedCount, setAcceptedCount] = useState<number | null>(null);
   const runGen = useRef(0);
   const applyPublicRef = useRef<(run: DurableRunPublic) => void>(() => undefined);
 
@@ -172,6 +139,11 @@ function TaskPage() {
     };
   }, [taskId, locale, result, allResponses.length]);
 
+  useEffect(() => {
+    setAcceptedCount(null);
+    setFollowBusy(false);
+  }, [taskId]);
+
   if (!task || !project) {
     return (
       <Page>
@@ -208,7 +180,13 @@ function TaskPage() {
   const persistedStage = task.diagnostics?.run?.stage ?? stage;
   const persistedAgents = task.diagnostics?.run?.agents ?? agentState;
   const members = task.selectedModels?.length ? task.selectedModels : config.members;
-  const agentList: Array<[AgentKey, string]> = members.map((row) => [row.memberId, memberLabel(row)]);
+  const composition = resolveRunComposition({
+    taskProvider: task.provider,
+    settingsProvider: config.provider,
+    catalog: config.catalog,
+    fallbackMembers: members,
+  });
+  const setupMembers = composition.members.length ? composition.members : members;
   const waitingAgents = Object.fromEntries(
     members.map((row) => [row.memberId, { state: "WAITING" as const, attempt: 0, maxAttempts: 3, error: null }]),
   ) as Partial<Record<AgentKey, AgentProgress>>;
@@ -277,17 +255,19 @@ function TaskPage() {
   applyPublicRef.current = applyPublicRun;
 
   function startPayload(resume?: { responses: typeof allResponses }): StartCouncilInput | null {
-    const runCreds = creds ?? runCredsFromReady(config);
-    if (!runCreds) return null;
+    if (!composition.readyToRun || !composition.members.length) return null;
+    if (!slotFor(config, composition.provider).saved) return null;
+    const ids = composition.members.map((row) => row.modelId);
+    const catalogMatches = config.catalog?.provider === composition.provider;
     return {
       taskId: currentTask.id,
-      provider: runCreds.provider,
-      members: runCreds.members,
-      synthesizerModel: runCreds.synthesizerModel,
-      maxCostUsd: runCreds.maxCostUsd,
-      nanogptBilling: runCreds.nanogptBilling,
-      catalog: config.catalog?.models,
-      scan: config.catalog ?? null,
+      provider: composition.provider,
+      members: composition.members,
+      synthesizerModel: ids.includes(config.synthesizerModel) ? config.synthesizerModel : ids[0] ?? "",
+      maxCostUsd: config.maxCostUsd,
+      nanogptBilling: composition.provider === "nanogpt" ? config.nanogptBilling : undefined,
+      catalog: catalogMatches ? config.catalog?.models : undefined,
+      scan: catalogMatches ? config.catalog : null,
       resumeResponses: resume?.responses,
     };
   }
@@ -313,7 +293,12 @@ function TaskPage() {
     }
     const payload = startPayload(opts?.resume);
     if (!payload) {
-      const text = `${providerName(config.provider)} is not connected. Connect your API key before running the Council.`;
+      const connected = slotFor(config, composition.provider).saved;
+      const text = !connected
+        ? `${providerName(composition.provider)} is not connected. Connect your API key before running the Council.`
+        : composition.failure === "PROVIDER_CATALOG_REQUIRED"
+          ? t("run.catalogRequired")
+          : t("run.providerCannot");
       setMsg(text);
       setLog(
         formatOpLog(
@@ -407,7 +392,6 @@ function TaskPage() {
   }
 
   const canRun = STARTABLE.has(task.status) && terminal !== "COMPLETE";
-  const hashMatch = responses.length === 0 || responses.every((row) => row.contextHash === responses[0]?.contextHash);
   const showPartial =
     !isRunning &&
     task.status === "FAILED" &&
@@ -442,6 +426,28 @@ function TaskPage() {
   });
   const showReports = !isRunning && Boolean(terminal || result || showPartial);
   const failedMemberCount = reports.technical.members.filter((row) => row.outcome === "failed").length;
+
+  function onFollowOn(action: NextAction) {
+    if (followBusy) return;
+    setFollowBusy(true);
+    try {
+      const out = executeFollowOn(currentTask.id, action, { record: decision, artifactId: artifact?.id ?? null });
+      if (out.kind === "SPAWN_TASK") {
+        void navigate({ to: "/t/$taskId", params: { taskId: out.task.id } });
+        return;
+      }
+      if (out.kind === "NAVIGATE") {
+        void navigate({
+          to: out.to === "chats" ? "/p/$projectId/chats" : "/p/$projectId/files",
+          params: { projectId: currentTask.projectId },
+        });
+        return;
+      }
+      if (out.kind === "ACCEPT") setAcceptedCount(out.items.length);
+    } finally {
+      setFollowBusy(false);
+    }
+  }
 
   return (
     <Page>
@@ -496,15 +502,16 @@ function TaskPage() {
           artifacts={projectArtifacts}
           projectFiles={store.projectFiles}
           maxCostUsd={config.maxCostUsd}
-          ready={config.ready}
-          provider={config.provider}
-          providerLabel={providerName(config.provider)}
-          members={members}
+          ready={slotFor(config, composition.provider).saved}
+          provider={composition.provider}
+          providerLabel={providerName(composition.provider)}
+          members={setupMembers}
           busy={busy}
-          message={isStaleDisconnectError(msg, config.ready) ? "" : msg}
+          message={isStaleDisconnectError(msg, slotFor(config, composition.provider).saved) ? "" : msg}
           onRun={(prepared) => void onRun(prepared)}
-          onProviderChange={setProvider}
-          billing={config.provider === "nanogpt" ? billingLabel(config.nanogptBilling) : null}
+          onProviderChange={(id) => patchTask(currentTask.id, { provider: id })}
+          billing={composition.provider === "nanogpt" ? billingLabel(config.nanogptBilling) : null}
+          composition={composition}
         />
       ) : null}
 
@@ -543,7 +550,14 @@ function TaskPage() {
       ) : null}
 
       {showReports ? (
-        <DecisionRecordPanel record={decision} run={reports.technical} taskId={task.id}>
+        <DecisionRecordPanel
+          record={decision}
+          run={reports.technical}
+          taskId={task.id}
+          onFollowOn={onFollowOn}
+          followOnBusy={followBusy}
+          acceptedCount={acceptedCount}
+        >
           {failedMemberCount > 0 && (terminal === "FAILED" || terminal === "COMPLETE") ? (
             <PrimaryButton type="button" disabled={busy} onClick={onRetryFailed}>
               {t("task.retryFailed")}
@@ -576,226 +590,32 @@ function TaskPage() {
       ) : null}
 
       {showReports ? (
-        <CouncilFold
-          title={t("fold.repository")}
-          summary={
-            implementation.conflict
-              ? "REPOSITORY_SOURCE_CONFLICT"
-              : implementation.missingRepository
-                ? t("fold.noRepository")
-                : `${implementation.filesIndexed} files · ${implementation.indexerVersion}`
+        <CouncilResultView
+          task={currentTask}
+          record={decision}
+          result={result}
+          responses={responses}
+          members={members}
+          narrative={narrative}
+          artifact={artifact}
+          packet={packet}
+          provider={currentTask.provider ?? currentTask.diagnostics?.run?.provider ?? composition.provider}
+          billing={
+            (currentTask.provider ?? composition.provider) === "nanogpt"
+              ? billingLabel(currentTask.nanogptBilling ?? config.nanogptBilling)
+              : null
           }
-        >
-          <p className="mt-0 mb-2 font-mono text-xs break-all text-faint">
-            hash {implementation.repositoryHash ?? "none"} · indexer {implementation.indexerVersion}
-            {implementation.conflict ? ` · ${implementation.conflict}` : ""}
-          </p>
-          <ul className="m-0 grid list-none gap-2 p-0">
-            {implementation.rows.map((row) => (
-              <li key={row.module} className="rounded-md bg-bg px-3 py-2 text-sm">
-                <StatusPill status={row.status} label={t(`impl.${row.status}`)} /> {row.module}
-                <span className="mt-1 block text-xs text-muted">{row.evidence}</span>
-                {row.citations.length ? (
-                  <span className="mt-1 block font-mono text-xs break-all text-faint">{row.citations.join(" · ")}</span>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        </CouncilFold>
-      ) : null}
-
-      {artifact ? <ArtifactPanel artifact={artifact} /> : null}
-      {packet ? <ImplementationPacketPanel packet={packet} /> : null}
-
-      {result ? (
-        <CouncilFold title={t("fold.finalFinding")} summary={t("fold.positions")}>
-          {result.decision ? (
-            <>
-              <h3 className="mt-0 text-sm font-semibold tracking-widest text-muted uppercase">{t("record.outcome")}</h3>
-              <PresentedText original={result.decision} localized={narrative?.decision} />
-              {result.rationale ? (
-                <>
-                  <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">{t("record.why")}</h3>
-                  <PresentedText original={result.rationale} localized={narrative?.rationale} />
-                </>
-              ) : null}
-              <ListBlock title={t("fold.alternatives")} rows={narrative?.alternatives ?? result.alternatives} />
-              <ListBlock title={t("fold.dissent")} rows={narrative?.dissent ?? result.dissent} />
-              <ListBlock title={t("fold.risks")} rows={narrative?.risks ?? result.risks} />
-            </>
-          ) : null}
-          <h3 className={`${result.decision ? "mt-4" : "mt-0"} text-sm font-semibold tracking-widest text-muted uppercase`}>
-            {t("record.recommendations")}
-          </h3>
-          <PresentedText original={result.recommendation || "—"} localized={narrative?.recommendation} />
-          <ListBlock title={t("fold.disagreements")} rows={narrative?.disagreements ?? result.disagreements} />
-          <ListBlock title={t("fold.issues")} rows={narrative?.issues ?? result.issues} />
-          <ListBlock title={t("fold.corrections")} rows={narrative?.proposedCorrections ?? result.proposedCorrections} />
-          <ListBlock title={t("fold.resolvedIssues")} rows={narrative?.resolvedIssues ?? result.resolvedIssues} />
-          <ListBlock title={t("fold.openFollowups")} rows={narrative?.unresolvedIssues ?? result.unresolvedIssues} />
-          {result.issueLedger ? (
-            <>
-              <ListBlock
-                title={t("fold.ledgerOpen")}
-                rows={result.issueLedger.unresolved.map((row) => `${row.issueId} · ${row.severity} · ${row.text}`)}
-              />
-              <ListBlock
-                title={t("fold.ledgerResolved")}
-                rows={result.issueLedger.resolved.map((row) => `${row.issueId} · ${row.severity} · ${row.text}`)}
-              />
-              <ListBlock
-                title={t("fold.ledgerRejected")}
-                rows={result.issueLedger.rejected.map((row) => `${row.issueId} · ${row.severity} · ${row.text}`)}
-              />
-              <ListBlock
-                title={t("fold.ledgerPatch")}
-                rows={result.issueLedger.acceptedAsPatch.map((row) => `${row.issueId} · ${row.severity} · ${row.text}`)}
-              />
-            </>
-          ) : null}
-          <ListBlock title={t("fold.citations")} rows={result.citations} />
-          {result.evidence.length ? (
-            <>
-              <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">{t("fold.evidence")}</h3>
-              <ul className="max-h-log overflow-auto">
-                {result.evidence.map((row) => (
-                  <li key={row.claim} className="break-words">
-                    <StatusPill status={row.status} /> {row.claim}{" "}
-                    <span className="font-mono text-xs break-all text-faint">{row.citation ?? "no citation"}</span>
-                  </li>
-                ))}
-              </ul>
-            </>
-          ) : null}
-          <div className="mt-4">
-            <h3 className="mt-0 text-sm font-semibold tracking-widest text-muted uppercase">{t("fold.modelPosition")}</h3>
-            <dl className="m-0 grid gap-3">
-              {agentList.map(([key, label]) => (
-                <div key={key}>
-                  <dt className="text-xs tracking-wider text-faint uppercase">{label}</dt>
-                  <dd className="m-0">
-                    <PresentedText
-                      original={positionForMember(result.agentPositions, key, members)}
-                      localized={
-                        narrative?.positions
-                          ? positionForMember(narrative.positions, key, members)
-                          : null
-                      }
-                      defaultCollapsed
-                    />
-                  </dd>
-                </div>
-              ))}
-            </dl>
-          </div>
-          {responses[0]?.contextHash ? (
-            <p className="mt-3 mb-0 text-xs break-all text-faint">
-              Context hash {responses[0].contextHash}
-              {hashMatch ? " · all agent responses share this snapshot" : " · snapshot mismatch"}
-            </p>
-          ) : null}
-        </CouncilFold>
-      ) : null}
-
-      {responses.length || result ? (
-      <div className="grid gap-2">
-        {agentList.map(([key, heading]) => {
-          const r1 = responses.find(
-            (r) => responseMemberId(r) === key && (r.stage === "ROUND_1" || r.round === 1) && !isSynthesisResponse(r),
-          );
-          const r2 = responses.find(
-            (r) => responseMemberId(r) === key && (r.stage === "ROUND_2" || r.round === 2) && !isSynthesisResponse(r),
-          );
-          const recorded = Boolean(r1 || r2);
-          return (
-            <CouncilFold key={key} title={heading} summary={recorded ? t("agent.recorded") : t("task.noneRecorded")}>
-              <h3 className="mt-0 text-sm font-semibold tracking-widest text-muted uppercase">{t("fold.modelPosition")}</h3>
-              {r1 ? (
-                r1.error ? (
-                  <p className="text-danger">{narrative?.errors?.[`${key}:${r1.stage ?? r1.round}`] ?? r1.error}</p>
-                ) : (
-                  <PresentedText original={r1.responseText} localized={narrative?.round1?.[key]} defaultCollapsed />
-                )
-              ) : (
-                <p className="text-muted">{t("task.noneRecorded")}</p>
-              )}
-              <h3 className="mt-4 text-sm font-semibold tracking-widest text-muted uppercase">{t("fold.crossReview")}</h3>
-              {r2 ? (
-                r2.error ? (
-                  <p className="text-danger">{narrative?.errors?.[`${key}:${r2.stage ?? r2.round}`] ?? r2.error}</p>
-                ) : (
-                  <PresentedText original={r2.responseText} localized={narrative?.round2?.[key]} defaultCollapsed />
-                )
-              ) : (
-                <p className="text-muted">{t("task.noneRecorded")}</p>
-              )}
-            </CouncilFold>
-          );
-        })}
-
-        <CouncilFold
-          title={t("fold.rawSynthesis")}
-          summary={synth?.responseText || result?.synthesisRaw ? t("agent.recorded") : t("task.noneRecorded")}
-        >
-          {synth?.responseText || result?.synthesisRaw ? (
-            <PresentedText
-              original={synth?.responseText || result?.synthesisRaw || ""}
-              localized={narrative?.synthesis}
-              defaultCollapsed
-            />
-          ) : (
-            <p className="m-0 text-muted">{t("task.noneRecorded")}</p>
-          )}
-        </CouncilFold>
-
-        <CouncilFold
-          title={t("fold.technical")}
-          summary={
-            task.totalCostUsd != null
-              ? `${task.totalCostUsd.toFixed(4)} USD · ${task.totalLatencyMs ?? "—"} ms`
-              : "not available"
-          }
-        >
-          <p className="mt-0 mb-3 flex flex-wrap gap-3 text-sm text-muted tabular-nums">
-            <span>Council cost: {task.totalCostUsd != null ? `$${task.totalCostUsd.toFixed(4)} (telemetry)` : "telemetry only"}</span>
-            <span>
-              Calls: {task.diagnostics?.run?.requestBudget?.used ?? responses.length} /{" "}
-              {task.diagnostics?.run?.requestBudget?.limit ?? callLimit}
-            </span>
-            <span>Provider: {providerName(task.provider ?? task.diagnostics?.run?.provider ?? config.provider)}</span>
-            {(task.provider ?? task.diagnostics?.run?.provider ?? config.provider) === "nanogpt" ? (
-              <span>
-                Billing:{" "}
-                {billingLabel(task.nanogptBilling ?? task.diagnostics?.run?.nanogptBilling ?? config.nanogptBilling)}
-              </span>
-            ) : null}
-            <span>Input tokens: {task.totalInputTokens ?? "—"}</span>
-            <span>Output tokens: {task.totalOutputTokens ?? "—"}</span>
-            <span>Total latency: {task.totalLatencyMs != null ? `${task.totalLatencyMs} ms` : "—"}</span>
-          </p>
-          <pre className="mt-0 max-h-log overflow-auto font-mono text-sm whitespace-pre-wrap break-all text-muted tabular-nums">
-            {responses
-              .map(
-                (row) =>
-                  `${responseMemberId(row)} ${row.role} ${row.stage} attempt ${row.attempt ?? "—"} · dispatched=${row.dispatchedModelId || row.model} · in=${row.inputTokens} out=${row.outputTokens} cost=${row.cost} latency=${row.latencyMs} hash=${row.contextHash ?? "—"}`,
-              )
-              .join("\n") || "Not available."}
-          </pre>
-        </CouncilFold>
-      </div>
-      ) : null}
-
-      {priorResponses.length ? (
-        <CouncilFold title="Previous runs" summary={`${priorResponses.length} preserved responses`}>
-          <pre className="mt-0 max-h-log overflow-auto font-mono text-sm whitespace-pre-wrap break-all text-muted">
-            {priorResponses
-              .map(
-                (row) =>
-                  `${row.runId?.slice(0, 8) ?? "legacy"} · ${responseMemberId(row)} ${row.stage} · ${row.error ? "failed" : "kept"}`,
-              )
-              .join("\n")}
-          </pre>
-        </CouncilFold>
+          sourceManifest={[
+            implementation.repositoryHash ? `repository ${implementation.repositoryHash}` : t("fold.noRepository"),
+            ...implementation.rows.map((row) => `${row.status} ${row.module}: ${row.evidence}`),
+            ...store.projectFiles
+              .filter((file) => file.projectId === currentTask.projectId && (currentTask.selectedFileIds ?? []).includes(file.id))
+              .map((file) => `${file.filename} SOURCE_STATUS=${file.sourceStatus ?? "UNKNOWN"} language=${file.sourceLanguage ?? "unknown"} pages=${file.pageCount ?? "unknown"} chunks=${file.chunkCount ?? "unknown"}`),
+          ]}
+          priorResponses={priorResponses}
+          completed={terminal === "COMPLETE"}
+          callLimit={callLimit}
+        />
       ) : null}
 
       <OpLogPanel

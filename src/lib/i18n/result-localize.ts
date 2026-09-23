@@ -75,6 +75,8 @@ export function canonicalDisplayHash(record: DecisionRecord): string {
       completed: record.completed,
       notCompleted: record.notCompleted,
       agreed: record.agreed,
+      implementationNotes: record.implementationNotes,
+      blockerNotes: record.blockerNotes,
       implementationState: record.implementationState.map((row) => ({
         module: row.module,
         status: row.status,
@@ -108,6 +110,8 @@ export type CachedRuLocalization = {
   completed: string[];
   notCompleted: string[];
   agreed: string[];
+  implementationNotes?: string[];
+  blockerNotes?: string[];
   implementationEvidence: Array<{ module: string; evidence: string }>;
   blockers: Array<{ issueId: string; title: string; why: string; resolveCondition: string }>;
   resolved: Array<{ issueId: string; title: string; reason: string }>;
@@ -184,6 +188,8 @@ export function applyRuCache(record: DecisionRecord, cache: CachedRuLocalization
     completed: cache.completed ?? cache.agreed,
     notCompleted: cache.notCompleted ?? record.notCompleted,
     agreed: cache.agreed,
+    implementationNotes: cache.implementationNotes ?? record.implementationNotes,
+    blockerNotes: cache.blockerNotes ?? record.blockerNotes,
     implementationState: record.implementationState.map((row) => ({
       ...row,
       evidence: implBy.get(row.module) ?? row.evidence,
@@ -227,12 +233,128 @@ async function translateFree(text: string, translate: TranslateFn): Promise<stri
   return translateOrThrow({ text: trimmed, from: "en", to: "ru" }, translate);
 }
 
+type RecordBundle = {
+  summary: string;
+  conclusion: string;
+  completed: string[];
+  notCompleted: string[];
+  agreed: string[];
+  implementationNotes: string[];
+  blockerNotes: string[];
+  implementationEvidence: Array<{ module: string; evidence: string }>;
+  blockers: Array<{ issueId: string; title: string; why: string; resolveCondition: string }>;
+  resolved: Array<{ issueId: string; title: string; reason: string }>;
+  recommendations: string[];
+  required: string[];
+  userActions: string[];
+  userDecisions: string[];
+  nextActionWhy: string;
+};
+
+function parseJsonObject(text: string): Record<string, unknown> | null {
+  const cleaned = text
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+  const tryParse = (raw: string): Record<string, unknown> | null => {
+    try {
+      const value = JSON.parse(raw) as unknown;
+      if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+    return null;
+  };
+  const direct = tryParse(cleaned);
+  if (direct) return direct;
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start >= 0 && end > start) return tryParse(cleaned.slice(start, end + 1));
+  return null;
+}
+
+function asStringArray(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) return fallback;
+  return value.map((row) => String(row ?? ""));
+}
+
+function applyBundle(parsed: Record<string, unknown>, fallback: RecordBundle): RecordBundle {
+  return {
+    summary: String(parsed.summary ?? fallback.summary),
+    conclusion: String(parsed.conclusion ?? fallback.conclusion),
+    completed: asStringArray(parsed.completed, fallback.completed),
+    notCompleted: asStringArray(parsed.notCompleted, fallback.notCompleted),
+    agreed: asStringArray(parsed.agreed, fallback.agreed),
+    implementationNotes: asStringArray(parsed.implementationNotes, fallback.implementationNotes),
+    blockerNotes: asStringArray(parsed.blockerNotes, fallback.blockerNotes),
+    implementationEvidence: Array.isArray(parsed.implementationEvidence)
+      ? (parsed.implementationEvidence as RecordBundle["implementationEvidence"])
+      : fallback.implementationEvidence,
+    blockers: Array.isArray(parsed.blockers) ? (parsed.blockers as RecordBundle["blockers"]) : fallback.blockers,
+    resolved: Array.isArray(parsed.resolved) ? (parsed.resolved as RecordBundle["resolved"]) : fallback.resolved,
+    recommendations: asStringArray(parsed.recommendations, fallback.recommendations),
+    required: asStringArray(parsed.required, fallback.required),
+    userActions: asStringArray(parsed.userActions, fallback.userActions),
+    userDecisions: asStringArray(parsed.userDecisions, fallback.userDecisions),
+    nextActionWhy: String(parsed.nextActionWhy ?? fallback.nextActionWhy),
+  };
+}
+
+async function translatePayload(payload: RecordBundle, translate: TranslateFn): Promise<RecordBundle> {
+  try {
+    const packed = JSON.stringify(payload);
+    const out = await translate({ text: packed, from: "en", to: "ru", format: "json" });
+    const parsed = parseJsonObject(out);
+    if (parsed && typeof parsed.summary === "string" && parsed.summary !== payload.summary) {
+      return applyBundle(parsed, payload);
+    }
+  } catch {
+    /* fieldwise fallback */
+  }
+  return {
+    summary: await translateFree(payload.summary, translate),
+    conclusion: await translateFree(payload.conclusion, translate),
+    completed: await Promise.all(payload.completed.map((row) => translateFree(row, translate))),
+    notCompleted: await Promise.all(payload.notCompleted.map((row) => translateFree(row, translate))),
+    agreed: await Promise.all(payload.agreed.map((row) => translateFree(row, translate))),
+    implementationNotes: await Promise.all(payload.implementationNotes.map((row) => translateFree(row, translate))),
+    blockerNotes: await Promise.all(payload.blockerNotes.map((row) => translateFree(row, translate))),
+    implementationEvidence: await Promise.all(
+      payload.implementationEvidence.map(async (row) => ({
+        module: row.module,
+        evidence: await translateFree(row.evidence, translate),
+      })),
+    ),
+    blockers: await Promise.all(
+      payload.blockers.map(async (row) => ({
+        ...row,
+        title: await translateFree(row.title, translate),
+        why: row.why === P0_WHY_EN ? P0_WHY_RU : await translateFree(row.why, translate),
+        resolveCondition: await translateFree(row.resolveCondition, translate),
+      })),
+    ),
+    resolved: await Promise.all(
+      payload.resolved.map(async (row) => ({
+        ...row,
+        title: await translateFree(row.title, translate),
+        reason: await translateFree(row.reason, translate),
+      })),
+    ),
+    recommendations: await Promise.all(payload.recommendations.map((row) => translateFree(row, translate))),
+    required: await Promise.all(payload.required.map((row) => translateFree(row, translate))),
+    userActions: await Promise.all(payload.userActions.map((row) => translateFree(row, translate))),
+    userDecisions: await Promise.all(payload.userDecisions.map((row) => translateFree(row, translate))),
+    nextActionWhy: await translateFree(payload.nextActionWhy, translate),
+  };
+}
+
 export async function localizeDecisionRecord(
   record: DecisionRecord,
   locale: UiLanguage,
   cache: CachedRuLocalization | null | undefined,
   translate: TranslateFn,
-): Promise<{ view: LocalizedDecisionView; cache: CachedRuLocalization | null; translated: boolean }> {
+): Promise<{ view: LocalizedDecisionView; cache: CachedRuLocalization | null; translated: boolean; failed?: boolean }> {
   if (locale !== "ru") {
     return { view: localizeDecisionRecordStatic(record, "en"), cache: cache ?? null, translated: false };
   }
@@ -241,42 +363,60 @@ export async function localizeDecisionRecord(
     return { view: applyRuCache(record, cache), cache, translated: false };
   }
   const staticView = localizeDecisionRecordStatic(record, "ru");
-  const next: CachedRuLocalization = {
-    sourceHash: hash,
-    summary: await translateFree(record.summary || record.conclusion, translate),
-    conclusion: await translateFree(record.conclusion, translate),
-    why: staticView.why,
-    completed: await Promise.all((record.completed.length ? record.completed : record.agreed).map((row) => translateFree(row, translate))),
-    notCompleted: await Promise.all(record.notCompleted.map((row) => translateFree(row, translate))),
-    agreed: await Promise.all(record.agreed.map((row) => translateFree(row, translate))),
-    implementationEvidence: await Promise.all(
-      record.implementationState.map(async (row) => ({
+  try {
+    const payload: RecordBundle = {
+      summary: record.summary || record.conclusion,
+      conclusion: record.conclusion,
+      completed: record.completed.length ? record.completed : record.agreed,
+      notCompleted: record.notCompleted,
+      agreed: record.agreed,
+      implementationNotes: record.implementationNotes,
+      blockerNotes: record.blockerNotes,
+      implementationEvidence: record.implementationState.map((row) => ({
         module: row.module,
-        evidence: await translateFree(row.evidence, translate),
+        evidence: row.evidence,
       })),
-    ),
-    blockers: await Promise.all(
-      record.blockers.map(async (row) => ({
+      blockers: record.blockers.map((row) => ({
         issueId: row.issueId,
-        title: await translateFree(row.title, translate),
-        why: row.why === P0_WHY_EN ? P0_WHY_RU : await translateFree(row.why, translate),
-        resolveCondition: await translateFree(row.resolveCondition, translate),
+        title: row.title,
+        why: row.why,
+        resolveCondition: row.resolveCondition,
       })),
-    ),
-    resolved: await Promise.all(
-      record.resolved.map(async (row) => ({
+      resolved: record.resolved.map((row) => ({
         issueId: row.issueId,
-        title: await translateFree(row.title, translate),
-        reason: await translateFree(row.reason, translate),
+        title: row.title,
+        reason: row.reason,
       })),
-    ),
-    recommendations: await Promise.all(record.recommendations.map((row) => translateFree(row, translate))),
-    required: await Promise.all(record.required.map((row) => translateFree(row, translate))),
-    userActions: await Promise.all(record.userActions.map((row) => translateFree(row, translate))),
-    userDecisions: await Promise.all(record.userDecisions.map((row) => translateFree(row, translate))),
-    nextActionWhy: staticView.nextActionWhy,
-  };
-  return { view: applyRuCache(record, next), cache: next, translated: true };
+      recommendations: record.recommendations,
+      required: record.required,
+      userActions: record.userActions,
+      userDecisions: record.userDecisions,
+      nextActionWhy: record.nextActionWhy,
+    };
+    const ru = await translatePayload(payload, translate);
+    const next: CachedRuLocalization = {
+      sourceHash: hash,
+      summary: ru.summary,
+      conclusion: ru.conclusion,
+      why: staticView.why,
+      completed: ru.completed,
+      notCompleted: ru.notCompleted,
+      agreed: ru.agreed,
+      implementationNotes: ru.implementationNotes,
+      blockerNotes: ru.blockerNotes,
+      implementationEvidence: ru.implementationEvidence,
+      blockers: ru.blockers,
+      resolved: ru.resolved,
+      recommendations: ru.recommendations,
+      required: ru.required,
+      userActions: ru.userActions,
+      userDecisions: ru.userDecisions,
+      nextActionWhy: ru.nextActionWhy,
+    };
+    return { view: applyRuCache(record, next), cache: next, translated: true };
+  } catch {
+    return { view: staticView, cache: null, translated: false, failed: true };
+  }
 }
 
 export function citationsUnchanged(original: string, localized: string): boolean {

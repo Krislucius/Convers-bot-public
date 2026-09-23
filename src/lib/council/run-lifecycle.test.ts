@@ -16,6 +16,7 @@ import {
 import type { AgentResponse, Completion, ProviderCreds, Task } from "./types.ts";
 import type { EvidencePipelineResult } from "../evidence/pipeline-cache.ts";
 import { indexSelectedRepositories } from "../evidence/repo-index.ts";
+import { operatorRecordJson } from "./operator-record.ts";
 
 const members: CouncilMember[] = ensureMembers([
   { role: "LEAD_REASONER", modelId: "openai/gpt-test", label: "GPT test", family: "openai" },
@@ -119,6 +120,18 @@ const pipeline: EvidencePipelineResult = {
     processedChunks: 0,
   },
   implementation: indexSelectedRepositories({ files: [] }),
+  common: {
+    evidenceSnapshotId: "ev_fixture",
+    packedEvidenceHash: "hash",
+    taskCanonical: "",
+    chatCount: 0,
+    fileCount: 0,
+    coverageStatus: "COMPLETE",
+    sourceStates: [],
+    packedCitations: [],
+    memberContext: "INVARIANTS\nnone",
+    parity: "PASS",
+  },
 };
 
 function completion(agent: string): Completion {
@@ -148,6 +161,7 @@ function synthCompletion(model: string): Completion {
       decision: "keep",
       rationale: "ok",
       dissent: [],
+      operator_record: operatorRecordJson(),
     }),
   };
 }
@@ -525,6 +539,7 @@ describe("council run lifecycle", () => {
                     alternatives: [],
                     evidence: [],
                     risks: [],
+                    operator_record: operatorRecordJson(),
                   }),
                 },
               };
@@ -586,6 +601,7 @@ describe("council run lifecycle", () => {
                     content: "Reconstructed from selected evidence.",
                     evidenceLabels: [],
                   },
+                  operator_record: operatorRecordJson(),
                 }),
               },
             };
@@ -635,6 +651,7 @@ describe("council run lifecycle", () => {
                   decision: "keep",
                   rationale: "ok",
                   dissent: [],
+                  operator_record: operatorRecordJson(),
                 }),
               },
             };
@@ -717,6 +734,7 @@ describe("council run lifecycle", () => {
                   decision: "keep",
                   rationale: "ok",
                   dissent: [],
+                  operator_record: operatorRecordJson(),
                 }),
               },
             };
@@ -764,6 +782,7 @@ describe("council run lifecycle", () => {
                   decision: "keep",
                   rationale: "two reviewers",
                   dissent: [],
+                  operator_record: operatorRecordJson(),
                 }),
               },
             };
@@ -845,6 +864,7 @@ describe("dynamic council membership", () => {
                   decision: "keep",
                   rationale: "ok",
                   dissent: [],
+                  operator_record: operatorRecordJson(),
                 }),
               },
             };
@@ -894,6 +914,7 @@ describe("dynamic council membership", () => {
                   decision: "keep",
                   rationale: "ok",
                   dissent: [],
+                  operator_record: operatorRecordJson(),
                 }),
               },
             };
@@ -957,6 +978,7 @@ describe("dynamic council membership", () => {
                   decision: "keep",
                   rationale: "ok",
                   dissent: [],
+                  operator_record: operatorRecordJson(),
                 }),
               },
             };
@@ -1369,6 +1391,7 @@ describe("verified selected-model preflight", () => {
                   decision: "keep",
                   rationale: "two reviewers",
                   dissent: [],
+                  operator_record: operatorRecordJson(),
                 }),
               },
             };
@@ -1424,6 +1447,7 @@ describe("verified selected-model preflight", () => {
                   decision: "keep",
                   rationale: "two reviewers",
                   dissent: [],
+                  operator_record: operatorRecordJson(),
                 }),
               },
             };
@@ -1518,6 +1542,7 @@ describe("verified selected-model preflight", () => {
                   decision: "keep",
                   rationale: "retry",
                   dissent: [],
+                  operator_record: operatorRecordJson(),
                 }),
               },
             };
@@ -1544,6 +1569,7 @@ describe("verified selected-model preflight", () => {
                   decision: "keep",
                   rationale: "retry",
                   dissent: [],
+                  operator_record: operatorRecordJson(),
                 }),
               },
             };

@@ -6,6 +6,7 @@ import type { CouncilMember } from "./members";
 import type { DiscoverySnapshot } from "./discover";
 import type { NanoGptBillingMode } from "./nano-billing";
 import type { IssueLedger } from "./issues";
+import type { OperatorRecord } from "./operator-record";
 
 export type AgentKey = string;
 
@@ -176,6 +177,12 @@ export type ProjectFile = {
   estimatedTokens: number;
   includeInMemory: boolean;
   createdAt: string;
+  sourceStatus?: "EXTRACTED" | "PARTIAL" | "NO_TEXT" | "FAILED" | null;
+  sourceLanguage?: "ru" | "en" | "mixed" | "unknown" | null;
+  pageCount?: number | null;
+  chunkCount?: number | null;
+  extractionMethod?: string | null;
+  sourceHash?: string | null;
 };
 
 export type Project = {
@@ -253,6 +260,7 @@ export type CouncilResult = {
   unresolvedIssues: string[];
   citations: string[];
   failedAgents: AgentKey[];
+  operatorRecord?: OperatorRecord | null;
 };
 
 export type PacketStatus = "READY" | "HANDED_OFF" | "RESULT_RECORDED" | "REVIEW_OPEN" | "CLOSED";

@@ -8,6 +8,7 @@ import { classifyErrorClass, providerFailure } from "./provider-error.ts";
 import type { Completion, ProviderCreds, Task } from "./types.ts";
 import type { EvidencePipelineResult } from "../evidence/pipeline-cache.ts";
 import { indexSelectedRepositories } from "../evidence/repo-index.ts";
+import { operatorRecordJson } from "./operator-record.ts";
 
 const five = ensureMembers([
   { role: "LEAD_REASONER", modelId: "openai/gpt-a", label: "A", family: "openai" },
@@ -109,6 +110,18 @@ const pipeline: EvidencePipelineResult = {
     processedChunks: 0,
   },
   implementation: indexSelectedRepositories({ files: [] }),
+  common: {
+    evidenceSnapshotId: "ev_fixture",
+    packedEvidenceHash: "hash",
+    taskCanonical: "",
+    chatCount: 0,
+    fileCount: 0,
+    coverageStatus: "COMPLETE",
+    sourceStates: [],
+    packedCitations: [],
+    memberContext: "INVARIANTS\nnone",
+    parity: "PASS",
+  },
 };
 
 function completion(model: string, extras: Partial<Completion> = {}): Completion {
@@ -137,6 +150,7 @@ function artifactJson(ids: string[]) {
     citations: [],
     resolved_issues: [],
     unresolved_issues: [],
+    operator_record: operatorRecordJson(),
     artifact: {
       type: "SPECIFICATION",
       title: "Spec",

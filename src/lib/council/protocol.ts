@@ -29,6 +29,14 @@ import type { CouncilMember } from "./members.ts";
 import { expectedSuccessfulCalls } from "./members.ts";
 import { isSynthesisResponse, roundOfStage } from "./agents.ts";
 import { buildIssueLedger, reconcileVerdict, type GateResult, type IssueLedger } from "./issues.ts";
+import { extractJsonCandidates, stripTrailingCommas } from "./json-schema.ts";
+import {
+  OPERATOR_RECORD_EXAMPLE,
+  OPERATOR_RECORD_PROMPT,
+  operatorRecordSchema,
+  parseOperatorRecord,
+  type OperatorRecord,
+} from "./operator-record.ts";
 
 export const AGENTS: CouncilRole[] = [...DEFAULT_ROLES];
 
@@ -109,8 +117,8 @@ function rosterNote(keys: string[]): string {
 
 export function reviewSynthesisPrompt(keys: AgentKey[] = AGENTS): string {
   return `You are the council synthesizer. Output a single JSON object matching:
-{"status":"APPROVED|PATCH|BLOCKED|USER_DECISION_REQUIRED","review_verdict":"PASS|PATCH|BLOCKED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"",${positionsPrompt(keys)},"issues":[],"proposed_corrections":[],"resolved_issues":[],"unresolved_issues":[],"citations":[]}
-REVIEW: PASS = candidate is acceptable, PATCH = material fix required with no P0, BLOCKED = unresolved P0. Preserve each model position, disagreements, and citations. Substantiated P0 => BLOCKED. Unresolved P1 without P0 => PATCH. P4 never blocks. ${rosterNote(keys)}`;
+{"status":"APPROVED|PATCH|BLOCKED|USER_DECISION_REQUIRED","review_verdict":"PASS|PATCH|BLOCKED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"",${positionsPrompt(keys)},"issues":[],"proposed_corrections":[],"resolved_issues":[],"unresolved_issues":[],"citations":[],${OPERATOR_RECORD_EXAMPLE}}
+REVIEW: PASS = candidate is acceptable, PATCH = material fix required with no P0, BLOCKED = unresolved P0. Preserve each model position, disagreements, and citations. Substantiated P0 => BLOCKED. Unresolved P1 without P0 => PATCH. P4 never blocks. ${OPERATOR_RECORD_PROMPT} ${rosterNote(keys)} Output the JSON object only. No markdown fences. No preamble.`;
 }
 
 export function createSynthesisPrompt(keys: AgentKey[] = AGENTS): string {
@@ -122,14 +130,14 @@ Critical claims should cite evidence.
 Distinguish provenance: EVIDENCED, INFERRED, UNKNOWN, CONFLICTED, HISTORICALLY_ASSERTED, HISTORICALLY_FROZEN.
 
 Output a single JSON object:
-{"status":"APPROVED|BLOCKED|USER_DECISION_REQUIRED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"",${positionsPrompt(keys)},"citations":[],"resolved_issues":[],"unresolved_issues":[],"artifact":{"type":"SPECIFICATION|ARCHITECTURE|PLAN|ADR|PROJECT_STATE|OTHER","title":"","version":"1.0","content":"markdown artifact","evidenceLabels":[{"claim":"","status":"EVIDENCED","citation":"[CHAT:source_id:1]"}]}}
-P4 never blocks. Do not BLOCK only because a candidate or repository was missing. blockers must be substantiated invariant breaks; write [] or ["none"] if empty — never member_id, "none --- none", or per-model attribution. ${rosterNote(keys)}`;
+{"status":"APPROVED|BLOCKED|USER_DECISION_REQUIRED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"",${positionsPrompt(keys)},"citations":[],"resolved_issues":[],"unresolved_issues":[],"artifact":{"type":"SPECIFICATION|ARCHITECTURE|PLAN|ADR|PROJECT_STATE|OTHER","title":"","version":"1.0","content":"markdown artifact","evidenceLabels":[{"claim":"","status":"EVIDENCED","citation":"[CHAT:source_id:1]"}]},${OPERATOR_RECORD_EXAMPLE}}
+P4 never blocks. Do not BLOCK only because a candidate or repository was missing. blockers must be substantiated invariant breaks; write [] or ["none"] if empty — never member_id, "none --- none", or per-model attribution. ${OPERATOR_RECORD_PROMPT} ${rosterNote(keys)} Output the JSON object only. No markdown fences. No preamble.`;
 }
 
 export function decideSynthesisPrompt(keys: AgentKey[] = AGENTS): string {
   return `You are the DECIDE-mode synthesizer. Output a single JSON object:
-{"status":"APPROVED|BLOCKED|USER_DECISION_REQUIRED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"",${positionsPrompt(keys)},"decision":"","alternatives":[],"rationale":"","dissent":[],"evidence":[{"claim":"","status":"EVIDENCED","citation":"[CHAT:source_id:1]"}],"risks":[],"citations":[]}
-Unresolved material disagreement or CONFLICTED evidence => USER_DECISION_REQUIRED. Substantiated P0 => BLOCKED. Unresolved P1 without P0 is not BLOCKED. ${rosterNote(keys)}`;
+{"status":"APPROVED|BLOCKED|USER_DECISION_REQUIRED","consensus":[],"disagreements":[],"blockers":[],"recommendation":"",${positionsPrompt(keys)},"decision":"","alternatives":[],"rationale":"","dissent":[],"evidence":[{"claim":"","status":"EVIDENCED","citation":"[CHAT:source_id:1]"}],"risks":[],"citations":[],${OPERATOR_RECORD_EXAMPLE}}
+Unresolved material disagreement or CONFLICTED evidence => USER_DECISION_REQUIRED. Substantiated P0 => BLOCKED. Unresolved P1 without P0 is not BLOCKED. ${OPERATOR_RECORD_PROMPT} ${rosterNote(keys)} Output the JSON object only. No markdown fences. No preamble.`;
 }
 
 export const SYNTHESIS = reviewSynthesisPrompt();
@@ -139,13 +147,14 @@ export const REVIEW_SYNTHESIS = reviewSynthesisPrompt();
 
 function baseResultProperties(roles: AgentKey[]) {
   return {
-    status: { type: "string", enum: ["APPROVED", "PATCH", "BLOCKED", "USER_DECISION_REQUIRED"] },
+    status: { type: "string", enum: ["APPROVED", "READY_FOR_REVIEW", "PATCH", "BLOCKED", "USER_DECISION_REQUIRED"] },
     consensus: { type: "array", items: { type: "string" } },
     disagreements: { type: "array", items: { type: "string" } },
     blockers: { type: "array", items: { type: "string" } },
     recommendation: { type: "string" },
     agent_positions: agentPositionSchema(roles),
     citations: { type: "array", items: { type: "string" } },
+    operator_record: operatorRecordSchema(),
   };
 }
 
@@ -434,6 +443,7 @@ export type ParsedSynth = {
   resolvedIssues: string[];
   unresolvedIssues: string[];
   citations: string[];
+  operatorRecord: OperatorRecord | null;
 };
 
 function asStringList(value: unknown): string[] {
@@ -486,43 +496,52 @@ export function normalizePositions(
 }
 
 export function parseJson(text: string): ParsedSynth | null {
-  const candidates = [text.trim()];
-  const fence = text.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/);
-  if (fence?.[1]) candidates.unshift(fence[1]);
-  const brace = text.match(/\{[\s\S]*\}/);
-  if (brace) candidates.push(brace[0]);
+  const candidates = extractJsonCandidates(text);
+  if (!candidates.length && text.trim()) candidates.push(text.trim());
   for (const raw of candidates) {
+    let data: unknown = null;
     try {
-      const data = JSON.parse(raw) as Record<string, unknown>;
-      const status = asCouncilStatus(data.status);
-      if (!status) continue;
-      const pos = (data.agent_positions ?? data.agentPositions ?? {}) as Record<string, unknown>;
-      return {
-        status,
-        consensus: asStringList(data.consensus),
-        disagreements: asStringList(data.disagreements),
-        blockers: asStringList(data.blockers),
-        recommendation: String(data.recommendation ?? ""),
-        agent_positions: normalizePositions(pos),
-        decision: data.decision == null || data.decision === "" ? null : String(data.decision),
-        rationale: data.rationale == null || data.rationale === "" ? null : String(data.rationale),
-        dissent: asStringList(data.dissent),
-        artifact: parseSynthesizedArtifact(data.artifact),
-        reviewVerdict: asReviewVerdict(data.review_verdict ?? data.reviewVerdict ?? data.status),
-        alternatives: asStringList(data.alternatives),
-        evidence: parseEvidenceLabels(data.evidence),
-        risks: asStringList(data.risks),
-        issues: asStringList(data.issues),
-        proposedCorrections: asStringList(data.proposed_corrections ?? data.proposedCorrections),
-        resolvedIssues: asStringList(data.resolved_issues ?? data.resolvedIssues),
-        unresolvedIssues: asStringList(data.unresolved_issues ?? data.unresolvedIssues),
-        citations: asStringList(data.citations),
-      };
+      data = JSON.parse(raw);
     } catch {
-      continue;
+      try {
+        data = JSON.parse(stripTrailingCommas(raw));
+      } catch {
+        continue;
+      }
     }
+    if (!data || typeof data !== "object" || Array.isArray(data)) continue;
+    const mapped = mapSynthRecord(data as Record<string, unknown>);
+    if (mapped) return mapped;
   }
   return null;
+}
+
+function mapSynthRecord(data: Record<string, unknown>): ParsedSynth | null {
+  const status = asCouncilStatus(data.status);
+  if (!status) return null;
+  const pos = (data.agent_positions ?? data.agentPositions ?? {}) as Record<string, unknown>;
+  return {
+    status,
+    consensus: asStringList(data.consensus),
+    disagreements: asStringList(data.disagreements),
+    blockers: asStringList(data.blockers),
+    recommendation: String(data.recommendation ?? ""),
+    agent_positions: normalizePositions(pos),
+    decision: data.decision == null || data.decision === "" ? null : String(data.decision),
+    rationale: data.rationale == null || data.rationale === "" ? null : String(data.rationale),
+    dissent: asStringList(data.dissent),
+    artifact: parseSynthesizedArtifact(data.artifact),
+    reviewVerdict: asReviewVerdict(data.review_verdict ?? data.reviewVerdict ?? data.status),
+    alternatives: asStringList(data.alternatives),
+    evidence: parseEvidenceLabels(data.evidence),
+    risks: asStringList(data.risks),
+    issues: asStringList(data.issues),
+    proposedCorrections: asStringList(data.proposed_corrections ?? data.proposedCorrections),
+    resolvedIssues: asStringList(data.resolved_issues ?? data.resolvedIssues),
+    unresolvedIssues: asStringList(data.unresolved_issues ?? data.unresolvedIssues),
+    citations: asStringList(data.citations),
+    operatorRecord: parseOperatorRecord(data.operator_record ?? data.operatorRecord),
+  };
 }
 
 export function applyGate(
@@ -795,6 +814,7 @@ export function completeOutput(
     unresolvedIssues: unresolvedTexts,
     citations,
     failedAgents: extras?.failedAgents ?? [],
+    operatorRecord: parsed.operatorRecord,
   };
   return {
     task: {

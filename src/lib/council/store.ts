@@ -6,6 +6,7 @@ import {
   persistAccountCouncil,
   persistAccountDeleteChat,
   persistAccountDeleteFile,
+  persistAccountDeleteTask,
   persistAccountFile,
   persistAccountManifest,
   persistAccountPacket,
@@ -18,6 +19,13 @@ import type { ChatSource, HistoryMessage } from "@/lib/history/types";
 import type { AccessStatus, ImportStatus } from "@/lib/history/types";
 import { normalizeTaskMode } from "./task-mode";
 import { artifactStatusForReview, reviewVerdictFor } from "./review";
+import { deriveDecisionRecord, type DecisionRecord, type NextAction } from "./decision";
+import {
+  followOnPlan,
+  freezeTexts,
+  type FollowOnPlan,
+  type SpawnFollowOn,
+} from "./follow-on";
 import {
   applyPacketReview,
   handOffPacket,
@@ -38,7 +46,7 @@ import type {
   TaskMode,
   AgentResponse,
 } from "./types";
-import { archiveRuns, ownedResponses, shouldAcceptRunWrite, type CouncilRunSnapshot } from "./run-control";
+import { archiveRuns, ownedResponses, shouldAcceptRunWrite, stopCouncilRun, type CouncilRunSnapshot } from "./run-control";
 import { exclusiveRunState, hasPersistedSynthesis } from "./terminal";
 
 export const LEGACY_STORE_KEY = "conversation-bot:v012";
@@ -139,6 +147,7 @@ function normalizeResult(row: CouncilResult): CouncilResult {
     unresolvedIssues: Array.isArray(row.unresolvedIssues) ? row.unresolvedIssues : [],
     citations: Array.isArray(row.citations) ? row.citations : [],
     failedAgents: Array.isArray(row.failedAgents) ? row.failedAgents : [],
+    operatorRecord: row.operatorRecord ?? null,
   };
 }
 
@@ -626,6 +635,115 @@ export function openImplementationReview(packetId: string): Task | null {
   return task;
 }
 
+export function createFollowOnTask(sourceTaskId: string, plan: SpawnFollowOn): Task | null {
+  const source = memory.tasks.find((row) => row.id === sourceTaskId);
+  if (!source) return null;
+  return createTask({
+    projectId: source.projectId,
+    title: plan.title,
+    prompt: plan.prompt,
+    mode: plan.mode,
+    selectedChatSourceIds: [...source.selectedChatSourceIds],
+    selectedFileIds: [...source.selectedFileIds],
+    requiresHistoricalContext: plan.mode === "CREATE" ? true : source.requiresHistoricalContext,
+    candidateArtifactId: plan.candidateArtifactId,
+    decisionQuestion: plan.decisionQuestion,
+    provider: source.provider ?? undefined,
+    selectedModels: source.selectedModels ?? undefined,
+    originalTask: plan.prompt,
+    canonicalTaskEn: plan.prompt,
+    sourceLanguage: "en",
+    originalTitle: plan.title,
+  });
+}
+
+export function acceptCouncilDecision(taskId: string, recordHint?: DecisionRecord): ContextItem[] {
+  const task = memory.tasks.find((row) => row.id === taskId);
+  if (!task) return [];
+  const result = memory.results.find((row) => row.taskId === taskId) ?? null;
+  const runStatus =
+    task.status === "COMPLETE" || task.status === "FAILED" || task.status === "CANCELLED" ? task.status : "COMPLETE";
+  const record = recordHint ?? deriveDecisionRecord({ mode: task.mode, runStatus, result });
+  if (record.nextAction !== "ACCEPT") return [];
+  const existing = new Set(
+    memory.context
+      .filter((row) => row.projectId === task.projectId && row.kind === "INVARIANT" && row.status === "FROZEN")
+      .map((row) => row.content.trim().toLowerCase()),
+  );
+  const texts = freezeTexts(record, result).filter((text) => !existing.has(text.trim().toLowerCase()));
+  const now = new Date().toISOString();
+  const items: ContextItem[] = texts.map((content) => ({
+    id: nid(),
+    projectId: task.projectId,
+    source: "USER",
+    kind: "INVARIANT",
+    content,
+    status: "FROZEN",
+    createdAt: now,
+  }));
+  const artifactId =
+    task.candidateArtifactId ?? memory.artifacts.find((row) => row.taskId === taskId)?.id ?? null;
+  persist({
+    ...memory,
+    context: [...memory.context, ...items],
+    artifacts: artifactId
+      ? memory.artifacts.map((row) => (row.id === artifactId ? { ...row, status: "APPROVED" as const } : row))
+      : memory.artifacts,
+  });
+  for (const item of items) enqueue(() => persistAccountContext({ data: item }));
+  const artifact = artifactId ? (memory.artifacts.find((row) => row.id === artifactId) ?? null) : null;
+  enqueue(() =>
+    persistAccountCouncil({
+      data: {
+        task,
+        responses: memory.responses.filter((row) => row.taskId === taskId),
+        result,
+        artifact,
+        artifacts: memory.artifacts,
+      },
+    }),
+  );
+  return items;
+}
+
+export type FollowOnResult =
+  | { kind: "SPAWN_TASK"; task: Task }
+  | { kind: "NAVIGATE"; to: "chats" | "files" }
+  | { kind: "ACCEPT"; items: ContextItem[] }
+  | { kind: "NONE" };
+
+export function executeFollowOn(
+  taskId: string,
+  action: NextAction,
+  extras?: { record?: DecisionRecord; artifactId?: string | null },
+): FollowOnResult {
+  const source = memory.tasks.find((row) => row.id === taskId);
+  if (!source) return { kind: "NONE" };
+  const result = memory.results.find((row) => row.taskId === taskId) ?? null;
+  const artifact =
+    memory.artifacts.find((row) => row.taskId === taskId) ??
+    memory.artifacts.find((row) => row.id === source.candidateArtifactId) ??
+    null;
+  const runStatus =
+    source.status === "COMPLETE" || source.status === "FAILED" || source.status === "CANCELLED"
+      ? source.status
+      : "COMPLETE";
+  const record = extras?.record ?? deriveDecisionRecord({ mode: source.mode, runStatus, result });
+  const plan: FollowOnPlan = followOnPlan({
+    nextAction: action,
+    record,
+    source,
+    artifactId: extras?.artifactId ?? artifact?.id ?? null,
+  });
+  if (plan.kind === "SPAWN_TASK") {
+    const task = createFollowOnTask(taskId, plan);
+    return task ? { kind: "SPAWN_TASK", task } : { kind: "NONE" };
+  }
+  if (plan.kind === "NAVIGATE") return plan;
+  if (plan.kind === "ACCEPT") return { kind: "ACCEPT", items: acceptCouncilDecision(taskId, record) };
+  return { kind: "NONE" };
+}
+
 export function markTaskFailed(taskId: string, error: string) {
   persist({
     ...memory,
@@ -783,5 +901,30 @@ export function deleteProjectFile(id: string) {
     })),
   });
   enqueue(() => persistAccountDeleteFile({ data: { fileId: id, tasks: memory.tasks } }));
+}
+
+export function deleteTask(id: string) {
+  stopCouncilRun(id);
+  const removedArtifacts = new Set(
+    memory.artifacts.filter((row) => row.taskId === id).map((row) => row.id),
+  );
+  persist({
+    ...memory,
+    tasks: memory.tasks
+      .filter((row) => row.id !== id)
+      .map((task) =>
+        task.candidateArtifactId && removedArtifacts.has(task.candidateArtifactId)
+          ? { ...task, candidateArtifactId: null }
+          : task,
+      ),
+    responses: memory.responses.filter((row) => row.taskId !== id),
+    results: memory.results.filter((row) => row.taskId !== id),
+    artifacts: memory.artifacts.filter((row) => row.taskId !== id),
+    manifests: memory.manifests.filter((row) => row.taskId !== id),
+    packets: memory.packets
+      .filter((row) => row.taskId !== id)
+      .map((row) => (row.reviewTaskId === id ? { ...row, reviewTaskId: null } : row)),
+  });
+  enqueue(() => persistAccountDeleteTask({ data: { taskId: id } }));
 }
 

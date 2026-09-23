@@ -5,9 +5,9 @@ import { Field, GhostButton, Panel, PrimaryButton } from "@/components/council-u
 import { FileParseError, parseProjectFile, previewExtractedText } from "@/lib/council/files";
 import { nid } from "@/lib/council/protocol";
 import { addProjectFile, deleteProjectFile, setFileIncludeInMemory, useStore } from "@/lib/council/store";
-import type { ProjectFile } from "@/lib/council/types";
 import { formatChars, formatTokens } from "@/lib/history/format";
 import { sourceNeedsReimport } from "@/lib/evidence/pipeline";
+import { stampProjectFile } from "@/lib/evidence/source-state";
 
 export const Route = createFileRoute("/p/$projectId/files")({ component: FilesPage });
 
@@ -31,7 +31,7 @@ function FilesPage() {
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const parsed = await parseProjectFile(bytes, file.name);
-      const row: ProjectFile = {
+      const row = stampProjectFile({
         id: nid(),
         projectId,
         filename: parsed.filename,
@@ -45,7 +45,8 @@ function FilesPage() {
         estimatedTokens: parsed.estimatedTokens,
         includeInMemory,
         createdAt: new Date().toISOString(),
-      };
+        pageCount: parsed.pageCount,
+      });
       addProjectFile(row);
       setFlash(`${parsed.filename} uploaded · ${formatChars(parsed.characterCount)}`);
     } catch (error) {
@@ -114,6 +115,7 @@ function FilesPage() {
                   <p className="m-0 font-medium text-fg">{row.filename}</p>
                   <p className="m-0 mt-1 text-xs tracking-wider text-faint uppercase">
                     {row.kind}
+                    {row.sourceStatus ? ` · ${row.sourceStatus}` : ""}
                     {row.includeInMemory ? " · in memory" : ""}
                     {row.kind === "ZIP" ? ` · ${row.members.length} members` : ""}
                   </p>

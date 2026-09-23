@@ -22,6 +22,7 @@ import { operatorKind, operatorStage, hasTaskVerdict } from "./operator-status.t
 import { t, statusLabel, actionLabel } from "../i18n/catalog.ts";
 import { localizeDecisionRecordStatic } from "../i18n/result-localize.ts";
 import { deriveDecisionRecord } from "./decision.ts";
+import { operatorRecordJson } from "./operator-record.ts";
 import { indexSelectedRepositories } from "../evidence/repo-index.ts";
 
 const members: CouncilMember[] = ensureMembers([
@@ -81,6 +82,7 @@ function synthJson(mode: Task["mode"], extra: Record<string, unknown> = {}) {
     risks: [],
     unresolved_issues: extra.unresolved_issues ?? [],
     resolved_issues: extra.resolved_issues ?? [],
+    operator_record: extra.operator_record ?? operatorRecordJson(),
     ...extra,
   };
   if (mode === "CREATE") {
@@ -192,6 +194,37 @@ describe("lifecycle finalization", () => {
     assert.ok(hasTaskVerdict(done?.output?.result));
     assert.equal(done?.output?.result?.status, "READY_FOR_REVIEW");
     assert.notEqual(done?.output?.result?.status, "APPROVED");
+  });
+
+  it("thinking-wrapped synthesis JSON still reaches COMPLETE", async () => {
+    const store = createMemoryDurableStore();
+    const started = await startDurableRun(store, { userId: "u1", taskId: "task-decide", frozen: frozen() });
+    const wrapped = `<think>plan { "status": "nope" }</think>\n\`\`\`json\n${synthJson("DECIDE")}\n\`\`\`\n`;
+    const rt = runtime(async (opts) => ({
+      ok: true,
+      completion: {
+        ...completion(opts.model, "DECIDE", opts.responseFormat ? "SYNTH" : ""),
+        text: opts.responseFormat ? wrapped : completion(opts.model).text,
+      },
+    }));
+    const done = await driveDurableRun(store, { runId: started.runId, owner: "w1", runtime: rt, maxTicks: 80 });
+    assert.equal(done?.status, "COMPLETE");
+    assert.ok(resultVerdict(done?.output?.result));
+  });
+
+  it("invalid synthesis JSON fails with schema details", async () => {
+    const store = createMemoryDurableStore();
+    const started = await startDurableRun(store, { userId: "u1", taskId: "task-decide", frozen: frozen() });
+    const rt = runtime(async (opts) => ({
+      ok: true,
+      completion: {
+        ...completion(opts.model, "DECIDE", opts.responseFormat ? "SYNTH" : ""),
+        text: opts.responseFormat ? '{ "recommendation": "go" }' : completion(opts.model).text,
+      },
+    }));
+    const done = await driveDurableRun(store, { runId: started.runId, owner: "w1", runtime: rt, maxTicks: 80 });
+    assert.equal(done?.status, "FAILED");
+    assert.match(done?.message ?? "", /JSON schema invalid|\/status/);
   });
 
   it("synthesis fail is FAILED not hanging RUNNING", async () => {

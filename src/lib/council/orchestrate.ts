@@ -16,9 +16,16 @@ import {
   rolesForMode,
   synthesisForMode,
 } from "./protocol.ts";
+import {
+  inspectSynthesis,
+  invalidSynthesisMessage,
+  synthesisRepairPrompt,
+} from "./json-schema.ts";
 import { sanitizeApiKey } from "./api-key.ts";
 import { councilPreflight } from "./task-mode.ts";
 import { CONTEXT_BUDGET_EXCEEDED, coverageBlocksCouncil } from "../evidence/pipeline.ts";
+import { evidenceParity } from "../evidence/common-packet.ts";
+import { scrubSourceContradictions } from "../evidence/source-state.ts";
 import { cachedEvidencePipeline, type EvidencePipelineResult } from "../evidence/pipeline-cache.ts";
 import {
   councilPartial,
@@ -502,7 +509,12 @@ export async function runCouncil(input: {
     if (!pipeline.pack.ok) {
       return precheckOutput(boundTask, CONTEXT_BUDGET_EXCEEDED);
     }
-    const ctx = pipeline.pack.text;
+    const common = pipeline.common;
+    const memberViews = members.map(() => common.memberContext);
+    if (!common || common.parity !== "PASS" || evidenceParity(memberViews) !== "PASS") {
+      return precheckOutput(boundTask, "COMMON_EVIDENCE_PARITY=FAIL");
+    }
+    const ctx = common.memberContext;
     const packedCitations = pipeline.manifest.packedCitations;
     manifest = persistableManifest({
       project: { id: input.project.id, name: input.project.name, description: input.project.description, createdAt: "" },
@@ -512,7 +524,7 @@ export async function runCouncil(input: {
       historyMessages: input.historyMessages ?? [],
       artifacts,
       projectFiles: input.projectFiles ?? [],
-      contextText: ctx,
+      contextText: pipeline.pack.text,
       evidence: pipeline.manifest,
     });
 
@@ -1141,7 +1153,9 @@ export async function runCouncil(input: {
       `CONTEXT MANIFEST HASH ${manifest.hash}`,
       ctx,
       ...aliveMembers.map((member) => {
-        return `ROUND 2 ${member.memberId} ${member.role} (${member.label})\n${round2.find((row) => responseMemberId(row) === member.memberId)?.responseText ?? ""}`;
+        const raw = round2.find((row) => responseMemberId(row) === member.memberId)?.responseText ?? "";
+        const scrubbed = scrubSourceContradictions(raw, common.sourceStates);
+        return `ROUND 2 ${member.memberId} ${member.role} (${member.label})\n${scrubbed.text}`;
       }),
     ].join("\n\n");
 
@@ -1152,6 +1166,19 @@ export async function runCouncil(input: {
     const synthAttempts: AgentResponse[] = [];
     let synth: AgentResponse | null = null;
     let parsed: ReturnType<typeof parseJson> = null;
+    const schemaName = String((synthSpec.schema as { json_schema?: { name?: string } }).json_schema?.name ?? "council_result");
+    const usableSynth = (row: AgentResponse, expectedModelId: string): ReturnType<typeof parseJson> => {
+      if (row.error) return null;
+      const dispatched = row.dispatchedModelId || expectedModelId;
+      if (row.dispatchedModelId && row.dispatchedModelId !== expectedModelId) return null;
+      if (!selectedIds.includes(dispatched)) return null;
+      const inspected = inspectSynthesis(row.responseText, mode, synthSpec.schema);
+      if (!inspected.ok) return null;
+      const json = parseJson(row.responseText);
+      if (!json) return null;
+      if (mode === "CREATE" && !json.artifact) return null;
+      return json;
+    };
     for (let i = 0; i < queue.length; i += 1) {
       const synthMember = queue[i];
       if (!selectedIds.includes(synthMember.modelId)) continue;
@@ -1180,21 +1207,41 @@ export async function runCouncil(input: {
         if (isCancelledSignal(signal)) return finishCancelled();
         continue;
       }
-      if (row.dispatchedModelId && row.dispatchedModelId !== synthMember.modelId) {
-        continue;
+      let json = usableSynth(row, synthMember.modelId);
+      if (!json) {
+        const inspected = inspectSynthesis(row.responseText, mode, synthSpec.schema);
+        emit("SYNTHESIS", "SYNTHESIS", `Synthesis JSON invalid — repairing with ${synthMember.label}.`);
+        const repaired = await ask(
+          synthMember,
+          "SYNTHESIS",
+          synthSpec.prompt,
+          [
+            synthUser,
+            `PREVIOUS SYNTHESIS OUTPUT\n${row.responseText.slice(0, 6000)}`,
+            synthesisRepairPrompt(inspected.issues, schemaName),
+          ].join("\n\n"),
+          synthSpec.max,
+          0,
+          synthSpec.schema,
+          1,
+        );
+        synthAttempts.push(repaired);
+        responses.push(repaired);
+        json = usableSynth(repaired, synthMember.modelId);
       }
-      if (!selectedIds.includes(row.dispatchedModelId || synthMember.modelId)) continue;
-      const json = parseJson(row.responseText);
       if (!json) continue;
-      if (mode === "CREATE" && !json.artifact) continue;
-      synth = row;
+      synth = synthAttempts.at(-1) ?? row;
       parsed = json;
       break;
     }
     emit("SYNTHESIS", "SYNTHESIS", synth ? "Synthesis complete." : "Synthesis failed.", { responses: [...responses] });
     if (!synth || !parsed) {
       const details = synthAttempts
-        .map((row) => row.error || "invalid synthesis response")
+        .map((row) => {
+          if (row.error) return row.error;
+          const inspected = inspectSynthesis(row.responseText, mode, synthSpec.schema);
+          return inspected.ok ? "invalid synthesis response" : invalidSynthesisMessage(inspected.issues);
+        })
         .join(" ");
       return fail(
         `Synthesis failed after ${synthAttempts.length} selected survivor attempt(s). ${details}`.trim(),

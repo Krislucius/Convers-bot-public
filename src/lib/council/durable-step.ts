@@ -16,8 +16,15 @@ import {
   rolesForMode,
   synthesisForMode,
 } from "./protocol.ts";
+import {
+  inspectSynthesis,
+  invalidSynthesisMessage,
+  synthesisRepairPrompt,
+} from "./json-schema.ts";
 import { councilPreflight } from "./task-mode.ts";
 import { CONTEXT_BUDGET_EXCEEDED, coverageBlocksCouncil } from "../evidence/pipeline.ts";
+import { evidenceParity } from "../evidence/common-packet.ts";
+import { scrubSourceContradictions } from "../evidence/source-state.ts";
 import { cachedEvidencePipeline } from "../evidence/pipeline-cache.ts";
 import {
   councilPartial,
@@ -516,7 +523,17 @@ async function prepare(row: DurableRunRow, runtime: CouncilRuntime, now: () => s
     row.output = precheckOutput(boundTask, CONTEXT_BUDGET_EXCEEDED);
     return failRow(row, CONTEXT_BUDGET_EXCEEDED, "PREPARING", now(), false);
   }
-  row.cursor.packedText = pipeline.pack.text;
+  const common = pipeline.common;
+  const memberViews = members.map(() => common.memberContext);
+  if (common.parity !== "PASS" || evidenceParity(memberViews) !== "PASS") {
+    const message = "COMMON_EVIDENCE_PARITY=FAIL";
+    row.output = precheckOutput(boundTask, message);
+    return failRow(row, message, "PREPARING", now(), false);
+  }
+  row.cursor.packedText = common.memberContext;
+  row.cursor.evidenceSnapshotId = common.evidenceSnapshotId;
+  row.cursor.packedEvidenceHash = common.packedEvidenceHash;
+  row.cursor.sourceStates = common.sourceStates;
   row.cursor.manifest = persistableManifest({
     project: { id: frozen.project.id, name: frozen.project.name, description: frozen.project.description, createdAt: "" },
     task: boundTask,
@@ -972,7 +989,8 @@ function finalize(row: DurableRunRow, now: string): DurableRunRow {
   }
   const parsed = parseJson(synth.responseText);
   if (!parsed || (mode === "CREATE" && !parsed.artifact)) {
-    return failRow(row, "Synthesis failed: invalid synthesis response.", "SYNTHESIS", now, true);
+    const inspected = inspectSynthesis(synth.responseText, mode, synthesisForMode(mode, row.members).schema);
+    return failRow(row, invalidSynthesisMessage(inspected.issues), "SYNTHESIS", now, true);
   }
   try {
     const gated = applyGate(parsed, survivingResponses([...round1, ...round2]), mode);
@@ -1210,15 +1228,30 @@ export async function advanceDurableStep(input: {
     `CONTEXT MANIFEST HASH ${row.cursor.manifest?.hash ?? ""}`,
     ctx,
     ...aliveMembers.map((member) => {
-      return `ROUND 2 ${member.memberId} ${member.role} (${member.label})\n${round2.find((item) => responseMemberId(item) === member.memberId)?.responseText ?? ""}`;
+      const raw = round2.find((item) => responseMemberId(item) === member.memberId)?.responseText ?? "";
+      const scrubbed = scrubSourceContradictions(raw, row.cursor.sourceStates ?? []);
+      return `ROUND 2 ${member.memberId} ${member.role} (${member.label})\n${scrubbed.text}`;
     }),
   ].join("\n\n");
+  const mode = row.frozenInput.task.mode;
+  const repairing = (row.cursor.synthRepairs ?? 0) > 0;
+  const lastSynth = roundRows(row, "SYNTHESIS")
+    .filter((item) => responseMemberId(item) === synthMember.memberId)
+    .at(-1);
+  const repairIssues = lastSynth ? inspectSynthesis(lastSynth.responseText, mode, synthSpec.schema).issues : [];
+  const user = repairing && lastSynth
+    ? [
+        synthUser,
+        `PREVIOUS SYNTHESIS OUTPUT\n${lastSynth.responseText.slice(0, 6000)}`,
+        synthesisRepairPrompt(repairIssues, String((synthSpec.schema as { json_schema?: { name?: string } }).json_schema?.name ?? "council_result")),
+      ].join("\n\n")
+    : synthUser;
   const response = await askMember({
     row,
     member: synthMember,
     callStage: "SYNTHESIS",
     system: synthSpec.prompt,
-    user: synthUser,
+    user,
     maxTokens: synthSpec.max,
     temperature: 0,
     responseFormat: synthSpec.schema,
@@ -1227,23 +1260,46 @@ export async function advanceDurableStep(input: {
     now,
     maxAttempts: per,
   });
-  row.responses.push(response);
-  row.cursor.completedKeys.push(completedKey("SYNTHESIS", `${synthMember.memberId}:${row.cursor.synthIndex}`));
-  row.cursor.synthIndex += 1;
-  if (!response.error) {
-    const json = parseJson(response.responseText);
-    const usable =
-      json &&
-      (!response.dispatchedModelId || response.dispatchedModelId === synthMember.modelId) &&
-      selectedIds.includes(response.dispatchedModelId || synthMember.modelId) &&
-      (row.frozenInput.task.mode !== "CREATE" || Boolean(json.artifact));
-    if (usable) {
-      return { row: finalize(row, now()), didProviderCall: true, terminal: true };
-    }
+  const inspected = response.error ? null : inspectSynthesis(response.responseText, mode, synthSpec.schema);
+  const json = response.error ? null : parseJson(response.responseText);
+  const dispatchedOk =
+    !response.dispatchedModelId ||
+    (response.dispatchedModelId === synthMember.modelId && selectedIds.includes(response.dispatchedModelId || synthMember.modelId));
+  const usable =
+    !response.error &&
+    dispatchedOk &&
+    Boolean(inspected?.ok) &&
+    Boolean(json) &&
+    (mode !== "CREATE" || Boolean(json?.artifact));
+  const recorded = usable
+    ? response
+    : response.error
+      ? response
+      : { ...response, error: invalidSynthesisMessage(inspected?.issues ?? [{ path: "/", message: "invalid synthesis response" }]) };
+  row.responses.push(recorded);
+  row.cursor.completedKeys.push(
+    completedKey("SYNTHESIS", `${synthMember.memberId}:${row.cursor.synthIndex}:r${row.cursor.synthRepairs ?? 0}`),
+  );
+  if (usable) {
+    row.cursor.synthIndex += 1;
+    row.cursor.synthRepairs = 0;
+    return { row: finalize(row, now()), didProviderCall: true, terminal: true };
   }
   if (row.cancelRequested || isCancelledSignal(input.signal) || response.error === "Council run stopped.") {
     return { row: cancelRow(row, now()), didProviderCall: true, terminal: true };
   }
+  if (!response.error && (row.cursor.synthRepairs ?? 0) < 1) {
+    row.cursor.synthRepairs = (row.cursor.synthRepairs ?? 0) + 1;
+    patchSnapshot(row, {
+      status: "SYNTHESIS",
+      stage: "SYNTHESIS",
+      message: `Synthesis JSON invalid — repairing with ${synthMember.label}.`,
+      now: now(),
+    });
+    return { row, didProviderCall: true, terminal: false };
+  }
+  row.cursor.synthRepairs = 0;
+  row.cursor.synthIndex += 1;
   if (row.cursor.synthIndex >= queue.length) {
     return { row: finalize(row, now()), didProviderCall: true, terminal: true };
   }

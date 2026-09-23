@@ -61,7 +61,7 @@ FUNCTION BLOCKERS: none.
 
 ### BUILD WORKFLOW
 
-- Production Publish is a user action; git `CB-BUILD-20260916-012` is not `PROD_SYNC` until that host serves this `BUILD_ID`.
+- Release `CB-BUILD-20260923-013`. One immutable Common Evidence Packet per run (`evidence_snapshot_id`, `COMMON_EVIDENCE_PARITY`). Council Blueprint is independent of provider; a task may switch NanoGPT / OpenRouter / OpenRusRouter before Run without changing roles or evidence. Completed runs export the current UI language as Markdown and canonical English as technical JSON. PROD_SYNC when https://cb-gptgrokclaud.grok.me serves this `BUILD_ID`.
 - Provider API secrets are encrypted at rest per signed-in account. Save probes the stored credential, not the textbox. Clear Key drops only that provider's secret and its discovery state. CONNECTED requires a stored credential.
 - CREATE safety gate: reconstructed `P1_ARCHITECTURE` notes are not unresolved defects. Member-prefixed `none` / `none --- none` attribution is not a P0. Final verdict is reconciled from the unresolved issue ledger: unresolved P0 → BLOCKED; CREATE with no P0 → READY_FOR_REVIEW; unresolved P1 without P0 → PATCH (REVIEW); operator choice → USER_DECISION_REQUIRED. CREATE never maps to APPROVED. Resolved/rejected findings never appear as open blockers. The default completed-run view is the Decision Record. COMPLETE / FAILED / CANCELLED are mutually exclusive run states; synthesis persisted as COMPLETE cannot be overwritten to CANCELLED.
 - The Council sweeper cron is declared once in `vercel.json`. Post-build must not also inject the same path+schedule into `.vercel/output/config.json` (Grok/Vercel merge both and reject the duplicate).

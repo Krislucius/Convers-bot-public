@@ -20,6 +20,7 @@ export type ParsedProjectFile = {
   sizeBytes: number;
   characterCount: number;
   estimatedTokens: number;
+  pageCount: number | null;
 };
 
 export class FileParseError extends Error {
@@ -199,6 +200,32 @@ function pdfUnescape(value: string): string {
     .replace(/\\\\/g, "\\");
 }
 
+function decodePdfHex(hex: string): string {
+  const clean = hex.replace(/\s+/g, "");
+  if (clean.length < 2 || clean.length % 2 !== 0) return "";
+  const bytes: number[] = [];
+  for (let i = 0; i < clean.length; i += 2) {
+    const value = Number.parseInt(clean.slice(i, i + 2), 16);
+    if (Number.isNaN(value)) return "";
+    bytes.push(value);
+  }
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+    let out = "";
+    for (let i = 2; i + 1 < bytes.length; i += 2) out += String.fromCharCode((bytes[i]! << 8) | bytes[i + 1]!);
+    return out;
+  }
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) {
+    let out = "";
+    for (let i = 2; i + 1 < bytes.length; i += 2) out += String.fromCharCode(bytes[i]! | (bytes[i + 1]! << 8));
+    return out;
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: false }).decode(Uint8Array.from(bytes));
+  } catch {
+    return "";
+  }
+}
+
 function extractStringsFromPdfStream(body: string): string[] {
   const out: string[] = [];
   const tj = body.matchAll(/\((?:\\.|[^\\)])*\)\s*Tj/g);
@@ -211,7 +238,16 @@ function extractStringsFromPdfStream(body: string): string[] {
     const parts = [...(match[1] ?? "").matchAll(/\((?:\\.|[^\\)])*\)/g)].map((row) => pdfUnescape(row[0].slice(1, -1)));
     if (parts.length) out.push(parts.join(""));
   }
+  const hex = body.matchAll(/<([0-9A-Fa-f\s]+)>\s*Tj/g);
+  for (const match of hex) {
+    const text = decodePdfHex(match[1] ?? "");
+    if (text.trim()) out.push(text);
+  }
   return out;
+}
+
+export function countPdfPages(latin: string): number {
+  return (latin.match(/\/Type\s*\/Page(?!s)/g) ?? []).length;
 }
 
 export function extractPdfText(bytes: Uint8Array): string {
@@ -255,11 +291,13 @@ export async function parseProjectFile(bytes: Uint8Array, filename: string): Pro
   let members: string[] = [];
   let sourceTree: Array<{ path: string; text: string; bytes: number }> = [];
   let notes = "Extracted text is untrusted evidence.";
+  let pageCount: number | null = null;
   if (kind === "MD") {
     extractedText = decodeUtf8(bytes);
     notes = "Markdown stored as untrusted evidence. It is not a frozen invariant.";
   } else if (kind === "PDF") {
     extractedText = await extractPdf(bytes);
+    pageCount = countPdfPages(new TextDecoder("latin1").decode(bytes)) || null;
     notes = "PDF text extracted in memory only. The file is never executed.";
   } else {
     const zip = await parseZip(bytes);
@@ -278,5 +316,6 @@ export async function parseProjectFile(bytes: Uint8Array, filename: string): Pro
     sizeBytes: bytes.byteLength,
     characterCount: extractedText.length,
     estimatedTokens: Math.ceil(extractedText.length / 4),
+    pageCount,
   };
 }

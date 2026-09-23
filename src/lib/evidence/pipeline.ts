@@ -7,6 +7,7 @@ import { extractChunks, memoryCache } from "./extract.ts";
 import { cacheFingerprint, extractorFingerprint } from "./hash.ts";
 import { packEvidence } from "./pack.ts";
 import { indexSelectedRepositories, type ImplementationReport } from "./repo-index.ts";
+import { buildCommonEvidencePacket, type CommonEvidencePacket } from "./common-packet.ts";
 import { CHUNKER_VERSION, COVERAGE_COMPLETE_MEANING, OMITTED_PERSIST_MAX, PACKER_VERSION } from "./types.ts";
 import type {
   CacheStore,
@@ -118,6 +119,7 @@ export function runEvidencePipeline(input: {
   pack: PackResult;
   manifest: EvidenceManifest;
   implementation: ImplementationReport;
+  common: CommonEvidencePacket;
 } {
   const cache = input.cache ?? memoryCache();
   const chats = resolveChatsForRun(input.project.id, input.task.selectedChatSourceIds, input.chatSources);
@@ -269,8 +271,25 @@ export function runEvidencePipeline(input: {
     repositoryCitations: implementation.citations,
     repositoryConflict: implementation.conflict,
   };
+  const chunkCountByFile: Record<string, number> = {};
+  for (const chunk of chunks) {
+    if (chunk.sourceKind !== "FILE") continue;
+    chunkCountByFile[chunk.sourceId] = (chunkCountByFile[chunk.sourceId] ?? 0) + 1;
+  }
+  const common = buildCommonEvidencePacket({
+    task: input.task,
+    packText: pack.text,
+    chatCount: chats.length,
+    files,
+    chunkCountByFile,
+    coverageStatus: coverage.status,
+    packedCitations: manifest.packedCitations,
+  });
+  manifest.evidenceSnapshotId = common.evidenceSnapshotId;
+  manifest.packedEvidenceHash = common.packedEvidenceHash;
+  manifest.commonEvidenceParity = common.parity;
 
-  return { chunks, entries, coverage, pack, manifest, implementation };
+  return { chunks, entries, coverage, pack, manifest, implementation, common };
 }
 
 export function coverageBlocksCouncil(coverage: CoverageReport): string | null {

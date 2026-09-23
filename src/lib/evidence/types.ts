@@ -132,4 +132,7 @@ export type EvidenceManifest = {
   implementationClaims?: Array<{ claim: string; citation: string }>;
   repositoryCitations?: string[];
   repositoryConflict?: "REPOSITORY_SOURCE_CONFLICT" | null;
+  evidenceSnapshotId?: string;
+  packedEvidenceHash?: string;
+  commonEvidenceParity?: "PASS" | "FAIL";
 };

@@ -12,6 +12,7 @@ import type { ProviderId } from "./types";
 import type { ChatSource, HistoryMessage } from "@/lib/history/types";
 import type { FileKind } from "./files";
 import { normalizeNanoGptBilling, type NanoGptBillingMode } from "./nano-billing";
+import { parseOperatorRecord } from "./operator-record";
 import {
   parseCredentialBag,
   stampSelectedValidation,
@@ -594,6 +595,10 @@ function mapResult(row: Record<string, unknown>): CouncilResult {
           ? null
           : asString(row.override_reason),
     issueLedger: asJson(asJson(row.structured, {} as Record<string, unknown>).issueLedger, null),
+    operatorRecord: parseOperatorRecord(
+      asJson(row.structured, {} as Record<string, unknown>).operatorRecord ??
+        asJson(row.structured, {} as Record<string, unknown>).operator_record,
+    ),
   };
 }
 
@@ -621,6 +626,8 @@ function mapChat(row: Record<string, unknown>): ChatSource {
 }
 
 function mapFile(row: Record<string, unknown>): ProjectFile {
+  const status = asString(row.source_status);
+  const language = asString(row.source_language);
   return {
     id: asString(row.id),
     projectId: asString(row.project_id),
@@ -635,6 +642,13 @@ function mapFile(row: Record<string, unknown>): ProjectFile {
     estimatedTokens: asNum(row.estimated_tokens) ?? 0,
     includeInMemory: asBool(row.include_in_memory),
     createdAt: asString(row.created_at),
+    sourceStatus:
+      status === "EXTRACTED" || status === "PARTIAL" || status === "NO_TEXT" || status === "FAILED" ? status : null,
+    sourceLanguage: language === "ru" || language === "en" || language === "mixed" || language === "unknown" ? language : null,
+    pageCount: asNum(row.page_count),
+    chunkCount: asNum(row.chunk_count),
+    extractionMethod: row.extraction_method == null ? null : asString(row.extraction_method),
+    sourceHash: row.source_hash == null ? null : asString(row.source_hash),
   };
 }
 
@@ -933,6 +947,7 @@ async function insertResultRow(userId: string, result: CouncilResult) {
         reconciledStatus: result.reconciledStatus ?? result.finalEnforcedStatus,
         gateReason: result.gateReason ?? result.overrideReason,
         issueLedger: result.issueLedger ?? null,
+        operatorRecord: result.operatorRecord ?? null,
       }) ?? "{}"}::jsonb
     )
     on conflict (task_id) do update set
@@ -1227,11 +1242,14 @@ async function insertFileRow(userId: string, file: ProjectFile) {
   await sql`
     insert into project_files (
       id, user_id, project_id, filename, kind, extracted_text, members, source_tree, notes, size_bytes,
-      character_count, estimated_tokens, include_in_memory, created_at
+      character_count, estimated_tokens, include_in_memory, created_at,
+      source_status, source_language, page_count, chunk_count, extraction_method, source_hash
     ) values (
       ${file.id}, ${userId}, ${file.projectId}, ${file.filename}, ${file.kind}, ${file.extractedText},
       ${jsonParam(file.members) ?? "[]"}::jsonb, ${jsonParam(sourceTree)}::jsonb, ${file.notes}, ${file.sizeBytes}, ${file.characterCount},
-      ${file.estimatedTokens}, ${file.includeInMemory}, ${file.createdAt}
+      ${file.estimatedTokens}, ${file.includeInMemory}, ${file.createdAt},
+      ${file.sourceStatus ?? null}, ${file.sourceLanguage ?? null}, ${file.pageCount ?? null}, ${file.chunkCount ?? null},
+      ${file.extractionMethod ?? null}, ${file.sourceHash ?? null}
     )
     on conflict (id) do update set
       filename = excluded.filename,
@@ -1243,7 +1261,13 @@ async function insertFileRow(userId: string, file: ProjectFile) {
       size_bytes = excluded.size_bytes,
       character_count = excluded.character_count,
       estimated_tokens = excluded.estimated_tokens,
-      include_in_memory = excluded.include_in_memory
+      include_in_memory = excluded.include_in_memory,
+      source_status = excluded.source_status,
+      source_language = excluded.source_language,
+      page_count = excluded.page_count,
+      chunk_count = excluded.chunk_count,
+      extraction_method = excluded.extraction_method,
+      source_hash = excluded.source_hash
     where project_files.user_id = ${userId}
   `;
 }
@@ -1257,6 +1281,58 @@ export async function persistDeleteFile(userId: string, fileId: string, tasks: T
   const sql = await getSql();
   await sql`delete from project_files where user_id = ${userId} and id = ${fileId}`;
   for (const task of tasks) await insertTaskRow(userId, task);
+  await durable();
+}
+
+async function ignoreMissingTable(err: unknown): Promise<boolean> {
+  const message = err instanceof Error ? err.message : String(err);
+  return /does not exist|undefined_table/i.test(message);
+}
+
+export async function persistDeleteTask(userId: string, taskId: string) {
+  try {
+    const { stopDurableRun } = await import("./durable-engine.ts");
+    const { createSqlDurableStore } = await import("./durable-store.server.ts");
+    await stopDurableRun(createSqlDurableStore(), { userId, taskId });
+  } catch (err) {
+    if (!(await ignoreMissingTable(err))) {
+      console.warn("[account] stop council before delete failed", taskId, err);
+    }
+  }
+
+  const sql = await getSql();
+  await sql`
+    update tasks
+    set candidate_artifact_id = null
+    where user_id = ${userId}
+      and candidate_artifact_id in (
+        select id from artifacts where user_id = ${userId} and task_id = ${taskId}
+      )
+  `;
+  try {
+    await sql`
+      update implementation_packets
+      set review_task_id = null
+      where user_id = ${userId} and review_task_id = ${taskId}
+    `;
+  } catch (err) {
+    if (!(await ignoreMissingTable(err))) throw err;
+  }
+  await sql`delete from agent_responses where user_id = ${userId} and task_id = ${taskId}`;
+  await sql`delete from council_results where user_id = ${userId} and task_id = ${taskId}`;
+  await sql`delete from context_manifests where user_id = ${userId} and task_id = ${taskId}`;
+  try {
+    await sql`delete from implementation_packets where user_id = ${userId} and task_id = ${taskId}`;
+  } catch (err) {
+    if (!(await ignoreMissingTable(err))) throw err;
+  }
+  await sql`delete from artifacts where user_id = ${userId} and task_id = ${taskId}`;
+  try {
+    await sql`delete from council_runs where user_id = ${userId} and task_id = ${taskId}`;
+  } catch (err) {
+    if (!(await ignoreMissingTable(err))) throw err;
+  }
+  await sql`delete from tasks where user_id = ${userId} and id = ${taskId}`;
   await durable();
 }
 
