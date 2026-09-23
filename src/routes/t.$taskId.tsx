@@ -17,6 +17,7 @@ import { isStaleDisconnectError } from "@/lib/council/orchestrate";
 import { providerName, slotFor } from "@/lib/council/providers";
 import { billingLabel } from "@/lib/council/nano-billing";
 import { attemptLimit, memberLabel } from "@/lib/council/members";
+import { createSoloThreadFn } from "@/lib/solo/api";
 import {
   applyCouncilOutput,
   executeFollowOn,
@@ -27,6 +28,7 @@ import {
   rememberCouncilProgress,
   rememberManifest,
   rememberResponses,
+  setProjectWorkMode,
   useStore,
 } from "@/lib/council/store";
 import { getCouncilRun, restartCouncilRunFn, startCouncilRun, stopCouncilRunFn, type StartCouncilInput } from "@/lib/council/durable";
@@ -86,6 +88,7 @@ function TaskPage() {
   const [confirmRestart, setConfirmRestart] = useState(false);
   const [narrative, setNarrative] = useState<LocalizedNarrative | null>(null);
   const [followBusy, setFollowBusy] = useState(false);
+  const [soloBusy, setSoloBusy] = useState(false);
   const [acceptedCount, setAcceptedCount] = useState<number | null>(null);
   const runGen = useRef(0);
   const applyPublicRef = useRef<(run: DurableRunPublic) => void>(() => undefined);
@@ -449,6 +452,42 @@ function TaskPage() {
     }
   }
 
+  async function onDiscuss() {
+    if (soloBusy || !project || !task) return;
+    const provider = task.diagnostics?.run?.provider ?? task.provider ?? config.provider;
+    const model = members.find((row) => row.modelId)?.modelId ?? "";
+    if (!model) {
+      setMsg(t("solo.pickModel"));
+      return;
+    }
+    setSoloBusy(true);
+    try {
+      const refs = [
+        ...decision.blockers.flatMap((row) => row.evidenceRefs),
+        ...decision.recommendations,
+      ].slice(0, 12);
+      const created = await createSoloThreadFn({
+        data: {
+          projectId: project.id,
+          provider,
+          modelId: model,
+          modelLabel: members.find((row) => row.modelId === model)?.label,
+          seed: {
+            decision: [decision.summary, decision.conclusion, decision.why].filter(Boolean).join("\n\n"),
+            artifact: artifact?.content ?? null,
+            evidenceRefs: refs,
+          },
+        },
+      });
+      setProjectWorkMode(project.id, "SOLO");
+      void navigate({ to: "/p/$projectId/solo", params: { projectId: project.id }, search: { thread: created.id } });
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : "SOLO_FAILED");
+    } finally {
+      setSoloBusy(false);
+    }
+  }
+
   return (
     <Page>
       <Crumb>
@@ -573,6 +612,9 @@ function TaskPage() {
           ) : null}
           <GhostButton type="button" onClick={onRestart}>
             {t("task.restart")}
+          </GhostButton>
+          <GhostButton type="button" disabled={soloBusy} onClick={() => void onDiscuss()}>
+            {t("solo.fromCouncil")}
           </GhostButton>
         </DecisionRecordPanel>
       ) : null}

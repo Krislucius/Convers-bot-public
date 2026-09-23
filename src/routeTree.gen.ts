@@ -26,6 +26,7 @@ import { Route as PProjectIdDecisionsRouteImport } from './routes/p.$projectId.d
 import { Route as PProjectIdFilesRouteImport } from './routes/p.$projectId.files'
 import { Route as PProjectIdInvariantsRouteImport } from './routes/p.$projectId.invariants'
 import { Route as PProjectIdMemoryRouteImport } from './routes/p.$projectId.memory'
+import { Route as PProjectIdSoloRouteImport } from './routes/p.$projectId.solo'
 import { Route as PProjectIdChatsIndexRouteImport } from './routes/p.$projectId.chats.index'
 import { Route as PProjectIdChatsChatIdRouteImport } from './routes/p.$projectId.chats.$chatId'
 import { Route as PProjectIdChatsPasteRouteImport } from './routes/p.$projectId.chats.paste'
@@ -117,6 +118,11 @@ const PProjectIdMemoryRoute = PProjectIdMemoryRouteImport.update({
   path: '/memory',
   getParentRoute: () => PProjectIdRoute,
 } as any)
+const PProjectIdSoloRoute = PProjectIdSoloRouteImport.update({
+  id: '/solo',
+  path: '/solo',
+  getParentRoute: () => PProjectIdRoute,
+} as any)
 const PProjectIdChatsIndexRoute = PProjectIdChatsIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -160,6 +166,7 @@ export interface FileRoutesByFullPath {
   '/p/$projectId/files': typeof PProjectIdFilesRoute
   '/p/$projectId/invariants': typeof PProjectIdInvariantsRoute
   '/p/$projectId/memory': typeof PProjectIdMemoryRoute
+  '/p/$projectId/solo': typeof PProjectIdSoloRoute
   '/p/$projectId/': typeof PProjectIdIndexRoute
   '/p/$projectId/chats/$chatId': typeof PProjectIdChatsChatIdRoute
   '/p/$projectId/chats/paste': typeof PProjectIdChatsPasteRoute
@@ -182,6 +189,7 @@ export interface FileRoutesByTo {
   '/p/$projectId/files': typeof PProjectIdFilesRoute
   '/p/$projectId/invariants': typeof PProjectIdInvariantsRoute
   '/p/$projectId/memory': typeof PProjectIdMemoryRoute
+  '/p/$projectId/solo': typeof PProjectIdSoloRoute
   '/p/$projectId': typeof PProjectIdIndexRoute
   '/p/$projectId/chats/$chatId': typeof PProjectIdChatsChatIdRoute
   '/p/$projectId/chats/paste': typeof PProjectIdChatsPasteRoute
@@ -207,6 +215,7 @@ export interface FileRoutesById {
   '/p/$projectId/files': typeof PProjectIdFilesRoute
   '/p/$projectId/invariants': typeof PProjectIdInvariantsRoute
   '/p/$projectId/memory': typeof PProjectIdMemoryRoute
+  '/p/$projectId/solo': typeof PProjectIdSoloRoute
   '/p/$projectId/': typeof PProjectIdIndexRoute
   '/p/$projectId/chats/$chatId': typeof PProjectIdChatsChatIdRoute
   '/p/$projectId/chats/paste': typeof PProjectIdChatsPasteRoute
@@ -233,6 +242,7 @@ export interface FileRouteTypes {
     | '/p/$projectId/files'
     | '/p/$projectId/invariants'
     | '/p/$projectId/memory'
+    | '/p/$projectId/solo'
     | '/p/$projectId/'
     | '/p/$projectId/chats/$chatId'
     | '/p/$projectId/chats/paste'
@@ -255,6 +265,7 @@ export interface FileRouteTypes {
     | '/p/$projectId/files'
     | '/p/$projectId/invariants'
     | '/p/$projectId/memory'
+    | '/p/$projectId/solo'
     | '/p/$projectId'
     | '/p/$projectId/chats/$chatId'
     | '/p/$projectId/chats/paste'
@@ -279,6 +290,7 @@ export interface FileRouteTypes {
     | '/p/$projectId/files'
     | '/p/$projectId/invariants'
     | '/p/$projectId/memory'
+    | '/p/$projectId/solo'
     | '/p/$projectId/'
     | '/p/$projectId/chats/$chatId'
     | '/p/$projectId/chats/paste'
@@ -422,6 +434,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PProjectIdMemoryRouteImport
       parentRoute: typeof PProjectIdRoute
     }
+    '/p/$projectId/solo': {
+      id: '/p/$projectId/solo'
+      path: '/solo'
+      fullPath: '/p/$projectId/solo'
+      preLoaderRoute: typeof PProjectIdSoloRouteImport
+      parentRoute: typeof PProjectIdRoute
+    }
     '/p/$projectId/chats/': {
       id: '/p/$projectId/chats/'
       path: '/'
@@ -486,6 +505,7 @@ interface PProjectIdRouteChildren {
   PProjectIdFilesRoute: typeof PProjectIdFilesRoute
   PProjectIdInvariantsRoute: typeof PProjectIdInvariantsRoute
   PProjectIdMemoryRoute: typeof PProjectIdMemoryRoute
+  PProjectIdSoloRoute: typeof PProjectIdSoloRoute
   PProjectIdIndexRoute: typeof PProjectIdIndexRoute
 }
 
@@ -495,6 +515,7 @@ const PProjectIdRouteChildren: PProjectIdRouteChildren = {
   PProjectIdFilesRoute: PProjectIdFilesRoute,
   PProjectIdInvariantsRoute: PProjectIdInvariantsRoute,
   PProjectIdMemoryRoute: PProjectIdMemoryRoute,
+  PProjectIdSoloRoute: PProjectIdSoloRoute,
   PProjectIdIndexRoute: PProjectIdIndexRoute,
 }
 

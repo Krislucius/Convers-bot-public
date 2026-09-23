@@ -80,6 +80,7 @@ Applied migrations (basename order):
 15. `0015_i18n.sql` — `account_settings.ui_language` (default `en`); `tasks.original_task`, `canonical_task_en`, `source_language`, `original_title`; `council_results.localized_ru` display cache. Canonical Council artifacts stay English.
 16. `0016_repository_index.sql` — `project_files.source_tree` for authoritative repository snapshots. Implementation classification is not packed into the Council token budget.
 17. `0017_evidence_snapshot.sql` — persisted file `SOURCE_STATUS` (language, pages, chunks, extraction method, source hash). The Common Evidence Packet id and packed hash live on the context-manifest payload, not a second evidence table.
+18. `0018_solo_mode.sql` — `projects.work_mode` plus `solo_threads`, `solo_messages`, and `solo_usage`. Solo is a separate one-model conversation. It does not enter Council protocol, roles, rounds, synthesis, or Council call ceilings. `SOLO_CALLS` and `COUNCIL_CALLS` are counted apart. A Solo transcript handed to Council is evidence (`SOLO_THREAD`), not a canonical decision. A completed Council result can seed a Solo thread without rerunning Council.
 
 `migrations/auth/` is a template copy. Appliers do not descend into subdirectories.
 

@@ -458,6 +458,7 @@ function mapProject(row: Record<string, unknown>): Project {
     name: asString(row.name),
     description: asString(row.description),
     createdAt: asString(row.created_at),
+    workMode: asString(row.work_mode) === "SOLO" ? "SOLO" : "COUNCIL",
   };
 }
 
@@ -824,11 +825,12 @@ export async function loadHydrate(userId: string): Promise<{ snapshot: StoreShap
 async function insertProjectRow(userId: string, project: Project) {
   const sql = await getSql();
   await sql`
-    insert into projects (id, user_id, name, description, created_at)
-    values (${project.id}, ${userId}, ${project.name}, ${project.description}, ${project.createdAt})
+    insert into projects (id, user_id, name, description, created_at, work_mode)
+    values (${project.id}, ${userId}, ${project.name}, ${project.description}, ${project.createdAt}, ${project.workMode === "SOLO" ? "SOLO" : "COUNCIL"})
     on conflict (id) do update set
       name = excluded.name,
-      description = excluded.description
+      description = excluded.description,
+      work_mode = excluded.work_mode
     where projects.user_id = ${userId}
   `;
 }

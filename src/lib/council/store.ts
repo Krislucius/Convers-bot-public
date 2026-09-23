@@ -242,10 +242,19 @@ export function createProject(name: string, description: string): Project {
     name,
     description,
     createdAt: new Date().toISOString(),
+    workMode: "COUNCIL",
   };
   persist({ ...memory, projects: [project, ...memory.projects] });
   enqueue(() => persistAccountProject({ data: project }));
   return project;
+}
+
+export function setProjectWorkMode(projectId: string, workMode: "SOLO" | "COUNCIL"): void {
+  const current = memory.projects.find((row) => row.id === projectId);
+  if (!current || (current.workMode ?? "COUNCIL") === workMode) return;
+  const project = { ...current, workMode };
+  persist({ ...memory, projects: memory.projects.map((row) => (row.id === projectId ? project : row)) });
+  enqueue(() => persistAccountProject({ data: project }));
 }
 
 export function addContext(

@@ -190,6 +190,7 @@ export type Project = {
   name: string;
   description: string;
   createdAt: string;
+  workMode?: "SOLO" | "COUNCIL";
 };
 
 export type ContextItem = {

@@ -12,6 +12,7 @@ export function ProjectNav({ projectId }: { projectId: string }) {
   const taskCount = store.tasks.filter((row) => row.projectId === projectId).length;
   const tabs = [
     { to: "/p/$projectId" as const, key: "nav.tasks", exact: true, count: taskCount },
+    { to: "/p/$projectId/solo" as const, key: "nav.solo", exact: true, count: 0 },
     { to: "/p/$projectId/chats" as const, key: "nav.chats", exact: false, count: chatCount },
     { to: "/p/$projectId/files" as const, key: "nav.files", exact: true, count: fileCount },
     { to: "/p/$projectId/memory" as const, key: "nav.memory", exact: true, count: 0 },
