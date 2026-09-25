@@ -102,6 +102,19 @@ export function createSoloThread(input: {
   return thread;
 }
 
+function shiftTime(now: string, ms: number): string {
+  const parsed = Date.parse(now);
+  const base = Number.isFinite(parsed) ? parsed : Date.now();
+  return new Date(base + ms).toISOString();
+}
+
+function roleRank(role: SoloRole): number {
+  if (role === "CONTEXT") return 0;
+  if (role === "USER") return 1;
+  if (role === "ASSISTANT") return 2;
+  return 3;
+}
+
 function message(
   thread: SoloThread,
   role: SoloRole,
@@ -163,8 +176,10 @@ export function modelMessages(thread: SoloThread, packText: string): Array<{ rol
       out.push({ role: "system", content: row.content });
     } else if (row.role === "USER") {
       out.push({ role: "user", content: row.content });
-    } else if (row.role === "ASSISTANT" && !row.error) {
-      out.push({ role: "assistant", content: row.content });
+    } else if (row.role === "ASSISTANT") {
+      const content = row.content.trim() || (row.error ? `(${row.error})` : "");
+      if (!content) continue;
+      out.push({ role: "assistant", content });
     }
   }
   return out;
@@ -224,7 +239,7 @@ export function withAssistantMessage(
   input: { content: string; now: string; error?: string | null; usage?: { inputTokens?: number | null; outputTokens?: number | null; cost?: number | null; latencyMs?: number | null }; stopped?: boolean; states?: FileSourceState[] },
 ): SoloThread {
   const scrubbed = scrubSourceContradictions(input.content, input.states ?? []);
-  const row = message(thread, "ASSISTANT", scrubbed.text, input.now, thread.provider, thread.modelId);
+  const row = message(thread, "ASSISTANT", scrubbed.text, shiftTime(input.now, 1), thread.provider, thread.modelId);
   row.error = input.error ?? null;
   row.stopped = Boolean(input.stopped);
   row.inputTokens = input.usage?.inputTokens ?? null;
@@ -251,9 +266,11 @@ export function dropLastAssistant(thread: SoloThread): SoloThread {
 }
 
 export function resumeThread(raw: SoloThread): SoloThread {
+  const messages = raw.messages.map((row) => ({ ...row, citations: row.citations ?? extractCitations(row.content) }));
+  messages.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || roleRank(a.role) - roleRank(b.role) || a.id.localeCompare(b.id));
   return {
     ...raw,
-    messages: raw.messages.map((row) => ({ ...row, citations: row.citations ?? extractCitations(row.content) })),
+    messages,
     transitions: raw.transitions ?? [],
     selectedChatIds: raw.selectedChatIds ?? [],
     selectedFileIds: raw.selectedFileIds ?? [],
@@ -438,9 +455,14 @@ export async function executeSoloTurn(input: {
   if (!user) {
     return { thread: input.thread, calls: 0, usageKind: SOLO_CALLS, dispatchedModel: thread.modelId, error: "EMPTY_MESSAGE" };
   }
-  const gate = await input.preflight(thread.provider, thread.modelId);
-  if (!gate.ok) {
-    return { thread, calls: 0, usageKind: SOLO_CALLS, dispatchedModel: thread.modelId, error: gate.error ?? "PREFLIGHT_FAILED" };
+  const proven = thread.messages.some(
+    (row) => row.role === "ASSISTANT" && !row.error && row.content.trim().length > 0 && row.modelId === thread.modelId,
+  );
+  if (!proven) {
+    const gate = await input.preflight(thread.provider, thread.modelId);
+    if (!gate.ok) {
+      return { thread, calls: 0, usageKind: SOLO_CALLS, dispatchedModel: thread.modelId, error: gate.error ?? "PREFLIGHT_FAILED" };
+    }
   }
   const pack = buildContextPack(thread, input.context);
   const messages = modelMessages(thread, pack.text);

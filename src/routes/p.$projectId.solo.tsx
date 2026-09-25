@@ -114,8 +114,20 @@ function SoloPage() {
       .then((rows) => {
         if (cancelled) return;
         setThreads(rows);
-        const current = threadId ? rows.find((row) => row.id === threadId) : rows[0];
-        if (current) setThread(current);
+        if (threadId === "new") {
+          setThread(null);
+          return;
+        }
+        if (!threadId) {
+          if (rows[0]) {
+            setThread(rows[0]);
+            void navigate({ to: "/p/$projectId/solo", params: { projectId }, search: { thread: rows[0].id } });
+          }
+          return;
+        }
+        const current = rows.find((row) => row.id === threadId);
+        if (!current) return;
+        setThread((live) => (live && live.id === current.id && live.updatedAt > current.updatedAt ? live : current));
       })
       .catch((error: unknown) => {
         if (!cancelled) setNotice(error instanceof Error ? error.message : "SOLO_LOAD_FAILED");
@@ -128,17 +140,22 @@ function SoloPage() {
     return () => {
       cancelled = true;
     };
-  }, [projectId, threadId]);
+  }, [projectId, threadId, navigate]);
 
   function openThread(next: SoloThread | null) {
     setThread(next);
     setPending(null);
     setReveal(null);
     setPicked([]);
+    setNotice("");
+    if (next) {
+      setDraftProvider(next.provider);
+      setDraftModel(next.modelId);
+    }
     void navigate({
       to: "/p/$projectId/solo",
       params: { projectId },
-      search: { thread: next ? next.id : undefined },
+      search: { thread: next ? next.id : "new" },
     });
   }
 
@@ -314,29 +331,47 @@ function SoloPage() {
   const modelOptions = models.some((row) => row.id === activeModel) || !activeModel ? models : [{ id: activeModel, name: thread?.modelLabel || activeModel, access: "VERIFIED_AVAILABLE" }, ...models];
 
   return (
-    <section className="grid gap-4">
+    <section className="grid gap-4 lg:grid-cols-[16rem_minmax(0,1fr)]">
+      <aside className="grid content-start gap-2">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="m-0 text-sm font-semibold">{t("solo.threads")}</h2>
+          <GhostButton type="button" onClick={() => openThread(null)}>
+            {t("solo.newThread")}
+          </GhostButton>
+        </div>
+        {threads.length === 0 ? <p className="m-0 text-sm text-muted">{t("solo.noThreads")}</p> : null}
+        <div className="grid gap-1" role="list">
+          {threads.map((row) => {
+            const active = thread?.id === row.id;
+            return (
+              <button
+                key={row.id}
+                type="button"
+                role="listitem"
+                onClick={() => openThread(row)}
+                className={`grid min-h-11 gap-0.5 rounded-md border px-3 py-2 text-left ${active ? "border-accent bg-elevated" : "border-line"}`}
+              >
+                <span className="truncate text-sm font-semibold text-fg">{row.title || row.modelLabel}</span>
+                <span className="truncate text-xs text-faint">
+                  {providerName(row.provider)} · {row.modelLabel || row.modelId}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </aside>
+      <div className="grid min-w-0 gap-4">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="font-display m-0 text-2xl">{t("solo.title")}</h2>
           <p className="m-0 mt-1 text-sm text-muted">
-            {providerName(activeProvider)} · {thread?.modelLabel || activeModel || "—"}
+            {thread
+              ? t("solo.connected", { provider: providerName(thread.provider), model: thread.modelLabel || thread.modelId })
+              : `${providerName(activeProvider)} · ${activeModel || "—"}`}
             {usage ? ` · ${t("solo.calls", { solo: usage.soloCalls, council: usage.councilCalls })}` : ""}
           </p>
         </div>
-        <GhostButton type="button" onClick={() => openThread(null)}>
-          {t("solo.newThread")}
-        </GhostButton>
       </header>
-
-      {threads.length ? (
-        <div className="flex gap-2 overflow-x-auto" aria-label={t("solo.threads")}>
-          {threads.map((row) => (
-            <GhostButton key={row.id} type="button" onClick={() => openThread(row)}>
-              {row.title || row.modelLabel}
-            </GhostButton>
-          ))}
-        </div>
-      ) : null}
 
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="grid gap-1 text-sm text-muted">
@@ -368,7 +403,7 @@ function SoloPage() {
             value={activeModel}
             onChange={(event) => requestModel(activeProvider, event.target.value)}
           >
-            <option value="">{t("solo.pickModel")}</option>
+            {thread ? null : <option value="">{t("solo.pickModel")}</option>}
             {modelOptions.map((row) => (
               <option key={row.id} value={row.id}>
                 {row.name || row.id}
@@ -558,6 +593,7 @@ function SoloPage() {
         </div>
       ) : null}
       {notice ? <p className="m-0 text-sm text-muted">{notice}</p> : null}
+      </div>
     </section>
   );
 }

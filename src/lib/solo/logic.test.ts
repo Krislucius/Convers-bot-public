@@ -214,6 +214,61 @@ describe("solo mode", () => {
     assert.equal(modelMessages(seeded, "").some((row) => row.content.includes("Round 1")), false);
   });
 
+  it("keeps answering on the same model after the first reply", async () => {
+    let checks = 0;
+    const first = await executeSoloTurn({
+      thread: thread(),
+      userText: "первый",
+      context: {},
+      now,
+      cancelled: () => false,
+      preflight: async () => {
+        checks += 1;
+        return { ok: true };
+      },
+      complete: async () => ({ text: "ответ", inputTokens: 1, outputTokens: 1, cost: 0, latencyMs: 1 }),
+    });
+    const userAt = first.thread.messages.find((row) => row.role === "USER")?.createdAt ?? "";
+    const answerAt = first.thread.messages.find((row) => row.role === "ASSISTANT")?.createdAt ?? "";
+    assert.ok(userAt < answerAt);
+    const second = await executeSoloTurn({
+      thread: first.thread,
+      userText: "второй",
+      context: {},
+      now: "2026-09-23T08:06:00.000Z",
+      cancelled: () => false,
+      preflight: async () => {
+        checks += 1;
+        return { ok: false, error: "MODEL_UNAVAILABLE" };
+      },
+      complete: async (request) => {
+        assert.equal(request.modelId, "kimi");
+        assert.equal(request.provider, "nanogpt");
+        return { text: "дальше", inputTokens: 1, outputTokens: 1, cost: 0, latencyMs: 1 };
+      },
+    });
+    assert.equal(checks, 1);
+    assert.equal(second.error, null);
+    assert.equal(second.dispatchedModel, "kimi");
+    const tied = first.thread.messages.map((row) => ({ ...row, createdAt: now }));
+    const restored = resumeThread({ ...first.thread, messages: [...tied].reverse() });
+    assert.deepEqual(
+      restored.messages.map((row) => row.role),
+      ["USER", "ASSISTANT"],
+    );
+    const broken = modelMessages(
+      {
+        ...first.thread,
+        messages: first.thread.messages.map((row) => (row.role === "ASSISTANT" ? { ...row, content: "", error: "TIMEOUT" } : row)),
+      },
+      "",
+    );
+    assert.deepEqual(
+      broken.filter((row) => row.role !== "system").map((row) => row.role),
+      ["user", "assistant"],
+    );
+  });
+
   it("streams deltas and does not import Council orchestration", () => {
     const parsed = parseSseDeltas('data: {"choices":[{"delta":{"content":"При"}}]}\n\ndata: {"choices":[{"delta":{"content":"вет"}}]}\n\ndata: [DONE]\n');
     assert.deepEqual(parsed.deltas, ["При", "вет"]);

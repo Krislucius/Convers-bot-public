@@ -341,6 +341,8 @@ export const EN: Record<string, string> = {
   "solo.calls": "SOLO_CALLS {solo} · COUNCIL_CALLS {council}",
   "solo.copied": "Copied",
   "solo.threads": "Conversations",
+  "solo.noThreads": "No conversations yet.",
+  "solo.connected": "This dialog uses {provider} · {model}",
   "solo.transition": "MODEL TRANSITION",
 };
 
@@ -685,6 +687,8 @@ export const RU: Record<string, string> = {
   "solo.calls": "SOLO_CALLS {solo} · COUNCIL_CALLS {council}",
   "solo.copied": "Скопировано",
   "solo.threads": "Диалоги",
+  "solo.noThreads": "Диалогов пока нет.",
+  "solo.connected": "Этот диалог идёт на {provider} · {model}",
   "solo.transition": "ПЕРЕХОД МОДЕЛИ",
 };
 
